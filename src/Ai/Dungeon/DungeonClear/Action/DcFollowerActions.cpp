@@ -131,7 +131,7 @@ bool DungeonClearFollowTankAction::Execute(Event /*event*/)
             LOG_INFO("playerbots.dungeonclear",
                      "[DC:{}] follow-tank: released (DC tank gone) -> cleared "
                      "follow generator (selfRealPlayer={})",
-                     bot->GetName(), botAI && botAI->IsRealPlayer() ? 1 : 0);
+                     bot->GetName(), IsSelfBot(bot) ? 1 : 0);
             followedTank = ObjectGuid::Empty;
             // Cleanly torn down by us -> drop the orphan-reaper mark; there is no
             // longer a follow generator for it to chase down.

@@ -996,13 +996,16 @@ void DcTestRunJob::TickGrouping()
         // Keep the GM (a real human Player) as each bot's playerbots MASTER, and
         // strip the stock follow-master strategy instead of nulling the master.
         //
-        // Why not masterless: HasRealPlayerMaster() gates the whole "a human is
-        // driving me" fast path in stock playerbots. With no real-player master,
+        // Why not masterless: the real-player-master gate governs the whole "a
+        // human is driving me" fast path in stock playerbots (pre-PR-2592 the
+        // removed HasRealPlayerMaster(); now the master satisfying
+        // IsRealPlayer(master) || IsSelfBot(master)). With no real-player master,
         // GetReactDelay() returns base*10 (1000ms vs 100ms) out of combat, so the
         // party thinks on a 1s beat between packs — test runs looked far slower
-        // and sloppier than a real human-led run. HasRealPlayerMaster() has no
-        // map/distance/visibility gate (it only checks the master pointer is a
-        // non-bot Player), so keeping the GM as master holds the fast path even
+        // and sloppier than a real human-led run. That gate has no
+        // map/distance/visibility check (it only checks the master pointer is a
+        // non-bot Player or a self-bot), so keeping the GM as master holds the
+        // fast path even
         // though the GM is invisible and outside the instance — the test now
         // mirrors a real run in every master-gated respect (react delay, AoE
         // avoidance, wait-for-attack), which is the point of a regression harness.

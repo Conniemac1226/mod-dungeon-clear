@@ -65,8 +65,8 @@ namespace
         // own PlayerbotAI has master == bot). Without this exception the
         // moment a player enables bot self mode they would be silently
         // locked out of every dc command.
-        if (PlayerbotAI* ownerAI = GET_PLAYERBOT_AI(owner))
-            if (!ownerAI->IsRealPlayer())
+        if (GET_PLAYERBOT_AI(owner))
+            if (!IsSelfBot(owner))
                 return false;
         if (!bot || !bot->GetGroup())
             return false;

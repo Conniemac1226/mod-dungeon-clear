@@ -1810,7 +1810,7 @@ bool DungeonClearLootRollPendingTrigger::IsActive()
 
     // Self-bot: the vote is the human's to cast (BetterLootRollAction casts
     // none), so an open window must not keep the trigger hot.
-    if (botAI->IsRealPlayer())
+    if (IsSelfBot(bot))
         return false;
 
     Group* group = bot->GetGroup();

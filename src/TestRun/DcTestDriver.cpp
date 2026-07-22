@@ -388,10 +388,10 @@ namespace DcTestDriver
         if (!GET_PLAYERBOT_MGR(driver))
             sPlayerbotsMgr.AddPlayerbotData(driver, false);
 
-        // 2. Self-mastered: party bots' HasRealPlayerMaster() checks the
-        //    master's AI IsRealPlayer() (master == bot), so this one line is
-        //    what keeps the stock fast path (react delay etc.) for every run
-        //    the driver issues.
+        // 2. Self-mastered: the stock real-player-master gate resolves the
+        //    master via IsSelfBot(master) (master == bot; pre-PR-2592 this was
+        //    masterBotAI->IsRealPlayer()), so this one line is what keeps the
+        //    stock fast path (react delay etc.) for every run the driver issues.
         ai->SetMaster(driver);
 
         // 3. Neutralize. The masterless login installed the random-bot
