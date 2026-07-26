@@ -24,9 +24,10 @@ public:
 // the in-combat follower assist/hold triggers — the in-combat halves that can't live
 // in the non-combat strategy because the bot runs its combat engine the instant it
 // aggros. Resident on every bot's combat engine but inert unless that bot is the
-// leader and mid-pull, or a follower assisting the tank. Its ONE multiplier
-// (DungeonClearCombatMultiplier) touches only the stock "drop target" so the
-// flip-early assist can hold the combat engine; nothing else in combat is altered.
+// leader and mid-pull, or a follower assisting the tank. Its multiplier suppresses
+// the stock "drop target" so the flip-early assist can hold the combat engine.
+// This fork also suppresses its Classic-dungeon pull/regroup drivers while DC
+// owns the run.
 class DungeonClearCombatStrategy : public Strategy
 {
 public:

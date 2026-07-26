@@ -22,10 +22,11 @@ public:
 
 // COMBAT-engine companion multiplier. The DungeonClearMultiplier above rides the
 // NON-combat strategy, so it can only touch non-combat actions. This one rides the
-// combat strategy and touches EXACTLY ONE combat action — the stock "drop target"
-// — to stop the flip-early party-assist from ping-ponging the engine (drop target
-// treats an out-of-LOS seeded fight target as invalid and leaves the combat engine
-// before reach can close). Everything else in the combat engine stays fully stock.
+// combat strategy and normally touches exactly one stock combat action — "drop
+// target" — to stop the flip-early party-assist from ping-ponging the engine
+// (drop target treats an out-of-LOS seeded fight target as invalid and leaves the
+// combat engine before reach can close). This fork also suppresses its Classic-
+// dungeon pull/regroup drivers while DC owns the run.
 class DungeonClearCombatMultiplier : public Multiplier
 {
 public:

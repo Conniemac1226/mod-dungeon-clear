@@ -14,13 +14,11 @@
 // rest gate is a single threshold used for BOTH ends (the party stops whenever
 // anyone is below RestHealthPct/RestManaPct and rests back up to that same
 // value), which produces constant micro-rests. Smart Rest splits the two ends:
-// a LOW, role-based trigger (DPS/tank mana, healer mana, any-role HP) latches a
-// party-wide rest, and the release bar is full health but only a near-full mana
-// (the last sliver tops off free while walking) — fewer, longer rests. Between
-// rests eating/drinking is fully suppressed (the multiplier's
-// job, keyed off this latch). One exception to the low entry: a BOSS pull
-// (Inputs::bossPull) latches at the mana release bar itself, so the party
-// always opens a boss fight topped off, never just-above the trash triggers.
+// a LOW, role-based trigger (DPS mana, tank mana, healer mana, any-role HP)
+// latches a party-wide rest, and the release bar is full health but only a
+// near-full mana. A zero mana trigger disables that role for entry and release,
+// including at bosses. Between rests eating/drinking is fully suppressed. A
+// boss pull raises each enabled mana role's entry to its release bar.
 //
 // Extracted engine-free so it is unit-testable in isolation, mirroring
 // DecidePull / DecideCombatRegroup. DcSmartRest (the glue) gathers the live
@@ -36,11 +34,11 @@ namespace DcSmartRestDecision
     // forever — half a percent of slack costs nothing perceptible.
     constexpr float kReleasePct = 99.5f;
 
-    // Mana release bar, every member: deliberately short of full. The last
+    // Mana release bar, every enabled mana role: deliberately short of full. The last
     // sliver of mana regenerates for free while the party walks to the next
     // pack, so holding the whole party at rest to claw back the final ~10% just
     // burns real time for no combat benefit. 90% stays far above every mana
-    // trigger (DPS 10 / healer 40), so hysteresis holds — a release can never
+    // trigger (tank 10 / healer 40 by default), so hysteresis holds — a release can never
     // instantly re-latch. HP keeps the full kReleasePct bar (a low HP bar would
     // send bots into the next pull hurt).
     constexpr float kManaReleasePct = 90.0f;
@@ -64,6 +62,7 @@ namespace DcSmartRestDecision
         float manaPct = 100.0f;   // meaningful only when isManaUser
         bool  isManaUser = false; // powerType == POWER_MANA && maxMana > 0
         bool  isHealer = false;   // PlayerbotAI::IsHeal — selects the mana trigger
+        bool  isTank = false;     // elected DC leader — selects the tank trigger
         // No isBot: bots and humans are held to identical bars. See the
         // kHumanReleaseMarginPct removal note above.
     };
@@ -74,18 +73,14 @@ namespace DcSmartRestDecision
         std::uint32_t restElapsedMs = 0;   // now - smartRestSinceMs; 0 when not latched
         bool          rearmed = true;      // false during the post-timeout cooldown
         float         hpTriggerPct = 50.0f;       // SmartRestHealthPct (all roles)
-        float         dpsManaTriggerPct = 10.0f;  // SmartRestDpsManaPct (DPS + tanks)
+        float         dpsManaTriggerPct = 0.0f;  // SmartRestDpsManaPct
+        float         tankManaTriggerPct = 10.0f; // SmartRestTankManaPct
         float         healerManaTriggerPct = 40.0f;  // SmartRestHealerManaPct
         std::uint32_t maxRestMs = 0;       // timeout failsafe; 0 = never time out
 
         // The next pull is a BOSS and the tank is inside its engage range. Raises
-        // the latch entry from the low role triggers to each member's MANA release
-        // bar: a healer at 45% is fine to push trash on, but must not open a boss
-        // fight — the party tops off to the 90% bar first. Mana only; HP has no
-        // boss-specific bar (the healer keeps the party topped between pulls, and
-        // a genuinely hurt member is the hpTriggerPct trigger's job). Entry at the
-        // release bar keeps the hysteresis exact: a fresh release leaves everyone
-        // AT the bar, so it can never instantly re-latch.
+        // each enabled mana role's entry to its release bar. A role configured at
+        // zero remains ignored. Mana only; HP has no boss-specific bar.
         bool          bossPull = false;
     };
 
@@ -101,10 +96,8 @@ namespace DcSmartRestDecision
     float ManaTriggerPct(Member const& m, Inputs const& in);
 
     // Release bars for one member, bot and human alike: kReleasePct on HP and
-    // kManaReleasePct on mana, on every applicable dimension even one whose
-    // trigger is disabled (a rest is a rest). Mana bar is 0 for non-mana users.
-    // Neither bar reads the triggers, so both ignore Inputs entirely — the
-    // parameter stays for call-site symmetry with the rest of the kernel.
+    // kManaReleasePct on mana when that role's trigger is enabled. Mana is 0 for
+    // non-mana users and roles whose mana trigger is zero.
     float HpReleaseBar(Member const& m, Inputs const& in);
     float ManaReleaseBar(Member const& m, Inputs const& in);
 

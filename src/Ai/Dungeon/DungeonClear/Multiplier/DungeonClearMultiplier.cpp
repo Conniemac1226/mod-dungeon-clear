@@ -16,12 +16,35 @@
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearUtil.h"
 #include "Ai/Dungeon/DungeonClear/DcValueKeys.h"
 
+namespace
+{
+    bool IsClassicDungeonDriver(std::string const& name)
+    {
+        return name == "dungeon auto pull" || name == "dungeon healer regroup";
+    }
+
+    bool IsDungeonClearRunEnabled(Player* bot)
+    {
+        Player* leader = DcLeaderSignal::FindLeaderTank(bot);
+        PlayerbotAI* leaderAI = leader ? GET_PLAYERBOT_AI(leader) : nullptr;
+        return leaderAI && DcRun::Of(leaderAI).enabled;
+    }
+}
+
 float DungeonClearMultiplier::GetValue(Action* action)
 {
     if (!action || !botAI || !bot)
         return 1.0f;
 
     std::string const& name = action->getName();
+
+    // This playerbots fork installs its own Classic-dungeon pull and healer-
+    // regroup drivers. They are useful when DC is off, but they otherwise
+    // compete with DC's route, pull-mode, camp-hold, and pause decisions.
+    // Resolve the run owner only for those two actions and suppress them for
+    // every party member while the owner's run is enabled (including paused).
+    if (IsClassicDungeonDriver(name) && IsDungeonClearRunEnabled(bot))
+        return 0.0f;
 
     // Rest-target cap. Applies to EVERY bot in an active DC run — the leader tank
     // AND its followers — so the whole group stops eating/drinking at the group's
@@ -172,9 +195,15 @@ float DungeonClearCombatMultiplier::GetValue(Action* action)
     if (!action || !botAI || !bot)
         return 1.0f;
 
-    // Touch EXACTLY ONE combat action. Fast-path everything else so a fight's full
-    // action list pays only a single string compare per tick — the combat engine
-    // otherwise stays fully stock.
+    // The Classic healer-regroup driver is also registered in the combat
+    // engine. Keep both fork-specific drivers suppressed in either engine
+    // while DC owns the run.
+    if (IsClassicDungeonDriver(action->getName()) && IsDungeonClearRunEnabled(bot))
+        return 0.0f;
+
+    // Touch exactly one stock combat action. Fast-path everything else so a
+    // fight's full action list pays only a single string compare per tick — the
+    // combat engine otherwise stays fully stock.
     if (action->getName() != "drop target")
         return 1.0f;
 

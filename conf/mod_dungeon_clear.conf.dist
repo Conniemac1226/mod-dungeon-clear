@@ -171,11 +171,13 @@ DungeonClear.RestManaPct = 0
 #    DungeonClear.SmartRest
 #        Hysteresis rest cycles. When on, the party pushes with no eating or
 #        drinking at all until ANY member falls below a role trigger
-#        (SmartRestHealthPct / SmartRestDpsManaPct / SmartRestHealerManaPct) —
-#        then the whole party stops and rests to FULL health and mana before
-#        pushing again. Fewer, longer rests instead of constant micro-rests.
-#        Boss pulls are special-cased: at the boss the party always rests mana
-#        back up to ~90% before pulling, whatever the triggers say — a hard
+#        (SmartRestHealthPct / SmartRestDpsManaPct / SmartRestTankManaPct /
+#        SmartRestHealerManaPct) —
+#        then the whole party stops and rests to full health and each enabled
+#        mana role before pushing again. Fewer, longer rests instead of
+#        constant micro-rests.
+#        Boss pulls are special-cased: enabled mana roles rest back up to ~90%
+#        before pulling; roles configured at 0 remain ignored — a hard
 #        boss is never opened on a party just above its trash thresholds.
 #        While on, the legacy RestHealthPct/RestManaPct targets are ignored.
 #        Overridable per run from the companion addon.
@@ -200,22 +202,34 @@ DungeonClear.SmartRestHealthPct = 50
 
 #
 #    DungeonClear.SmartRestDpsManaPct
-#        Smart Rest only. Mana % below which a DPS or tank mana user triggers a
-#        full-rest stop. Tanks share this trigger: a prot paladin regains mana
-#        in combat and tops up at every healer-triggered stop anyway.
-#            0 = disable the DPS/tank mana trigger
+#        Smart Rest only. Mana % below which a DPS mana user triggers a
+#        full-rest stop. Setting this to 0 also prevents DPS mana from holding
+#        an active rest or a boss pull.
+#            0 = completely ignore DPS mana
+#
+#        Default: 0
+#
+
+DungeonClear.SmartRestDpsManaPct = 0
+
+#
+#    DungeonClear.SmartRestTankManaPct
+#        Smart Rest only. Mana % below which the elected tank triggers a
+#        full-rest stop. Setting this to 0 also prevents tank mana from holding
+#        an active rest or a boss pull.
+#            0 = completely ignore tank mana
 #
 #        Default: 10
 #
 
-DungeonClear.SmartRestDpsManaPct = 10
+DungeonClear.SmartRestTankManaPct = 10
 
 #
 #    DungeonClear.SmartRestHealerManaPct
 #        Smart Rest only. Mana % below which a healer triggers a full-rest
 #        stop. Higher than the DPS trigger — the healer's pool is the party's
 #        safety margin.
-#            0 = disable the healer mana trigger
+#            0 = completely ignore healer mana
 #
 #        Default: 40
 #

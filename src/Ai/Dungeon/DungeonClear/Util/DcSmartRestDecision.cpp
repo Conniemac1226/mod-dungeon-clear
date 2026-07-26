@@ -11,7 +11,11 @@ namespace DcSmartRestDecision
     {
         if (!m.isManaUser)
             return 0.0f;
-        return m.isHealer ? in.healerManaTriggerPct : in.dpsManaTriggerPct;
+        if (m.isHealer)
+            return in.healerManaTriggerPct;
+        if (m.isTank)
+            return in.tankManaTriggerPct;
+        return in.dpsManaTriggerPct;
     }
 
     float HpReleaseBar(Member const&, Inputs const&)
@@ -19,19 +23,19 @@ namespace DcSmartRestDecision
         return kReleasePct;
     }
 
-    float ManaReleaseBar(Member const& m, Inputs const&)
+    float ManaReleaseBar(Member const& m, Inputs const& in)
     {
-        return m.isManaUser ? kManaReleasePct : 0.0f;
+        return ManaTriggerPct(m, in) > 0.0f ? kManaReleasePct : 0.0f;
     }
 
     bool BelowTrigger(Member const& m, Inputs const& in)
     {
         if (in.hpTriggerPct > 0.0f && m.hpPct < in.hpTriggerPct)
             return true;
-        // Boss pull imminent: any mana user short of its RELEASE bar latches a
-        // top-off rest — never open a boss fight on a half tank of mana that
-        // merely clears the low trash triggers.
-        if (in.bossPull && m.isManaUser && m.manaPct < ManaReleaseBar(m, in))
+        // Boss pull imminent: any enabled mana role short of its RELEASE bar
+        // latches a top-off rest. A zero role trigger stays ignored here.
+        float const manaRelease = ManaReleaseBar(m, in);
+        if (in.bossPull && manaRelease > 0.0f && m.manaPct < manaRelease)
             return true;
         float const manaTrigger = ManaTriggerPct(m, in);
         return manaTrigger > 0.0f && m.manaPct < manaTrigger;
@@ -39,7 +43,9 @@ namespace DcSmartRestDecision
 
     bool BelowRelease(Member const& m, Inputs const& in)
     {
-        return m.hpPct < HpReleaseBar(m, in) || m.manaPct < ManaReleaseBar(m, in);
+        float const manaRelease = ManaReleaseBar(m, in);
+        return m.hpPct < HpReleaseBar(m, in) ||
+               (manaRelease > 0.0f && m.manaPct < manaRelease);
     }
 
     Result Decide(Inputs const& in, std::vector<Member> const& members)

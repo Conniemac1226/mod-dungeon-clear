@@ -16,13 +16,15 @@ using DcSmartRestDecision::kReleasePct;
 
 namespace
 {
-    // A "healthy" five-member party at full everything, default triggers
-    // (hp 50 / DPS mana 10 / healer mana 40). Individual tests flip one thing.
+    // A healthy five-member party at full everything. This test baseline enables
+    // every mana role so the optional DPS behavior remains covered.
     // Roster: [0] tank (mana user — prot paladin shape), [1] healer,
     // [2] caster DPS, [3] melee DPS (no mana), [4] human caster DPS.
     std::vector<Member> BaseParty()
     {
-        Member tank;   tank.isManaUser = true;
+        Member tank;
+        tank.isManaUser = true;
+        tank.isTank = true;
         Member healer; healer.isManaUser = true; healer.isHealer = true;
         Member caster; caster.isManaUser = true;
         Member melee;  // no mana
@@ -38,6 +40,7 @@ namespace
         in.rearmed = true;
         in.hpTriggerPct = 50.0f;
         in.dpsManaTriggerPct = 10.0f;
+        in.tankManaTriggerPct = 10.0f;
         in.healerManaTriggerPct = 40.0f;
         in.maxRestMs = 180000;
         return in;
@@ -100,13 +103,31 @@ TEST(DcSmartRestTest, HealerTriggerDoesNotApplyToDps)
     EXPECT_FALSE(Decide(BaseInputs(), party).latched);
 }
 
-TEST(DcSmartRestTest, TankManaUsesDpsTrigger)
+TEST(DcSmartRestTest, DisabledDpsManaNeverHoldsHealerRest)
+{
+    Inputs in = BaseInputs();
+    in.dpsManaTriggerPct = 0.0f;
+    auto party = BaseParty();
+    party[1].manaPct = 39.0f;
+    ASSERT_TRUE(Decide(in, party).latched);
+
+    in.latched = true;
+    in.restElapsedMs = 1000;
+    party[1].manaPct = kManaReleasePct;
+    party[2].manaPct = 1.0f;
+    party[4].manaPct = 1.0f;
+    EXPECT_FALSE(Decide(in, party).latched);
+}
+
+TEST(DcSmartRestTest, TankManaUsesTankTrigger)
 {
     auto party = BaseParty();
-    party[0].manaPct = 9.0f;   // tank shares the DPS trigger
-    EXPECT_TRUE(Decide(BaseInputs(), party).latched);
+    Inputs in = BaseInputs();
+    in.dpsManaTriggerPct = 0.0f;
+    party[0].manaPct = 9.0f;   // tank has its own trigger
+    EXPECT_TRUE(Decide(in, party).latched);
     party[0].manaPct = 39.0f;  // healer trigger must NOT catch the tank
-    EXPECT_FALSE(Decide(BaseInputs(), party).latched);
+    EXPECT_FALSE(Decide(in, party).latched);
 }
 
 TEST(DcSmartRestTest, LowHpLatchesAnyRole)
@@ -146,6 +167,12 @@ TEST(DcSmartRestTest, ZeroTriggerDisablesDimension)
     EXPECT_FALSE(Decide(in, party).latched);
 
     in = BaseInputs();
+    in.tankManaTriggerPct = 0.0f;
+    party = BaseParty();
+    party[0].manaPct = 1.0f;
+    EXPECT_FALSE(Decide(in, party).latched);
+
+    in = BaseInputs();
     in.healerManaTriggerPct = 0.0f;
     party = BaseParty();
     party[1].manaPct = 1.0f;
@@ -157,6 +184,7 @@ TEST(DcSmartRestTest, AllTriggersZeroNeverLatches)
     Inputs in = BaseInputs();
     in.hpTriggerPct = 0.0f;
     in.dpsManaTriggerPct = 0.0f;
+    in.tankManaTriggerPct = 0.0f;
     in.healerManaTriggerPct = 0.0f;
     auto party = BaseParty();
     for (Member& m : party)
@@ -192,6 +220,17 @@ TEST(DcSmartRestTest, BossPullLatchesBelowManaBar)
     EXPECT_TRUE(r.latched);
     ASSERT_EQ(r.blockers.size(), 1u);
     EXPECT_EQ(r.blockers[0], 2u);
+}
+
+TEST(DcSmartRestTest, BossPullIgnoresDisabledDpsMana)
+{
+    Inputs in = BaseInputs();
+    in.dpsManaTriggerPct = 0.0f;
+    in.bossPull = true;
+    auto party = BaseParty();
+    party[2].manaPct = 1.0f;
+    party[4].manaPct = 1.0f;
+    EXPECT_FALSE(Decide(in, party).latched);
 }
 
 TEST(DcSmartRestTest, BossPullAtManaBarDoesNotLatch)
@@ -280,17 +319,18 @@ TEST(DcSmartRestTest, BossPullRespectsRearmCooldown)
     EXPECT_FALSE(Decide(in, party).latched);
 }
 
-TEST(DcSmartRestTest, BossPullWorksWithAllTriggersDisabled)
+TEST(DcSmartRestTest, BossPullRespectsDisabledManaDimensions)
 {
-    // The top-off is a property of the boss pull, not of any trigger dimension.
+    // A disabled mana dimension stays disabled even for a boss pull.
     auto party = BaseParty();
     party[2].manaPct = 50.0f;
     Inputs in = BaseInputs();
     in.hpTriggerPct = 0.0f;
     in.dpsManaTriggerPct = 0.0f;
+    in.tankManaTriggerPct = 0.0f;
     in.healerManaTriggerPct = 0.0f;
     in.bossPull = true;
-    EXPECT_TRUE(Decide(in, party).latched);
+    EXPECT_FALSE(Decide(in, party).latched);
 }
 
 // ---- holding / releasing the latch ----------------------------------------------
@@ -415,15 +455,14 @@ TEST(DcSmartRestTest, AfkHumanBelowBarIsFreedByTheTimeout)
     EXPECT_TRUE(freed.timedOut);
 }
 
-TEST(DcSmartRestTest, BotsStillRestToBarOnDisabledDimension)
+TEST(DcSmartRestTest, DisabledDpsManaDoesNotHoldLatch)
 {
-    // A rest is a rest: even with the mana trigger disabled, a bot mid-drink
-    // holds the latch until it reaches the mana release bar.
+    // A disabled role never starts or holds a rest, even when already drinking.
     Inputs in = LatchedInputs();
     in.dpsManaTriggerPct = 0.0f;
     auto party = BaseParty();
     party[2].manaPct = 80.0f;  // below the 90 bar
-    EXPECT_TRUE(Decide(in, party).latched);
+    EXPECT_FALSE(Decide(in, party).latched);
 }
 
 // ---- timeout failsafe -----------------------------------------------------------
@@ -471,6 +510,7 @@ TEST(DcSmartRestTest, SoloTankLatchesOnItself)
 {
     Member solo;
     solo.isManaUser = true;
+    solo.isTank = true;
     solo.manaPct = 5.0f;
     Result const r = Decide(BaseInputs(), {solo});
     EXPECT_TRUE(r.latched);

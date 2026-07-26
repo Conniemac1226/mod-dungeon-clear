@@ -75,16 +75,18 @@ inline constexpr DcSettingDef kDcSettings[] =
     // Smart Rest: hysteresis full-rest cycles instead of constant micro-rests.
     // When ON, the party pushes with NO eating/drinking at all until any member
     // drops below its role trigger (SmartRestHealthPct for HP, any role;
-    // SmartRestDpsManaPct for DPS/tank mana users; SmartRestHealerManaPct for
-    // healers) — then the WHOLE party stops and rests to FULL health and mana
-    // before pushing again. While ON, the legacy RestHealthPct/RestManaPct
+    // SmartRestDpsManaPct for DPS mana users; SmartRestTankManaPct for tanks;
+    // SmartRestHealerManaPct for healers) — then the whole party stops and
+    // rests to full health and each enabled mana role before pushing again.
+    // While ON, the legacy RestHealthPct/RestManaPct
     // targets above are ignored everywhere. A trigger of 0 disables that
-    // dimension. Boss pulls are special-cased: at the boss the party always
-    // tops mana off to the release bar first, whatever the triggers say. OFF =
+    // mana dimension for both entry and release. Boss pulls top enabled mana
+    // roles off to the release bar; roles configured at 0 remain ignored. OFF =
     // the legacy rest behavior, untouched.
     { "SmartRest",              DcType::Bool,   0,   0,   1,  true  },
     { "SmartRestHealthPct",     DcType::UInt,  50,   0, 100,  true  },
-    { "SmartRestDpsManaPct",    DcType::UInt,  10,   0, 100,  true  },
+    { "SmartRestDpsManaPct",    DcType::UInt,   0,   0, 100,  true  },
+    { "SmartRestTankManaPct",   DcType::UInt,  10,   0, 100,  true  },
     { "SmartRestHealerManaPct", DcType::UInt,  40,   0, 100,  true  },
 
     // Post-combat party resurrection. With PostCombatRez on, a death no longer
