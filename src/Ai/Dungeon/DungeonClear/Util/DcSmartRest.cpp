@@ -46,6 +46,7 @@ namespace
             if (m.isManaUser)
                 m.manaPct = leader->GetPowerPct(POWER_MANA);
             m.isHealer = PlayerbotAI::IsHeal(leader);
+            m.isTank = true;
             out.push_back(m);
             if (players)
                 players->push_back(leader);
@@ -70,6 +71,7 @@ namespace
             if (m.isManaUser)
                 m.manaPct = member->GetPowerPct(POWER_MANA);
             m.isHealer = PlayerbotAI::IsHeal(member);
+            m.isTank = member == leader;
             out.push_back(m);
             if (players)
                 players->push_back(member);
@@ -85,6 +87,7 @@ namespace
                      static_cast<int32>(now - run.smartRestRearmAtMs) >= 0;
         in.hpTriggerPct = static_cast<float>(DcSettings::GetUInt(leader, "SmartRestHealthPct"));
         in.dpsManaTriggerPct = static_cast<float>(DcSettings::GetUInt(leader, "SmartRestDpsManaPct"));
+        in.tankManaTriggerPct = static_cast<float>(DcSettings::GetUInt(leader, "SmartRestTankManaPct"));
         in.healerManaTriggerPct = static_cast<float>(DcSettings::GetUInt(leader, "SmartRestHealerManaPct"));
         in.maxRestMs = DC_SMART_REST_MAX_MS;
 

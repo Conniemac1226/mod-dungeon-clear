@@ -22,6 +22,20 @@
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearUtil.h"
 #include "Ai/Dungeon/DungeonClear/DcValueKeys.h"
 
+namespace
+{
+    bool IsClassicDungeonDriver(std::string const& name)
+    {
+        return name == "dungeon auto pull" || name == "dungeon healer regroup";
+    }
+
+    bool IsDungeonClearRunEnabled(Player* bot)
+    {
+        Player* leader = DcLeaderSignal::FindLeaderTank(bot);
+        PlayerbotAI* leaderAI = leader ? GET_PLAYERBOT_AI(leader) : nullptr;
+        return leaderAI && DcRun::Of(leaderAI).enabled;
+    }
+
 // BLACKWING LAIR, the orb runner, and the hardest guard in the module: while this
 // bot holds Razorgore's possession, NOTHING it could do is worth doing.
 //
@@ -48,6 +62,7 @@ static float RazorgorePossessionClamp(Player* bot, std::string const& name)
     if (!DcBlackwingLair::HoldsThePossession(bot))
         return 1.0f;
     return name == "dungeon clear razorgore orb" ? 1.0f : 0.0f;
+}
 }
 
 // HALLS OF REFLECTION, the escape: BACKWARDS IS FATAL, so nothing may move
@@ -159,6 +174,14 @@ float DungeonClearMultiplier::GetValue(Action* action)
 
     std::string const& name = action->getName();
 
+    if (IsClassicDungeonDriver(name) && IsDungeonClearRunEnabled(bot))
+        return 0.0f;
+
+    // This playerbots fork installs its own Classic-dungeon pull and healer-
+    // regroup drivers. They are useful when DC is off, but they otherwise
+    // compete with DC's route, pull-mode, camp-hold, and pause decisions.
+    // Resolve the run owner only for those two actions and suppress them for
+    // every party member while the owner's run is enabled (including paused).
     if (float const clamp = RazorgorePossessionClamp(bot, name); clamp != 1.0f)
         return clamp;
 
@@ -322,6 +345,12 @@ float DungeonClearCombatMultiplier::GetValue(Action* action)
         return 1.0f;
 
     std::string const& name = action->getName();
+
+    // The Classic healer-regroup driver is also registered in the combat
+    // engine. Keep both fork-specific drivers suppressed in either engine
+    // while DC owns the run.
+    if (IsClassicDungeonDriver(name) && IsDungeonClearRunEnabled(bot))
+        return 0.0f;
 
     // The possession clamp, first and unconditional — see its definition above.
     // The runner is IN COMBAT for most of its window (the adds are on it), so the
