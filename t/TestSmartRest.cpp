@@ -25,10 +25,18 @@ namespace
         Member tank;
         tank.isManaUser = true;
         tank.isTank = true;
-        Member healer; healer.isManaUser = true; healer.isHealer = true;
-        Member caster; caster.isManaUser = true;
-        Member melee;  // no mana
-        Member human;  human.isManaUser = true;  // the real player's seat
+        tank.isBot = true;
+        Member healer;
+        healer.isManaUser = true;
+        healer.isHealer = true;
+        healer.isBot = true;
+        Member caster;
+        caster.isManaUser = true;
+        caster.isBot = true;
+        Member melee;
+        melee.isBot = true;  // no mana
+        Member human;
+        human.isManaUser = true;  // the real player's seat
         return {tank, healer, caster, melee, human};
     }
 
@@ -38,6 +46,7 @@ namespace
         in.latched = false;
         in.restElapsedMs = 0;
         in.rearmed = true;
+        in.includeHumans = true;
         in.hpTriggerPct = 50.0f;
         in.dpsManaTriggerPct = 10.0f;
         in.tankManaTriggerPct = 10.0f;
@@ -142,6 +151,19 @@ TEST(DcSmartRestTest, HumanBelowTriggerLatches)
     auto party = BaseParty();
     party[4].manaPct = 5.0f;
     EXPECT_TRUE(Decide(BaseInputs(), party).latched);
+}
+
+TEST(DcSmartRestTest, ExcludedHumanCannotStartRest)
+{
+    auto party = BaseParty();
+    party[4].hpPct = 1.0f;
+    party[4].manaPct = 1.0f;
+    Inputs in = BaseInputs();
+    in.includeHumans = false;
+    EXPECT_FALSE(Decide(in, party).latched);
+
+    party[2].manaPct = 1.0f;
+    EXPECT_TRUE(Decide(in, party).latched);
 }
 
 TEST(DcSmartRestTest, MeleeLowManaFieldIgnored)
@@ -290,6 +312,16 @@ TEST(DcSmartRestTest, BossPullHumanOwesTheSameBarAsBots)
     EXPECT_FALSE(Decide(in, party).latched);
 }
 
+TEST(DcSmartRestTest, BossPullIgnoresExcludedHuman)
+{
+    auto party = BaseParty();
+    party[4].manaPct = 1.0f;
+    Inputs in = BaseInputs();
+    in.includeHumans = false;
+    in.bossPull = true;
+    EXPECT_FALSE(Decide(in, party).latched);
+}
+
 TEST(DcSmartRestTest, BossPullCannotInstantlyRelatchAfterRelease)
 {
     // Hysteresis proof for the boss entry: a fresh release leaves every bot AT
@@ -423,6 +455,19 @@ TEST(DcSmartRestTest, HumanHpBarIsTheSameAsBots)
     EXPECT_TRUE(Decide(LatchedInputs(), party).latched);  // ...but not kReleasePct
     party[4].hpPct = kReleasePct;
     EXPECT_FALSE(Decide(LatchedInputs(), party).latched);
+}
+
+TEST(DcSmartRestTest, ExcludedHumanCannotHoldRest)
+{
+    auto party = BaseParty();
+    party[4].hpPct = 1.0f;
+    party[4].manaPct = 1.0f;
+    Inputs in = LatchedInputs();
+    in.includeHumans = false;
+    EXPECT_FALSE(Decide(in, party).latched);
+
+    party[1].manaPct = 1.0f;
+    EXPECT_TRUE(Decide(in, party).latched);
 }
 
 TEST(DcSmartRestTest, HumanRestsToBarOnDisabledDimension)

@@ -138,6 +138,8 @@ inline constexpr DcSettingDef kDcSettings[] =
     // SmartRestDpsManaPct for DPS mana users; SmartRestTankManaPct for tanks;
     // SmartRestHealerManaPct for healers) — then the whole party stops and
     // rests to full health and each enabled mana role before pushing again.
+    // SmartRestIncludeHumans controls whether human players participate in
+    // those resource checks; party-spread gates remain independent.
     // While ON, the legacy RestHealthPct/RestManaPct
     // targets above are ignored everywhere. A trigger of 0 disables that
     // mana dimension for both entry and release. Boss pulls top enabled mana
@@ -154,6 +156,7 @@ inline constexpr DcSettingDef kDcSettings[] =
     // re-adding the four keys to the pinned membership list in
     // t/TestSettingsRegistry.cpp.
     { "SmartRest",              DcType::Bool,   0,   0,   1,  true  },
+    { "SmartRestIncludeHumans", DcType::Bool,   1,   0,   1,  true  },
     { "SmartRestHealthPct",     DcType::UInt,  50,   0, 100,  true  },
     { "SmartRestDpsManaPct",    DcType::UInt,   0,   0, 100,  true  },
     { "SmartRestTankManaPct",   DcType::UInt,  10,   0, 100,  true  },
