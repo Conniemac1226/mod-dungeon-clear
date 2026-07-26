@@ -165,8 +165,15 @@ public:
     // whose activation predicate (DungeonEvent::condition) is currently true; nullptr if none
     // is due. Shared by the conditional-event trigger (gate) and DcRunEventAction
     // (driver) so the two never disagree about which event is active.
+    //
+    // `requireDrivesInCombat` restricts the search to events flagged
+    // DungeonEvent::drivesInCombat. The COMBAT-engine copy of the rung passes true,
+    // so it can only ever drive an event that opted in to being steered under fire
+    // — a normal conditional event stays the non-combat engine's business and the
+    // stock combat engine keeps every fight it owns today.
     static DungeonEvent const* FindDueConditionalEvent(Player* bot, AiObjectContext* context,
-                                                       uint32 mapId);
+                                                       uint32 mapId,
+                                                       bool requireDrivesInCombat = false);
 
     // IMPURE: detect conditional events whose completion is signalled by their
     // own gating condition going false (instance state, not a ConditionalLatchKey)

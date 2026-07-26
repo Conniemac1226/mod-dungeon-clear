@@ -157,21 +157,38 @@ TEST(DcTestRunLiveJsonTest, BotPositionsAreCompactAndOutsideRecent)
 {
     RunSnapshot s = Sample("tr-1", "ragefire");
     s.mapId = 389;
-    s.bots.push_back(BotPos{"tank", 1, -123.456f, 42.0f, -60.19f, true});
-    s.bots.push_back(BotPos{"healer", 5, 10.0f, -5.5f, 1.0f, false});
+    BotPos tank{"tank", 1, -123.456f, 42.0f, -60.19f, true};
+    tank.name = "Bruggle";
+    BotPos healer{"healer", 5, 10.0f, -5.5f, 1.0f, false};
+    healer.name = "Sistina";
+    s.bots.push_back(tank);
+    s.bots.push_back(healer);
 
     std::string const json = Build(1700000000ull, {s});
 
     EXPECT_NE(json.find("\"mapId\":389"), std::string::npos);
     // Short keys + 1-decimal rounding (not the full float noise).
-    EXPECT_NE(json.find("\"role\":\"tank\",\"cls\":1,\"x\":-123.5,\"y\":42.0,\"z\":-60.2,\"alive\":true"),
+    EXPECT_NE(json.find("\"role\":\"tank\",\"name\":\"Bruggle\",\"cls\":1,\"x\":-123.5,\"y\":42.0,\"z\":-60.2,\"alive\":true"),
               std::string::npos);
-    EXPECT_NE(json.find("\"role\":\"healer\",\"cls\":5,\"x\":10.0,\"y\":-5.5,\"z\":1.0,\"alive\":false"),
+    EXPECT_NE(json.find("\"role\":\"healer\",\"name\":\"Sistina\",\"cls\":5,\"x\":10.0,\"y\":-5.5,\"z\":1.0,\"alive\":false"),
               std::string::npos);
     // Positions live in their own array, never spilled into the human-readable
     // "recent" timeline (which stays empty for this snapshot).
     EXPECT_NE(json.find("\"bots\":["), std::string::npos);
     EXPECT_NE(json.find("\"recent\":[]"), std::string::npos);
+}
+
+// The dashboard labels each bot row with its character name, so the key has to
+// be there even for a snapshot taken before a name was resolved — an absent key
+// would render "undefined" rather than fall back to the role.
+TEST(DcTestRunLiveJsonTest, BotNameIsAlwaysEmittedEvenWhenUnknown)
+{
+    RunSnapshot s = Sample("tr-1", "ragefire");
+    s.bots.push_back(BotPos{"dps", 4, 0.f, 0.f, 0.f, true});
+
+    std::string const json = Build(1700000000ull, {s});
+
+    EXPECT_NE(json.find("\"role\":\"dps\",\"name\":\"\""), std::string::npos);
 }
 
 // ---- live "why is it sitting there" fields ---------------------------------
@@ -204,6 +221,42 @@ TEST(DcTestRunLiveJsonTest, LiveFieldsDefaultToEmptyNotAbsent)
     EXPECT_NE(json.find("\"stall\":\"\""), std::string::npos);
     EXPECT_NE(json.find("\"bossName\":\"\""), std::string::npos);
     EXPECT_NE(json.find("\"sinceProgressS\":0"), std::string::npos);
+    EXPECT_NE(json.find("\"wiped\":false"), std::string::npos);
+    EXPECT_NE(json.find("\"wipeOnBoss\":false"), std::string::npos);
+    EXPECT_NE(json.find("\"wipeOpponent\":\"\""), std::string::npos);
+}
+
+// ---- wipe in progress -------------------------------------------------------
+//
+// The wipe grace window holds a corpse party for 15s before the verdict lands;
+// without these the live card shows a party doing nothing with no hint why.
+
+TEST(DcTestRunLiveJsonTest, WipeOnABossNamesTheBoss)
+{
+    RunSnapshot s = Sample("tr-1", "underbog");
+    s.wiped = true;
+    s.wipeOnBoss = true;
+    s.wipeOpponent = "Ghaz'an";
+
+    std::string const json = Build(1700000000ull, {s});
+
+    EXPECT_NE(json.find("\"wiped\":true"), std::string::npos);
+    EXPECT_NE(json.find("\"wipeOnBoss\":true"), std::string::npos);
+    EXPECT_NE(json.find("\"wipeOpponent\":\"Ghaz'an\""), std::string::npos);
+}
+
+TEST(DcTestRunLiveJsonTest, WipeToTrashNamesTheMobAndClearsTheBossFlag)
+{
+    RunSnapshot s = Sample("tr-1", "underbog");
+    s.wiped = true;
+    s.wipeOnBoss = false;
+    s.wipeOpponent = "Bog Giant";
+
+    std::string const json = Build(1700000000ull, {s});
+
+    EXPECT_NE(json.find("\"wiped\":true"), std::string::npos);
+    EXPECT_NE(json.find("\"wipeOnBoss\":false"), std::string::npos);
+    EXPECT_NE(json.find("\"wipeOpponent\":\"Bog Giant\""), std::string::npos);
 }
 
 // ---- per-bot health / combat ------------------------------------------------

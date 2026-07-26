@@ -122,6 +122,16 @@ TEST(DungeonClearRelevanceTest, CombatLadderStrictlyDescends)
     EXPECT_GT(DcRel::BreakStuckCombat,       DcRel::HakkarSuppressorCombat);
     EXPECT_GT(DcRel::HakkarSuppressorCombat, DcRel::HakkarFlameCombat);
     EXPECT_GT(DcRel::HakkarFlameCombat,      DcRel::HakkarLootBloodCombat);
+    // The wave-encounter event driver (Black Morass) sits between the Hakkar band
+    // and the camp owners. It has to outrank the camp owners and every stock
+    // combat mover, because its entire job is to take the tank OFF the pack it is
+    // tanking and walk it to the next rift — the thing the non-combat-only rung
+    // could never do, which is why two open rifts used to end the run. It stays
+    // below Hakkar (different map, can never contend) and below the phantom-combat
+    // hatch. See DungeonEvent::drivesInCombat.
+    EXPECT_GT(DcRel::HakkarLootBloodCombat,  DcRel::EventDueCombat);
+    EXPECT_GT(DcRel::EventDueCombat,         DcRel::PullManeuver);
+    EXPECT_GT(DcRel::EventDueCombat,         DcRel::AssistCampCombat);
     EXPECT_GT(DcRel::HakkarLootBloodCombat,  DcRel::PullManeuver);
     // Hazard vacate (survival, any role) sits below the camp owners (60) and above
     // the role repositions — it must win over normal combat movement but not fight

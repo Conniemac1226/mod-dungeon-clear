@@ -249,4 +249,18 @@ AC_ADD_CONFIG_FILE("${CMAKE_CURRENT_LIST_DIR}/conf/mod_dungeon_clear.conf.dist")
 #    detector (encounter mask / cleared anchors / closing distance) and the group
 #    teleport. Paired with the leader-only DungeonClearRecoverStranded{Trigger,
 #    Action} rung at DcRel::StrandedRecovery = 42.)
+# Data/Events/BlackMorassEvents.cpp
+#   (map 269: the fully event-driven CoT Opening of the Dark Portal — Sa'at
+#    gossip, portal-grounds pre-clear, Medivh proximity start + garrison via
+#    ObjectiveHook 8, and the repeatable conditional wave-kill event that
+#    closes all 18 time rifts. Objectives-only roster patch — every boss is a
+#    rift TempSummon.)
+# TestRun/DcWipeContext.{h,cpp}
+#   (wipe post-mortem: the pure latch rule that answers "did we lose the boss
+#    fight or did a trash pack eat us?". Combat ends when the last member dies,
+#    so the harness samples the party's opponent every monitor step and only a
+#    clean disengage clears it — a wipe never does. Edge-pinned by
+#    t/TestWipeContext; DcTestRunJob::TrackEngagement is the engine glue, and
+#    the result rides out on the run record (wipeOnBoss/wipeOpponent) and the
+#    live heartbeat.)
 # (this comment bumps mtime to force CMake re-glob on next build)

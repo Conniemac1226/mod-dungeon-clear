@@ -71,6 +71,18 @@ struct DcPullContext
                                                  // tank during the drag-back; the
                                                  // debounce latch for
                                                  // DungeonClearMath::ShouldPlantEarly.
+    bool        bossPullback = false;           // this pull is a BossPullbackRegistry
+                                                 // boss drag (Ghaz'an out of the
+                                                 // Underbog lake), not an ordinary
+                                                 // trash pull. Set at commit, cleared
+                                                 // by Reset(). Two things key on it:
+                                                 // the drag legs get a distance-sized
+                                                 // watchdog (the haul is ~150yd, far
+                                                 // past DC_PULL_LEG_TIMEOUT_MS), and
+                                                 // turn-and-plant is suppressed — the
+                                                 // whole point is reaching the anchor,
+                                                 // so planting early would drop the
+                                                 // fight back in the water.
     bool        losPull    = false;              // this pull targets a RANGED pack
                                                  // and the camp was placed to break
                                                  // line of sight to it (rangers must

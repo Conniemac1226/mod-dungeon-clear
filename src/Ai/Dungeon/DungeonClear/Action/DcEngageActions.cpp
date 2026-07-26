@@ -38,6 +38,7 @@
 #include "ServerFacade.h"
 #include "SharedDefines.h"
 #include "Ai/Dungeon/DungeonClear/DcApproachState.h"
+#include "Ai/Dungeon/DungeonClear/Data/BossPullbackRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Data/DcEventDoorRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearApproach.h"
@@ -759,6 +760,43 @@ bool DungeonClearEngageBossAction::Execute(Event event)
             botAI->DoSpecificAction("dc status", event, true);
             return true;
         }
+    }
+
+    // PULL-BACK boss (BossPullbackRegistry): NEVER walk in. The whole registry
+    // exists because the boss's own ground is lethal — EngageDirect would bee-line
+    // the tank at Ghaz'an's live position, i.e. out into the Underbog lake, which
+    // is the wipe. The pull pipeline (relevance 35, above this rung's 30) owns the
+    // engagement and does it by tag-and-drag; reaching here at all means the pull
+    // stood down — a fizzle handoff, or the boss out of reach — so HOLD on the
+    // anchor and say why, rather than substituting the one behaviour that kills the
+    // party. The pull re-arms on its own the next tick it can (the boss wanders
+    // back, the abort latch clears at the Engage cleanup).
+    if (BossPullbackRegistry::Find(bot->GetMapId(), next->entry))
+    {
+        DcMovement::StopBot(bot, DcMovement::Stop::Hold);
+
+        // Both Advancing abort paths latch abortTarget to hand the pack to "the
+        // normal walk-in engage so the run never hangs" — which for a pull-back
+        // boss is the one thing that must not happen, so the pull trigger stands
+        // down on the latch and this rung would otherwise hold forever in silence.
+        // Keep the never-hang contract, pay it in a STALL: say the pull failed and
+        // point at `dc skip`, instead of either swimming out or wedging quietly.
+        // The latch clears at the pull's Engage cleanup, and ClearStall on any
+        // later successful engage, so a recovered pull resumes normally.
+        if (AI_VALUE(DcPullContext&, DcKey::PullContext).abortTarget == boss->GetGUID())
+        {
+            StallDungeonClear(botAI,
+                "Can't pull " + next->name + " back to safe ground (the drag kept "
+                "failing). Use 'dc skip' to move to the next boss.");
+            return true;
+        }
+
+        LOG_DEBUG("playerbots.dungeonclear",
+                  "[DC:{}] {} is a pull-back boss and the pull pipeline is not "
+                  "holding it this tick — waiting on the anchor rather than walking "
+                  "in (boss {:.1f}yd away)",
+                  bot->GetName(), next->name, bot->GetExactDist(boss));
+        return true;
     }
 
     if (!EngageDirect(static_cast<Unit*>(boss)))
@@ -1573,7 +1611,8 @@ bool DcObjectiveArriveAction::Execute(Event /*event*/)
             {
                 float const r = step.radius > 0.0f ? step.radius : 50.0f;
                 if (Unit* target = DcTargeting::NearestHostileNearPoint(
-                        bot, context, step.x, step.y, step.z, r, step.zBand))
+                        bot, context, step.x, step.y, step.z, r, step.zBand,
+                        &step.entryFilter))
                 {
                     DcMovement::ResolveEscortConflict(bot);
                     SetPhase(context, "objective");
@@ -1638,7 +1677,16 @@ bool DcObjectiveArriveAction::Execute(Event /*event*/)
 
     // Hold at the anchor while the event/hook runs — StopBot(Hold) cancels a
     // launched escort glide so the tank doesn't coast past the objective.
-    DcMovement::StopBot(bot, DcMovement::Stop::Hold);
+    //
+    // Skipped for an event whose steps own the tank's movement. This is the same
+    // trap the UseItemOnGO branch above sidesteps by owning the tick: the hold
+    // runs BEFORE Drive, so a Custom hook that walks the tank somewhere with its
+    // own spline has last tick's glide cancelled before it can even see it, and
+    // the bot inches forward one tick at a time while logging healthy spline
+    // issues. Generalised onto the event flag so it does not need a new
+    // per-step special case each time. See DungeonEvent::stepsOwnMovement.
+    if (!ev || !ev->stepsOwnMovement)
+        DcMovement::StopBot(bot, DcMovement::Stop::Hold);
 
     // Prefer a declarative event (DungeonEventRegistry) when the anchor names
     // one; otherwise fall back to the legacy freeform hook (ObjectiveHookRegistry)
@@ -1719,7 +1767,8 @@ bool DcRunEventAction::Execute(Event /*event*/)
         return false;
 
     DungeonEvent const* ev =
-        DungeonEventExecutor::FindDueConditionalEvent(bot, context, map->GetId());
+        DungeonEventExecutor::FindDueConditionalEvent(bot, context, map->GetId(),
+                                                      _requireDrivesInCombat);
     if (!ev)
         return false;  // condition went false between trigger and action — stand down
 
@@ -1790,7 +1839,8 @@ bool DcRunEventAction::Execute(Event /*event*/)
             {
                 float const r = step.radius > 0.0f ? step.radius : 50.0f;
                 if (Unit* target = DcTargeting::NearestHostileNearPoint(
-                        bot, context, step.x, step.y, step.z, r, step.zBand))
+                        bot, context, step.x, step.y, step.z, r, step.zBand,
+                        &step.entryFilter))
                 {
                     DcMovement::ResolveEscortConflict(bot);
                     SetPhase(context, "event");
@@ -1822,7 +1872,16 @@ bool DcRunEventAction::Execute(Event /*event*/)
     // launched escort glide (the coast-past from the advance ladder) — it leaves a
     // step's own intra-room MovePoint (HopTo) alone, so MoveTo/Gossip walk-ins
     // still work, unlike the StopMovingOnCurrentPos in StopBot(Hold).
-    DcMovement::ResolveEscortConflict(bot);
+    //
+    // UNLESS the event's steps own the tank's movement. This runs BEFORE Drive, so
+    // for a Custom hook that delivers the tank across the map on its own
+    // long-range spline, the hold cancels last tick's glide before the hook gets
+    // to look at it: the hook re-issues, the next tick cancels again, and the bot
+    // creeps a tick at a time while every log line reports a healthy "spline
+    // issued". That is what kept Black Morass off its portals even after the camp
+    // was moved onto LongRangePathfinder. See DungeonEvent::stepsOwnMovement.
+    if (!ev->stepsOwnMovement)
+        DcMovement::ResolveEscortConflict(bot);
 
     EventDriveOutcome const outcome = DungeonEventExecutor::Drive(bot, context, *ev, prog);
 
@@ -1856,13 +1915,55 @@ bool DcRunEventAction::Execute(Event /*event*/)
     // Completed or Skipped. A REPEATABLE event is never latched — it must fire
     // again the next time its condition reads true (e.g. the RFD gong, rung once
     // per wave). Its loop is ended by the condition itself going false for good
-    // (Tuten'kash spawns), not by a one-shot latch. Clear any stall and let the
-    // run proceed; the next due-check decides whether to repeat.
+    // (Tuten'kash spawns), not by a one-shot latch.
+    //
+    // REWIND THE STEP LIST HERE. Drive's own rewind fires only after a LAPSE —
+    // EventStaleGapMs of nobody driving the event — which assumes the condition
+    // goes false between repeats. That holds for the short wake/ring events
+    // (Zum'rah is awake, the gong is rung: the condition is false on the very
+    // next tick, so they lapse and rewind naturally). It does NOT hold for an
+    // event whose condition stays true ACROSS repeats: Black Morass's wave event
+    // is due while any rift is open or any Infinite lives, so it keeps being
+    // driven every tick, lastDriveMs never goes stale, no lapse is ever detected
+    // — and stepIndex stays parked at steps.size() (Completed) or on the step
+    // that timed out (Skipped). Drive then returns Completed on every subsequent
+    // tick without running anything, forever.
+    //
+    // Live (2026-07-24): the party cleared the first rift, the step list ran to
+    // the end, and the tank then stood on the spent portal ignoring every later
+    // rift — the event was "running" and doing nothing. Restarting here is what
+    // makes Repeatable actually repeat; the steps are idempotent by design (the
+    // same property Drive's lapse rewind already relies on).
     if (ev->repeatable)
     {
+        // YIELD THE TICK for a driver event (stepsOwnMovement). Engine::DoNextAction
+        // executes exactly ONE action per tick — it breaks out of its loop on the
+        // first Execute that returns true — so an action that returns true every
+        // tick starves every lower rung, and for a driver registered in the COMBAT
+        // engine above the stock movers that means the bot never attacks, never
+        // casts, and never builds threat. Black Morass wiped parties this way: the
+        // tank drove to the portal, the keeper engaged it, and the tank then stood
+        // there taking hits with no rotation while the DPS pulled aggro and died.
+        //
+        // A driver step reports Done precisely when it has nothing to steer this
+        // tick, so handing the tick back is the whole point. It still runs every
+        // tick (the trigger is unchanged), so its side effects — the Black Morass
+        // force-pull — stay responsive; it just stops CLAIMING ticks it does not
+        // need. Ordinary repeatable events keep the old own-the-tick behaviour.
+        bool const yieldTick = ev->stepsOwnMovement;
+
+        prog.stepIndex = 0;
+        prog.attempts = 0;
+        prog.stepStartMs = getMSTime();
+        // Re-base the forward-progress watchdog too: this is a genuine fresh
+        // activation, so the previous pass's high-water mark must not make the
+        // new one look wedged (Advance escalates to Failed off progressMs).
+        prog.maxStepIndex = 0;
+        prog.progressMs = prog.stepStartMs;
+
         ClearStall(context);
         SetPhase(context, "");
-        return true;
+        return !yieldTick;
     }
 
     // Otherwise latch the event under its synthetic key so the trigger stops

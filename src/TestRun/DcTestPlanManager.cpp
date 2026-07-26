@@ -75,13 +75,17 @@ bool DcTestPlanManager::Start(DcTestPlan::Spec spec, Player* gm, std::string* ms
         return fail("max active test plans reached (" + std::to_string(maxPlans) +
                     ") — .dc test plan stop <planId> first");
 
+    // 0 = unlimited (the default): the plan's size is the caller's call.
     uint32 const maxTotal = DcSettings::GetUInt(ObjectGuid::Empty, "TestRun.Plan.MaxTotal");
-    if (spec.total > maxTotal)
+    if (maxTotal != 0 && spec.total > maxTotal)
         return fail("total=" + std::to_string(spec.total) + " exceeds the cap (" +
                     std::to_string(maxTotal) + ", DungeonClear.TestRun.Plan.MaxTotal)");
 
     // Default + clamp the plan's concurrency to the run manager's global cap so
-    // the scheduler isn't asking for launches Start would always reject.
+    // the scheduler isn't asking for launches Start would always reject. With
+    // MaxConcurrent at its 0 = unlimited default nothing is clamped: an omitted
+    // concurrent= still defaults to a modest 5, but an explicit concurrent=N is
+    // honoured for any N — the machine's bot budget is the only ceiling.
     uint32 const maxConcurrent =
         DcSettings::GetUInt(ObjectGuid::Empty, "TestRun.MaxConcurrent");
     if (spec.concurrent == 0)
@@ -354,10 +358,16 @@ void DcTestPlanManager::TickPlan(Plan& plan, uint32 diff)
         case DcTestRunManager::StartErr::BotBudget:
         case DcTestRunManager::StartErr::PoolExhausted:
             plan.backoffMs = backoffCfg;
-            // With children in flight a rejection resolves itself when one
-            // finishes; only a rejection with nothing running can be a
-            // permanent misconfiguration (empty pool, cap 0) — count those.
-            if (plan.counters.activeNow == 0 && ++plan.transientStreak >= kMaxTransientStreak)
+            // With anything in flight a rejection resolves itself when a run
+            // finishes; only a rejection with the whole harness idle can be a
+            // permanent misconfiguration (empty pool, MaxAddedBots at 0) —
+            // count those. The harness-wide check (not just this plan's own
+            // children) is what lets plans queue: with MaxPlans unlimited, a
+            // plan launched while another is eating the bot budget has nothing
+            // active of its own and would otherwise abort itself within three
+            // backoffs instead of waiting its turn.
+            if (plan.counters.activeNow == 0 && !DcTestRunManager::Instance().IsActive() &&
+                ++plan.transientStreak >= kMaxTransientStreak)
                 AbortPlan(plan, "stalled: " + msg);
             break;
         default:

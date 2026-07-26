@@ -24,6 +24,7 @@ public:
         creators["dungeon clear objective arrive"] = &DungeonClearActionContext::objective_arrive;
         creators["dungeon clear objective engage combat"] = &DungeonClearActionContext::objective_engage_combat;
         creators["dungeon clear run event"] = &DungeonClearActionContext::run_event;
+        creators["dungeon clear run event combat"] = &DungeonClearActionContext::run_event_combat;
         creators["dungeon clear room clear"] = &DungeonClearActionContext::room_clear;
         creators["dungeon clear room preclear hold"] = &DungeonClearActionContext::room_preclear_hold;
         creators["dungeon clear clear stalled"] = &DungeonClearActionContext::clear_stalled;
@@ -84,6 +85,7 @@ private:
     static Action* objective_arrive(PlayerbotAI* ai) { return new DcObjectiveArriveAction(ai); }
     static Action* objective_engage_combat(PlayerbotAI* ai) { return new DcObjectiveEngageCombatAction(ai); }
     static Action* run_event(PlayerbotAI* ai) { return new DcRunEventAction(ai); }
+    static Action* run_event_combat(PlayerbotAI* ai) { return new DcRunEventCombatAction(ai); }
     static Action* room_clear(PlayerbotAI* ai) { return new DungeonClearRoomClearAction(ai); }
     static Action* room_preclear_hold(PlayerbotAI* ai) { return new DungeonClearRoomPreClearHoldAction(ai); }
     static Action* clear_stalled(PlayerbotAI* ai) { return new DungeonClearClearStalledAction(ai); }

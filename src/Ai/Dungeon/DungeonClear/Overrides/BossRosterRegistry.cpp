@@ -54,6 +54,7 @@ namespace
             RegisterSteamvaultRoster(t);
             RegisterArcatrazRoster(t);
             RegisterSethekkHallsRoster(t);
+            RegisterBlackMorassRoster(t);
             return t;
         }();
         return kPatches;

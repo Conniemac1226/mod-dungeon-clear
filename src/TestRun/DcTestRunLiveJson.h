@@ -50,6 +50,11 @@ namespace DcTestRunLive
         // Mana %, or -1 for a class with no mana pool (warrior/rogue/DK) so the
         // dashboard can omit the bar entirely rather than draw a permanent 0%.
         std::int16_t mp = -1;
+        // Character name, so the dashboard can label the row with the bot the
+        // reader sees in-game instead of a generic TANK/HEAL/DPS token. Last
+        // field on purpose: the members above are positionally aggregate-
+        // initialised in the tests, and appending keeps those call sites valid.
+        std::string name;
     };
 
     // One active `.dc test plan` campaign, for the dashboard's plan progress
@@ -92,6 +97,15 @@ namespace DcTestRunLive
         std::string bossName;              // current target boss/objective
         std::uint32_t sinceProgressS = 0;  // age of the no-progress watchdog
         bool inCombat = false;             // any member in combat
+
+        // Wipe in progress: every member on the leader's map is a corpse and
+        // the wipe grace timer is running. Without this the live card shows a
+        // party doing nothing for 15s with no hint why. wipeOpponent names what
+        // took them down (empty if they died out of combat); wipeOnBoss says
+        // whether that was an encounter boss or a trash pack.
+        bool wiped = false;
+        bool wipeOnBoss = false;
+        std::string wipeOpponent;
 
         std::vector<BotPos> bots;          // per-member positions (may be empty)
         std::vector<StatusEntry> recent;   // already trimmed to <=8 by the caller

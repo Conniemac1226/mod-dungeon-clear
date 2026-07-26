@@ -10,6 +10,7 @@
 #include "DungeonClearUtil.h"   // DcTargeting::GetLiveBoss (until DcTargeting moves)
 #include "DungeonClearMath.h"
 #include "DungeonClearTuning.h"
+#include "Ai/Dungeon/DungeonClear/Data/BossPullbackRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Data/RoomAggroRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Settings/DcSettings.h"
 #include <algorithm>
@@ -457,6 +458,21 @@ bool DcEngageGeometry::IsAtBossEngage(Player* bot, AiObjectContext* ctx,
 {
     if (!bot || !ctx)
         return false;
+
+    // PULL-BACK boss (BossPullbackRegistry): "at the boss" means AT THE ANCHOR,
+    // never at the boss. Ghaz'an lives in open water ~150yd of path away from his
+    // anchor, so measuring against his LIVE position would keep this false while
+    // the tank stands on the anchor — and Advance, which gates on the same
+    // predicate, would keep walking the party toward him until they were all
+    // swimming. Measure the anchor instead: arriving there IS the handoff, and the
+    // engage action then runs the tag-and-drag that brings the boss to the party.
+    // Deliberately skips the live-boss floor probe too — the boss is on the water
+    // sheet, a different level by construction.
+    if (BossPullbackRegistry::Find(bot->GetMapId(), boss.entry))
+    {
+        float const engageRange = BossEngageRange(bot, ctx, boss, staticRange);
+        return bot->GetDistance(boss.x, boss.y, boss.z) < engageRange;
+    }
 
     Creature* live = DcTargeting::GetLiveBoss(bot, ctx, boss.entry);
     float const bx = live ? live->GetPositionX() : boss.x;

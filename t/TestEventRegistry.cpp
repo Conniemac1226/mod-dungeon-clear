@@ -5,11 +5,13 @@
 
 #include "gtest/gtest.h"
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonEventRegistry.h"
+#include "Ai/Dungeon/DungeonClear/Data/Events/DungeonEventTables.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonWingRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Overrides/BossRosterRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Overrides/ObjectiveHookRegistry.h"
@@ -122,6 +124,22 @@ namespace
             // has parked the party at him — and the hook it drives only writes his
             // faction, which is meaningless from afar anyway.
             {209, 3},
+            // Black Morass "Close the time rift": BmWaveHostilesActive requires the
+            // leader within 250yd of the arena centroid AND (an open Time Rift or
+            // a live wave hostile) within a 250yd grid scan OF THE BOT. Its lone
+            // step (hook 12, BmDriveWave) OWNS the travel — it walks the tank to
+            // the locked rift's keeper, or back to Medivh's ring to clear the
+            // drainers — so there is nothing for an arrival step to add. It also
+            // never reports Done while the encounter is live, so the far-tank
+            // false-latch state is unreachable. Repeatable besides: a momentary
+            // completion never latches, the next wave re-fires it.
+            {269, 4},
+            // Shattered Halls Nethekurse wake-up: ShNethekurseDormant does a 60yd
+            // FindNearestCreature for him, so it cannot read true until boss-nav
+            // has parked the party at him — and the hook it drives only fires his
+            // intro DoAction, which is meaningless from afar anyway (the Zum'rah
+            // pattern verbatim).
+            {540, 5},
         };
         for (Row const& r : kRows)
             if (r.mapId == mapId && r.eventId == eventId)
@@ -397,4 +415,192 @@ TEST(DungeonEventIntegrityTest, SethekkAnzuEventIsWiredForForcedSummon)
     EXPECT_TRUE(ObjectiveHookRegistry::Has(7)) << "hook 7 (DriveAnzuSummon) must be registered";
     EXPECT_LT(clearStep, pokeStep) << "room must be cleared BEFORE the Anzu summon poke";
     EXPECT_LT(pokeStep, killStep) << "the summon poke must precede the Anzu kill step";
+}
+
+// --- drivesInCombat containment -------------------------------------------
+// The flag takes ticks away from the stock combat engine: while it is set and the
+// event's condition reads true, the leader's whole combat tick is spent on
+// DcRunEventCombatAction (DcRel::EventDueCombat = 61, above every stock combat
+// mover). That is exactly right for a continuous wave encounter whose event IS
+// the fight, and exactly wrong anywhere else — an ordinary lever/gossip event
+// with the flag set would hijack every fight on its map.
+//
+// So this is a CONTAINMENT tripwire, not a style check: the flag stays on the
+// hand-vetted list below and nowhere else. Adding a map here is a deliberate act
+// that says "this encounter cannot be steered between pulls".
+TEST(DungeonEventIntegrityTest, DrivesInCombatIsConfinedToVettedWaveEncounters)
+{
+    struct Row { uint32 mapId; uint32 eventId; };
+    static constexpr Row kVetted[] = {
+        // The Black Morass "Close the time rift". 18 rifts, each pumping one add
+        // every 15s until its keeper dies; the party is in combat from the first
+        // pull to the last, so the non-combat rung ran only in the gaps between
+        // waves and stopped running entirely once two rifts were open at once —
+        // at which point nothing ever walked the tank to a portal and no rift ever
+        // closed. See DungeonEvent::drivesInCombat.
+        {269, 4},
+    };
+
+    for (DungeonEvent const& ev : DungeonEventRegistry::AllEvents())
+    {
+        if (!ev.drivesInCombat)
+            continue;
+
+        bool vetted = false;
+        for (Row const& r : kVetted)
+            if (r.mapId == ev.mapId && r.eventId == ev.id)
+                vetted = true;
+
+        EXPECT_TRUE(vetted)
+            << "event " << ev.mapId << "/" << ev.id << " '" << ev.name
+            << "' sets DrivesInCombat(), which hands the leader's COMBAT tick to the"
+               " event driver above every stock combat mover. If that is genuinely"
+               " intended (a continuous wave encounter that cannot be steered"
+               " between pulls), add it to kVetted here with the reason.";
+
+        // The combat rung is a copy of the CONDITIONAL rung; an anchored event is
+        // driven off its objective arrival and never reaches it, so the flag there
+        // would be silently inert.
+        EXPECT_EQ(ev.activation, EventActivation::Conditional)
+            << "event " << ev.mapId << "/" << ev.id
+            << " sets DrivesInCombat() but is Anchored — the flag only has an"
+               " effect on Conditional events (DungeonClearEventDueCombatTrigger).";
+    }
+}
+
+// The Black Morass wave driver, pinned to its exact shape. Every one of these
+// properties was a live failure before it was set, so a future edit that drops
+// one should fail loudly with intent rather than as a silent behaviour change.
+TEST(DungeonEventIntegrityTest, BlackMorassWaveEventIsWiredForTheWaveDriver)
+{
+    DungeonEvent const* ev = DungeonEventRegistry::Find(/*map*/ 269, /*eventId*/ 4);
+    ASSERT_NE(ev, nullptr) << "Black Morass (269) event 4 (close the time rift) is missing";
+
+    EXPECT_EQ(ev->activation, EventActivation::Conditional);
+    EXPECT_TRUE(static_cast<bool>(ev->condition)) << "the wave gate predicate must be bound";
+
+    // 18 waves: the condition going false is the only "done".
+    EXPECT_TRUE(ev->repeatable) << "wave event must be Repeatable (18 rifts)";
+    // A wipe / corpse-run must never hard-stall the run for a human.
+    EXPECT_FALSE(ev->required) << "wave event must be Optional (a timeout re-fires it fresh)";
+    // THE fix for "they fall apart any time two portals are open": the party is in
+    // combat essentially the whole encounter, so a non-combat-only driver never
+    // runs once it falls behind.
+    EXPECT_TRUE(ev->drivesInCombat) << "wave event must DriveInCombat (continuous wave fight)";
+
+    // ONE step, and it must be the driver hook. The priority this encounter needs
+    // ("always prefer the rift keeper, it is the only shutoff") is a standing
+    // preference re-evaluated per tick, not a sequence — a step list can only
+    // block in order, which is how the keeper ended up behind nine drainer gates
+    // that a live rift re-blocked every 15s.
+    ASSERT_EQ(ev->steps.size(), 1u)
+        << "the wave event must be exactly one Custom step (the driver hook); a step"
+           " list cannot express the keeper-first priority this encounter needs";
+    EXPECT_EQ(ev->steps[0].kind, EventStepKind::Custom);
+    EXPECT_EQ(ev->steps[0].hookId, 12u);
+    EXPECT_TRUE(ObjectiveHookRegistry::Has(12)) << "hook 12 (BmDriveWave) must be registered";
+
+    // The two entry lists the driver keys on must be non-empty and DISJOINT:
+    // killing a keeper closes a rift and never drains the shield; killing a
+    // drainer stops a drain and never closes a rift. Overlap would make the driver
+    // chase adds as if they were the shutoff.
+    ASSERT_FALSE(BlackMorassKeeperEntries().empty());
+    ASSERT_FALSE(BlackMorassDrainEntries().empty());
+    for (uint32 keeper : BlackMorassKeeperEntries())
+        for (uint32 drainer : BlackMorassDrainEntries())
+            EXPECT_NE(keeper, drainer)
+                << "entry " << keeper << " is in BOTH the Black Morass keeper and"
+                   " drain lists; they must stay disjoint";
+}
+
+// --- stepsOwnMovement containment ------------------------------------------
+// The flag does two things, and both are dangerous on an event that does not own
+// its own driving. It suppresses the per-tick position hold the driving actions
+// apply (StopBot(Hold) anchored, ResolveEscortConflict conditional) — that hold is
+// what stops a tank coasting past its objective on a stale glide. And it makes a
+// completed repeatable event YIELD the engine tick rather than claim it, which is
+// only safe when the step itself decides per tick whether it has work.
+//
+// Containment tripwire, same contract as the drivesInCombat one: the flag stays
+// on the hand-vetted list and nowhere else.
+TEST(DungeonEventIntegrityTest, StepsOwnMovementIsConfinedToVettedEvents)
+{
+    struct Row { uint32 mapId; uint32 eventId; };
+    static constexpr Row kVetted[] = {
+        // Black Morass "Defend Medivh": hook 8 walks the tank into Medivh's 20yd
+        // start trigger and holds the Medivh-side hold point, both through the
+        // long-haul spline funnel (the portals and the hold point are 80-102yd
+        // apart, past what a bare MovePoint delivers).
+        {269, 3},
+        // Black Morass "Close the time rift": hook 12 walks the tank to the locked
+        // rift's keeper and back to Medivh's ring, same funnel. With the hold in
+        // place this glide was cancelled the tick after it was issued — 151 camp
+        // attempts in one batch, none arriving, all logging a healthy spline.
+        {269, 4},
+    };
+
+    for (DungeonEvent const& ev : DungeonEventRegistry::AllEvents())
+    {
+        if (!ev.stepsOwnMovement)
+            continue;
+
+        bool vetted = false;
+        for (Row const& r : kVetted)
+            if (r.mapId == ev.mapId && r.eventId == ev.id)
+                vetted = true;
+
+        EXPECT_TRUE(vetted)
+            << "event " << ev.mapId << "/" << ev.id << " '" << ev.name
+            << "' sets StepsOwnMovement(), which suppresses the per-tick hold that"
+               " keeps a tank parked at its anchor. Only set it when the event's own"
+               " steps issue the movement; then add it to kVetted here with the"
+               " reason.";
+    }
+}
+
+// Aeonus (17881) is a DRAINER, not a keeper — the single least obvious fact in
+// the Black Morass wiring, and the party silently loses the run if it is
+// mis-filed. boss_aeonus::IsSummonedBy does exactly what DoSummonAtRift does to
+// the trash:
+//
+//     me->SetReactState(REACT_DEFENSIVE);
+//     me->SetHomePosition(medivh + 14yd);
+//     me->GetMotionMaster()->MoveTargetedHome();
+//
+// and JustReachedHome then DoCastAOE(37853) inside 20yd of Medivh, which
+// spell_black_morass_corrupt_medivh drains at 2 per tick — DOUBLE the trash rate.
+// So the final boss never aggros the party: it walks past them to Medivh and
+// drains the shield out from under the run.
+//
+// It must NOT be in the keeper list, where it would fail both of that list's
+// jobs: it is never at the rift to be selected on (it leaves immediately), and
+// killing it closes nothing (npc_time_rift::JustSummoned sets _riftKeeperGUID
+// only for the first NON-Aeonus summon, so SummonedCreatureDies never matches).
+//
+// Deja (17879) and Temporus (17880) are the contrast: plain BossAI with no
+// IsSummonedBy override, so they stay aggressive and fight at their rift. They
+// belong in the keeper list and nowhere near the drain list.
+TEST(DungeonEventIntegrityTest, BlackMorassAeonusIsFiledAsADrainerNotAKeeper)
+{
+    constexpr uint32 kAeonus   = 17881;
+    constexpr uint32 kDeja     = 17879;
+    constexpr uint32 kTemporus = 17880;
+
+    auto has = [](std::vector<uint32> const& v, uint32 e)
+    { return std::find(v.begin(), v.end(), e) != v.end(); };
+
+    EXPECT_TRUE(has(BlackMorassDrainEntries(), kAeonus))
+        << "Aeonus must be in the DRAIN list: it spawns REACT_DEFENSIVE, homes to"
+           " Medivh's 14yd ring and channels 37853 at double rate. Out of that list"
+           " nothing force-pulls it and nothing counts it toward 'Medivh's ring is"
+           " dirty', so the party never engages the final boss.";
+    EXPECT_FALSE(has(BlackMorassKeeperEntries(), kAeonus))
+        << "Aeonus must NOT be in the keeper list: it is never at the rift to be"
+           " selected on, and killing it does not close its rift.";
+
+    // The wave-6/12 bosses are the opposite case — keep them straight.
+    EXPECT_TRUE(has(BlackMorassKeeperEntries(), kDeja));
+    EXPECT_TRUE(has(BlackMorassKeeperEntries(), kTemporus));
+    EXPECT_FALSE(has(BlackMorassDrainEntries(), kDeja));
+    EXPECT_FALSE(has(BlackMorassDrainEntries(), kTemporus));
 }

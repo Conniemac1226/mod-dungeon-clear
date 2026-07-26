@@ -233,6 +233,20 @@ struct EventStep
     // climbs, so a >= gate is safe to observe late. -1 => no instance-data gate.
     int32  instanceDataId{-1};
     uint32 instanceDataMin{0};
+
+    // ClearRadius only. When non-empty, the volume clears ONLY creatures whose
+    // entry is in this allow-list — both the RunStep completion gate and the
+    // EngageDirect the driving action issues. Empty (the default) keeps the
+    // plain position-based behaviour: everything hostile in the volume.
+    //
+    // For a set-piece fought inside ambient wildlife this is the difference
+    // between the encounter and a safari. Black Morass is the case that forced
+    // it: the wave volumes sit in open swamp (the arena catch-all is r=160),
+    // and unfiltered they sent the party chasing crocolisks and tarantulas
+    // across the map while the rift's infinites walked unopposed into Medivh.
+    // Ambient fauna is still fought when it aggros the party — that is the
+    // normal combat engine's job, not the clear's.
+    std::vector<uint32> entryFilter;
 };
 
 // How an event enters the clear. Milestone 1 only uses Anchored; Conditional is
@@ -277,6 +291,69 @@ struct DungeonEvent
     // the boss spawns — the gong's own selectable flag gates each ring and the
     // boss going live ends the loop, so a fixed latch would stop it after ring 1.
     bool repeatable{false};
+
+    // Conditional events only. A conditional event is normally driven ONLY out of
+    // combat (DungeonClearEventDueTrigger stands down on bot->IsInCombat(), so the
+    // stock combat engine owns every fight uncontested). That is right for the
+    // usual shape — a lever, a gossip, a gate — where the event's work happens
+    // between pulls.
+    //
+    // It is WRONG for a continuous WAVE encounter, where the party is in combat
+    // essentially from the first pull to the last and the event IS the encounter.
+    // There the non-combat-only driver runs only in the shrinking gaps between
+    // waves, and stops running altogether the moment the party falls behind and
+    // combat stops dropping — exactly when the encounter most needs steering.
+    // Black Morass is the case that forced this flag: with two rifts open the
+    // party never left combat, so nothing ever walked it to a portal to kill the
+    // rift keeper, so the rifts never closed — a spiral with no floor. (Sunken
+    // Temple's Avatar of Hakkar hit the same wall and was fixed the same way, by
+    // hand, with a second copy of its handlers in DungeonClearCombatStrategy; this
+    // is that fix generalised onto the events framework.)
+    //
+    // When set, the event is ALSO driven by the combat-engine copy of the
+    // conditional-event rung (DungeonClearEventDueCombatTrigger ->
+    // DcRunEventCombatAction, DcRel::EventDueCombat), which sits above the stock
+    // combat movers so the driver can actually reposition the tank mid-fight.
+    // Reserve it for encounters that genuinely need steering under fire: it takes
+    // ticks away from the stock combat engine, which is the right owner everywhere
+    // else.
+    bool drivesInCombat{false};
+
+    // This event's STEPS are the sole driver: they issue their own movement, and
+    // they decide per tick whether they need the tick at all.
+    //
+    // Two consequences, both of which a continuous driver event needs:
+    //
+    //  (a) the driving action does NOT hold position for it (below); and
+    //  (b) when a step reports Done — "nothing to steer this tick" — the action
+    //      YIELDS the tick instead of claiming it. Engine::DoNextAction runs
+    //      exactly ONE action per tick (it breaks out of its loop on the first
+    //      Execute returning true), so a driver registered above the stock combat
+    //      movers that returns true every tick starves the combat engine outright:
+    //      the bot never picks a target, never swings, never casts, never builds
+    //      threat. Black Morass wiped parties that way — the tank drove to the
+    //      portal, the keeper engaged it, and the tank stood there taking hits
+    //      with no rotation while the DPS pulled aggro and died. The step still
+    //      RUNS every tick (the trigger is unchanged), so its side effects stay
+    //      responsive; it just stops claiming ticks it does not need.
+    //
+    // DcRunEventAction normally calls DcMovement::ResolveEscortConflict before
+    // every Drive, to park the tank while a step does its work — right for a
+    // lever, a gossip, a wait. But ResolveEscortConflict CANCELS any escort glide
+    // in flight, and it runs BEFORE the step does, so a Custom hook that delivers
+    // the tank across the map with its own long-range spline has that spline
+    // killed on the very next tick, re-issues it, has it killed again... and the
+    // bot creeps roughly one tick's worth of movement per cycle while logging a
+    // perfectly healthy "spline issued" each time.
+    //
+    // Black Morass is where this was found. Its rift camp was moved onto
+    // LongRangePathfinder precisely because the portals are 80-102yd out and a
+    // bare MovePoint silently truncates — and it STILL never arrived: 151 camp
+    // attempts in a 10-run batch, none within 20yd of the rift, 111 logging
+    // moving=false. The route was fine; it was being cancelled from under the
+    // hook. Set this only for an event whose steps genuinely own the tank's
+    // movement, or it will fight whatever else is trying to hold position.
+    bool stepsOwnMovement{false};
 
     // ANCHORED events only. A normal anchored event is driven only while the tank
     // sits at its objective anchor, and DungeonEventExecutor::Drive RESTARTS it
@@ -333,6 +410,12 @@ public:
     EventBuilder& Optional();
     EventBuilder& Repeatable();
     EventBuilder& Persistent();
+    // Keep driving this conditional event while the party is IN COMBAT (see
+    // DungeonEvent::drivesInCombat). For continuous wave encounters only.
+    EventBuilder& DrivesInCombat();
+    // Do not hold position for this event's steps — they issue their own movement
+    // (see DungeonEvent::stepsOwnMovement).
+    EventBuilder& StepsOwnMovement();
     // Difficulty gates (see DungeonEvent::gate). Default is both difficulties.
     EventBuilder& HeroicOnly();
     EventBuilder& NormalOnly();
@@ -414,6 +497,10 @@ public:
     // anchor placed at the centre so boss-nav travels the tank in first.
     EventBuilder& ClearRadius(float x, float y, float z, float radius,
                               float zBand = 20.0f);
+    // Restrict the PRECEDING ClearRadius to the given creature entries (see
+    // EventStep::entryFilter). Chain it right after the step it narrows:
+    //   .ClearRadius(x, y, z, r).OnlyEntries({ENTRY_A, ENTRY_B})
+    EventBuilder& OnlyEntries(std::vector<uint32> entries);
     EventBuilder& Wait(uint32 durationMs);
     EventBuilder& Custom(uint32 hookId);
     // Protect a moving escortee (see EventStepKind::EscortCreature). `escortee` is

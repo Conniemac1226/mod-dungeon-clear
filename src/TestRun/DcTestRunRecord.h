@@ -56,7 +56,8 @@ namespace DcTestRunRecord
     {
         // 3: added diag (full failure snapshot) + stallAtEnd/phaseAtEnd
         // 4: added heroic (run executed at DUNGEON_DIFFICULTY_HEROIC)
-        std::uint32_t schema = 4;
+        // 5: added the wipe post-mortem (wipeOnBoss/wipeOpponent*)
+        std::uint32_t schema = 5;
         std::string runId;
         std::string planId;       // owning `.dc test plan`, "" for ad-hoc runs
         std::string dungeon;      // registry token
@@ -90,6 +91,19 @@ namespace DcTestRunRecord
         // away, which is exactly the field a no_progress post-mortem wants.
         std::string stallAtEnd;
         std::string phaseAtEnd;
+
+        // What the party was fighting when it went down. The first question
+        // anyone asks of a failed run is "did we lose the boss fight, or did a
+        // trash pack eat us?", and neither the verdict token nor the status
+        // timeline answers it: combat ends the instant the last member dies, so
+        // by teardown there is nothing left to read.
+        //
+        // Populated on the "wipe" verdict and on a death bailout ("disabled"
+        // with a corpse still in the party); empty on every other outcome, and
+        // empty on a wipe that happened out of combat (a hazard, a fall).
+        bool wipeOnBoss = false;
+        std::uint32_t wipeOpponentEntry = 0;
+        std::string wipeOpponent;  // boss or trash-mob name
 
         // Full end-of-run diagnostic snapshot, captured before teardown
         // disbands the party. Serialized under "diag"; absent on records

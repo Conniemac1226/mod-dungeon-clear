@@ -1224,34 +1224,40 @@ DungeonClear.TestRun.OverallTimeoutS = 3600
 #        add up to N*5 bots against AiPlayerbot.MaxAddedBots — a start that would
 #        cross that cap is refused up front with an explicit message. Starting
 #        past this cap is refused with "max concurrent test runs reached".
-#        0 = unlimited (bounded only by MaxAddedBots).
+#        0 = unlimited (bounded only by MaxAddedBots and the addclass pool),
+#        which is the default: the machine's real limits already refuse an
+#        over-budget start by name, so a second harness-local ceiling only ever
+#        refused runs the box could have served. Set a positive number to put
+#        one back.
 #
-#        Default: 8
+#        Default: 0 (unlimited)
 #
 
-DungeonClear.TestRun.MaxConcurrent = 8
+DungeonClear.TestRun.MaxConcurrent = 0
 
 #
 #    DungeonClear.TestRun.MaxPlans
 #        How many `.dc test plan` campaigns may be active at once. Each plan
 #        keeps up to its own `concurrent=` test runs in flight until `total=`
 #        runs have completed, then writes one summary line to
-#        dc_testplans.jsonl. 0 = unlimited.
+#        dc_testplans.jsonl. 0 = unlimited (the default); the runs a plan
+#        launches are still gated by MaxConcurrent and the bot budget.
 #
-#        Default: 2
+#        Default: 0 (unlimited)
 #
 
-DungeonClear.TestRun.MaxPlans = 2
+DungeonClear.TestRun.MaxPlans = 0
 
 #
 #    DungeonClear.TestRun.Plan.MaxTotal
-#        Sanity cap on a plan's `total=` argument (a fat-fingered total=2000
-#        would grind the server for days).
+#        Sanity cap on a plan's `total=` argument. 0 = unlimited (the default) —
+#        set a positive number to guard against a fat-fingered total=2000
+#        grinding the server for days.
 #
-#        Default: 500
+#        Default: 0 (unlimited)
 #
 
-DungeonClear.TestRun.Plan.MaxTotal = 500
+DungeonClear.TestRun.Plan.MaxTotal = 0
 
 #
 #    DungeonClear.TestRun.Plan.BackoffMs

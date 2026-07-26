@@ -7,6 +7,7 @@
 
 #include <limits>
 
+#include "Ai/Dungeon/DungeonClear/Settings/DcSettingsRegistry.h"
 #include "TestRun/DcTestPlan.h"
 
 using DcTestPlan::Counters;
@@ -224,4 +225,27 @@ TEST(DcTestPlanDriverWaitTest, AbortsImmediatelyWhenTheDriverCannotComeUp)
 TEST(DcTestPlanDriverWaitTest, ZeroCapDisablesWaiting)
 {
     EXPECT_EQ(DriverWaitVerdict(true, 0, 0), DriverWait::Abort);
+}
+
+// ---- Harness cap defaults --------------------------------------------------------
+//
+// The test harness deliberately imposes no ceiling of its own: how many runs
+// and plans the box can field is a property of the box (AiPlayerbot.MaxAddedBots,
+// the addclass pool, CPU), and those refuse an over-budget start by name. A
+// harness-local cap only ever refused starts the machine could have served, so
+// all three ship at 0 = unlimited. These guards fail if a default drifts back to
+// a positive number — the operator opts a cap back in via the conf, not the code.
+
+TEST(DcSettingsRegistryTest, TestRunCapsDefaultToUnlimited)
+{
+    for (char const* key : {"TestRun.MaxConcurrent", "TestRun.MaxPlans",
+                            "TestRun.Plan.MaxTotal"})
+    {
+        DcSettingDef const* d = FindDcSetting(key);
+        ASSERT_NE(d, nullptr) << key;
+        EXPECT_EQ(d->defVal, 0.0) << key << " must default to 0 (= unlimited)";
+        // 0 has to survive the clamp, or "unlimited" is unreachable.
+        EXPECT_EQ(d->minVal, 0.0) << key << " must admit 0";
+        EXPECT_FALSE(d->playerFacing) << key << " is server-only";
+    }
 }

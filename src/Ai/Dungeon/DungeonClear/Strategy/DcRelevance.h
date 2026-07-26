@@ -95,6 +95,21 @@ namespace DcRel
     inline constexpr float HakkarSuppressorCombat = 64.0f; // ST Hakkar combat side
     inline constexpr float HakkarFlameCombat      = 63.0f;
     inline constexpr float HakkarLootBloodCombat  = 62.0f;
+    // Leader-only. COMBAT copy of the conditional-event rung, restricted to events
+    // flagged DungeonEvent::drivesInCombat — a continuous WAVE encounter where the
+    // event IS the fight and the driver must keep steering the tank under fire.
+    //
+    // 61 sits deliberately high: the driver's whole job in that shape is to move
+    // the tank somewhere the stock combat engine would never take it (off the pack
+    // it is tanking, across the arena, to the next rift), so it has to outrank
+    // MoveChase (~30), the DC role repositions (assist 35 / regroup 29) and the
+    // camp owners (60). It stays BELOW Hakkar (62-64) and the phantom-combat
+    // hatch (65), neither of which can contend — Hakkar is another map, and the
+    // hatch only fires when nothing is fightable at all.
+    //
+    // Inert on every map without a drivesInCombat event, which is all of them bar
+    // Black Morass — the trigger resolves the flag before it fires.
+    inline constexpr float EventDueCombat         = 61.0f; // leader: wave-encounter event driver
     inline constexpr float PullManeuver           = 60.0f; // leader: drag the pack back to camp
     inline constexpr float StayAtCamp             = 60.0f; // follower: pin at camp (role peer of PullManeuver)
     // Survival: move OUT of an active-vacate hazard's pulse. The Arcatraz

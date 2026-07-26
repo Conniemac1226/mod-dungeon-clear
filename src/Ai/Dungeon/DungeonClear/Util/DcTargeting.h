@@ -6,6 +6,8 @@
 #ifndef _DC_TARGETING_H
 #define _DC_TARGETING_H
 
+#include <vector>
+
 #include "ObjectGuid.h"
 #include "MoveSplineInitArgs.h"
 #include "Position.h"
@@ -165,6 +167,21 @@ public:
     // while DC is off) — so whichever fires first clears the latch.
     static bool ResetCompletionLatchesForNewInstance(Player* bot, AiObjectContext* context);
 
+    // --- Pull-back bosses (BossPullbackRegistry) --------------------------
+
+    // True when the next anchor is a PULL-BACK boss, the tank has arrived at its
+    // hand-authored anchor, and the boss is alive on the map — i.e. the pull
+    // pipeline should now run the tag-and-drag that brings the boss to the party
+    // instead of the party walking to the boss.
+    //
+    // This is the single gate that lets a pull-back boss through the parts of the
+    // pull pipeline that normally stand bosses down: the trigger's pull-mode
+    // requirement (a pull-back is MANDATORY, so it runs even with the player's
+    // pull setting Off) and its at-boss stand-down (which otherwise hands the boss
+    // to the walk-in engage — for Ghaz'an, a swim into a 47yd pit). Cheap: a
+    // registry Find plus the already-memoised at-boss probe.
+    static bool IsPullbackBossDue(Player* bot, AiObjectContext* ctx);
+
     // --- Room-wide-aggro pre-clear (RoomAggroRegistry) --------------------
 
     // True when the next boss is a flagged room-aggro boss AND the tank is at
@@ -202,14 +219,20 @@ public:
     // The nearest reachable, attackable hostile within `radius` (2D) of the point
     // (px,py,pz) and within `zBand` vertically — or nullptr. Backs the ClearRadius
     // event step (a POINT-anchored room pre-clear, e.g. Sunken Temple's central
-    // circle before Jammal'an): position-based, NOT entry-based, so it clears
-    // whatever patrols the area regardless of entry. Excludes encounter and
-    // room-aggro bosses, the unreachable, and door-blocked units. Nearest-to-the-
-    // BOT so the tank works inward from where it stands. zBand keeps a multi-level
-    // chamber's balconies (above) and pit (below) out of a floor-level clear.
+    // circle before Jammal'an): position-based, so by default it clears whatever
+    // patrols the area regardless of entry. Excludes encounter and room-aggro
+    // bosses, the unreachable, and door-blocked units. Nearest-to-the-BOT so the
+    // tank works inward from where it stands. zBand keeps a multi-level chamber's
+    // balconies (above) and pit (below) out of a floor-level clear.
+    //
+    // `entryFilter`, when non-null AND non-empty, narrows the scan to those
+    // creature entries (EventStep::entryFilter) — for a volume that overlaps
+    // ambient wildlife the clear must not chase (Black Morass's rift waves in
+    // open swamp). Null/empty keeps the position-only behaviour.
     static Unit* NearestHostileNearPoint(Player* bot, AiObjectContext* ctx,
                                          float px, float py, float pz,
-                                         float radius, float zBand = 20.0f);
+                                         float radius, float zBand = 20.0f,
+                                         std::vector<uint32> const* entryFilter = nullptr);
 
 };
 

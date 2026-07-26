@@ -527,11 +527,15 @@ bool DcLeaderSignal::GetLeaderPullInfo(Player* bot, uint32& phaseOut, Position& 
     // from camp — and ReapStrandedPassives would strip their passive — while
     // the tank is still dragging the pack home. Once the phase resolves to
     // Engage/Idle the paused gate takes over and the run holds as usual.
+    DcPullContext const& pull = ctx->GetValue<DcPullContext&>(DcKey::PullContext)->Get();
+    // `bossPullback` substitutes for the pull-mode bool: a BossPullbackRegistry
+    // drag runs at any pull setting (see DungeonClearPullTrigger), and the party
+    // MUST hold at the anchor through it — that hold is what keeps everyone but
+    // the tank out of the water while the tank fetches the boss.
     if (!DcRun::Of(ctx).enabled ||
-        !ctx->GetValue<bool>(DcKey::PullMode)->Get())
+        (!ctx->GetValue<bool>(DcKey::PullMode)->Get() && !pull.bossPullback))
         return false;
 
-    DcPullContext const& pull = ctx->GetValue<DcPullContext&>(DcKey::PullContext)->Get();
     if (pull.phase == DcPullPhase::Idle)
         return false;
     if (!IsPullPhaseHolding(static_cast<uint32>(pull.phase)) &&
@@ -556,11 +560,12 @@ bool DcLeaderSignal::GetLeaderCampHold(Player* bot, Position& campOut, bool& pas
         return false;
 
     AiObjectContext* ctx = leaderAI->GetAiObjectContext();
+    DcPullContext const& pull = ctx->GetValue<DcPullContext&>(DcKey::PullContext)->Get();
+    // `bossPullback` substitutes for the pull-mode bool — see GetLeaderPullInfo.
     if (!DcRun::Of(ctx).enabled ||
-        !ctx->GetValue<bool>(DcKey::PullMode)->Get())
+        (!ctx->GetValue<bool>(DcKey::PullMode)->Get() && !pull.bossPullback))
         return false;
 
-    DcPullContext const& pull = ctx->GetValue<DcPullContext&>(DcKey::PullContext)->Get();
     // Honor `paused` only while NO maneuver phase is holding: a pause mid-drag
     // lets the drag finish (see DungeonClearPullManeuverTrigger), and the party
     // must stay pinned at camp until it resolves to Engage — releasing them

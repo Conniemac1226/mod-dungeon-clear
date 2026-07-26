@@ -22,8 +22,10 @@ class Player;
 // 5-bot party, instance, watchdog and record; the manager only launches jobs,
 // ticks them, routes the two observer callbacks to the right job by tank guid,
 // arbitrates the shared bot pool, and writes the one multi-run live-status file
-// the dashboard polls. Any number of runs execute at once (cap configurable via
-// DungeonClear.TestRun.MaxConcurrent, 0 = unlimited).
+// the dashboard polls. Any number of runs execute at once — uncapped by default
+// (DungeonClear.TestRun.MaxConcurrent, 0 = unlimited), so the real ceiling is
+// AiPlayerbot.MaxAddedBots and the addclass pool, both of which refuse an
+// over-budget start by name.
 //
 // Threading rules:
 //   * _runs is mutated ONLY on the world thread (Start push_back, Tick erase)

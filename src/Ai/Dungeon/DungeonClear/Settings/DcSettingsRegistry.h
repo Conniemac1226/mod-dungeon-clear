@@ -439,14 +439,19 @@ inline constexpr DcSettingDef kDcSettings[] =
     // Tick / DcTestPlanManager::TickPlan. A raw GetOption there floods the
     // console with "Config: Missing property ..." whenever the deployed conf
     // predates the key (thousands of lines per session). See DcSettings.h.
-    // MaxConcurrent / MaxPlans take 0 = unlimited, hence the 0 floor.
-    { "TestRun.MaxConcurrent",   DcType::UInt,      8,  0,     64, false },
-    { "TestRun.MaxPlans",        DcType::UInt,      2,  0,     32, false },
+    // MaxConcurrent / MaxPlans / Plan.MaxTotal all take 0 = unlimited, hence the
+    // 0 floor — and all three DEFAULT to 0. The harness deliberately imposes no
+    // ceiling of its own: how many runs the box can field is a property of the
+    // box (AiPlayerbot.MaxAddedBots, the addclass pool, CPU), and those limits
+    // already refuse an over-budget start with a named message. A second,
+    // harness-local cap only ever refused starts the machine could have served.
+    { "TestRun.MaxConcurrent",   DcType::UInt,      0,  0, 100000, false },
+    { "TestRun.MaxPlans",        DcType::UInt,      0,  0, 100000, false },
     { "TestRun.PauseGraceS",     DcType::UInt,     60,  0,   3600, false },
     { "TestRun.StallGraceS",     DcType::UInt,    120,  0,   3600, false },
     { "TestRun.NoProgressS",     DcType::UInt,    600,  0,  86400, false },
     { "TestRun.OverallTimeoutS", DcType::UInt,   3600, 60,  86400, false },
-    { "TestRun.Plan.MaxTotal",   DcType::UInt,    500,  1, 100000, false },
+    { "TestRun.Plan.MaxTotal",   DcType::UInt,      0,  0, 100000, false },
     { "TestRun.Plan.BackoffMs",  DcType::UInt,   5000,  0, 600000, false },
     { "TestRun.Plan.DriverWaitMs", DcType::UInt, 120000, 0, 600000, false },
 

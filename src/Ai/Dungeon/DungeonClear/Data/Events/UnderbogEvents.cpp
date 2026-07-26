@@ -59,8 +59,24 @@ void RegisterUnderbogRoster(std::vector<BossRosterPatch>& t)
     // --- The Underbog (map 546) ----------------------------------
     // The auto-roster derives all four bosses (Hungarfen 17770 / bit 0,
     // Ghaz'an 18105 / bit 1, Swamplord Musel'ek 17826 / bit 2, The Black
-    // Stalker 17882 / bit 3) from their static spawns, so no boss surgery
-    // is needed. But the path from Ghaz'an down to Swamplord crosses a
+    // Stalker 17882 / bit 3) from their static spawns.
+    //
+    // GHAZ'AN needs his ANCHOR relocated. His derived anchor is his spawn
+    // (193.68, -425.00, 43.54) — open water. Every navmesh column in that basin
+    // is a WATER surface sheet at z ~= 50.8 over a floor at z ~= 3.6, so an
+    // anchor there sends boss navigation SWIMMING: melee can't reach him,
+    // healers lose LOS, and his Tail Sweep (34267) knockback drops whoever it
+    // hits into a ~47yd pit. Re-anchor him on the dry upper-ring corridor at the
+    // top of the south-east descent ramp — the same coordinates as his
+    // BossPullbackRegistry row, which is what makes the party WALK there, hold,
+    // and fight him on solid ground after the tank drags him up.
+    //
+    // remove + re-add (rather than `reorder`) because only remove+add can carry
+    // hand-authored coordinates; completionFrom = his own entry keeps his real
+    // DungeonEncounter kill-bit (1), resolved off the base list before the
+    // removal takes effect (BossRosterRegistry::ApplyOne step 1).
+    //
+    // The path from Ghaz'an down to Swamplord additionally crosses a
     // navmesh BREAK — a tiered slope whose lower tiers sit on disconnected
     // mesh islands boss-nav can't route to.
     //
@@ -76,7 +92,12 @@ void RegisterUnderbogRoster(std::vector<BossRosterPatch>& t)
     {
         BossRosterPatch p;
         p.mapId = 546;
+        p.remove = { 18105 };
         p.add = {
+            // Ghaz'an, re-anchored onto dry ground (see the note above and
+            // BossPullbackRegistry). Keeps his own kill-bit via completionFrom.
+            MakeBoss(18105, 546, "Ghaz'an",
+                     154.16f, -452.03f, 72.29f, /*completionFrom*/ 18105),
             MakeObjective(OBJ(1), /*encounterIndex*/ 2, 546,
                           "Drop down past Ghaz'an",
                           274.72f, -462.60f, 81.37f,

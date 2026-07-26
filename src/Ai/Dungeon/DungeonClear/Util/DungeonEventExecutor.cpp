@@ -426,7 +426,8 @@ StepResult DungeonEventExecutor::RunStep(Player* bot, AiObjectContext* context,
             // "clear" while still travelling in.
             float const r = step.radius > 0.0f ? step.radius : 50.0f;
             Unit* u = DcTargeting::NearestHostileNearPoint(bot, context, step.x, step.y,
-                                                           step.z, r, step.zBand);
+                                                           step.z, r, step.zBand,
+                                                           &step.entryFilter);
             // Diagnostic: a ClearRadius that completes in ~0ms is "premature" —
             // it found no hostile because the tank evaluated it from too far
             // (arriveRadius too large for the design assumption that 'arrived'
@@ -1010,7 +1011,8 @@ EventDriveOutcome DungeonEventExecutor::Drive(Player* bot, AiObjectContext* cont
 
 DungeonEvent const* DungeonEventExecutor::FindDueConditionalEvent(Player* bot,
                                                                   AiObjectContext* context,
-                                                                  uint32 mapId)
+                                                                  uint32 mapId,
+                                                                  bool requireDrivesInCombat)
 {
     if (!bot || !context)
         return nullptr;
@@ -1027,6 +1029,12 @@ DungeonEvent const* DungeonEventExecutor::FindDueConditionalEvent(Player* bot,
 
     for (DungeonEvent const* ev : conditional)
     {
+        // The combat-engine copy of the rung only ever drives an opted-in event.
+        // Tested FIRST because this runs on every combat tick of every DC leader
+        // on every map: on a map with no wave event it rejects here, before any
+        // activation predicate is evaluated.
+        if (requireDrivesInCombat && !ev->drivesInCombat)
+            continue;
         // Already done this run — its synthetic latch key is set.
         if (cleared.count(ConditionalLatchKey(ev->id)))
             continue;

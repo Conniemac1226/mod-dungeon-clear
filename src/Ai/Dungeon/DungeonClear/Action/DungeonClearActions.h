@@ -439,6 +439,31 @@ public:
     {
     }
     bool Execute(Event event) override;
+
+protected:
+    DcRunEventAction(PlayerbotAI* botAI, std::string const& name, bool requireDrivesInCombat)
+        : DungeonClearEngageActionBase(botAI, name), _requireDrivesInCombat(requireDrivesInCombat)
+    {
+    }
+    // Passed to DungeonEventExecutor::FindDueConditionalEvent so the combat copy
+    // can only ever pick up an event that opted in (DungeonEvent::drivesInCombat).
+    bool _requireDrivesInCombat{false};
+};
+
+// COMBAT-engine sibling of DcRunEventAction: the same step driver, selected by
+// DungeonClearEventDueCombatTrigger and restricted to events flagged
+// DungeonEvent::drivesInCombat. Registered in DungeonClearCombatStrategy at
+// DcRel::EventDueCombat — above the stock combat movers, so a wave encounter's
+// driver can actually reposition the tank mid-fight (walk it to the next rift)
+// instead of being frozen out for the whole encounter. See
+// DungeonEvent::drivesInCombat for why the non-combat-only rung was not enough.
+class DcRunEventCombatAction : public DcRunEventAction
+{
+public:
+    DcRunEventCombatAction(PlayerbotAI* botAI)
+        : DcRunEventAction(botAI, "dungeon clear run event combat", /*requireDrivesInCombat*/ true)
+    {
+    }
 };
 
 // COMBAT-engine sibling of the objective KillCreature-engage driver. A stealthed

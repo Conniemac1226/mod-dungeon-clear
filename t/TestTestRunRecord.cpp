@@ -84,6 +84,46 @@ TEST(DcTestRunRecordTest, SerializesKnownFields)
     EXPECT_EQ(line.find('\n'), std::string::npos);
 }
 
+// ---- wipe post-mortem ------------------------------------------------------------
+
+TEST(DcTestRunRecordTest, WipeOnABossSerializesTheBoss)
+{
+    Record r = SampleRecord();
+    r.result = "wipe";
+    r.failReason = "party wiped on Ghaz'an (last standing: Botname)";
+    r.wipeOnBoss = true;
+    r.wipeOpponentEntry = 18105;
+    r.wipeOpponent = "Ghaz'an";
+
+    std::string const line = ToJsonl(r);
+    EXPECT_NE(line.find("\"wipeOnBoss\":true"), std::string::npos);
+    EXPECT_NE(line.find("\"wipeOpponentEntry\":18105"), std::string::npos);
+    EXPECT_NE(line.find("\"wipeOpponent\":\"Ghaz'an\""), std::string::npos);
+}
+
+TEST(DcTestRunRecordTest, WipeToTrashKeepsTheBossFlagFalse)
+{
+    Record r = SampleRecord();
+    r.result = "wipe";
+    r.wipeOnBoss = false;
+    r.wipeOpponentEntry = 17826;
+    r.wipeOpponent = "Bog Giant";
+
+    std::string const line = ToJsonl(r);
+    EXPECT_NE(line.find("\"wipeOnBoss\":false"), std::string::npos);
+    EXPECT_NE(line.find("\"wipeOpponent\":\"Bog Giant\""), std::string::npos);
+}
+
+TEST(DcTestRunRecordTest, WipeFieldsAreAlwaysPresentAndDefaultEmpty)
+{
+    // The dashboard reads them unconditionally; a run nobody died in must still
+    // carry the keys, empty.
+    std::string const line = ToJsonl(SampleRecord());
+    EXPECT_NE(line.find("\"wipeOnBoss\":false"), std::string::npos);
+    EXPECT_NE(line.find("\"wipeOpponentEntry\":0"), std::string::npos);
+    EXPECT_NE(line.find("\"wipeOpponent\":\"\""), std::string::npos);
+}
+
 TEST(DcTestRunRecordTest, HeroicSerializesTrue)
 {
     Record r = SampleRecord();

@@ -18,6 +18,7 @@
 #include "TestRun/DcTestRunLiveJson.h"
 #include "TestRun/DcTestRunRecord.h"
 #include "TestRun/DcTestRunVerdict.h"
+#include "TestRun/DcWipeContext.h"
 
 class Player;
 
@@ -134,6 +135,8 @@ private:
     void TickTeleporting();
     void TickStarting();
     void TickMonitoring(uint32 dt);
+    void TrackEngagement(Player* tank);
+    static bool AnyMemberDead(Player* tank);
 
     void FailSetup(std::string const& why);
     void Finish(DcTestRun::Verdict verdict, std::string const& failReason);
@@ -194,6 +197,11 @@ private:
     // Who was still standing the tick before the wipe latched — the last dead
     // member's name is the one worth naming in the fail reason.
     std::string _lastAliveMember;
+
+    // What the party is fighting, latched so a wipe can be attributed to it.
+    // TrackEngagement gathers the sample off live players; the fold rule
+    // (including "a wipe never clears the latch") is DcTestRun::UpdateEngagement.
+    DcTestRun::Engagement _engaged;
     bool _wasPaused = false;
 
     // --- observer-written (any thread) --------------------------------------

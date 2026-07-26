@@ -6,6 +6,9 @@
 #include "Ai/Dungeon/DungeonClear/Data/Events/DungeonEventTables.h"
 #include "Ai/Dungeon/DungeonClear/Data/Events/DungeonRosterBuilders.h"
 
+#include "Creature.h"
+#include "Player.h"
+
 // --- The Shattered Halls (map 540) — drop past the door, before the first boss -
 //
 // On the way to the first boss, Grand Warlock Nethekurse (16807, bit 0), the
@@ -113,8 +116,48 @@
 // script enum: Nethekurse 0, O'mrogg 1, Kargath 2, Porung 3 — the heroic-only
 // Porung takes the top bit, NOT Kargath.) The sweep stays east of x=293, clear of
 // Kargath's 42yd room (kargathRespawnPos 231,-83), so it can't wake him.
+// --- The Shattered Halls (map 540) — wake Grand Warlock Nethekurse ------------
+//
+// Nethekurse (16807, at 172.66/289.61/-8.11) spawns SetImmuneToAll: his AI's
+// Reset() re-immunes him whenever `_canAggro` is false (boss_nethekurse.cpp),
+// and the ONLY things that flip it are ACTION_START_INTRO fired from
+//   (a) area trigger 4347 (at_rp_nethekurse) — which exists only as a
+//       CMSG_AREATRIGGER handler, a packet a bot never sends (same class as the
+//       BRD Ring of Law and ZulFarrak Zum'rah bugs), or
+//   (b) his own UpdateAI door-watch: chamber door 182539 read at GoState ACTIVE
+//       — i.e. LOCKPICKED open, since as a DOOR_TYPE_PASSAGE it otherwise only
+//       opens on the boss's own state change.
+// Our route teleports past that door's navmesh break (event 1) without ever
+// touching it, so in a full-bot run neither path fires: the tank walks into the
+// chamber and parks against a permanently immune, passive boss. A human in the
+// party fixes it by accident (their client fires AT 4347 on the way in), which
+// is why this only deadlocks `dc test` / all-bot runs.
+//
+// Fix = the Zum'rah pattern verbatim: a Conditional + Repeatable event whose
+// predicate reads the exact deadlock signature — Nethekurse alive, within 60yd,
+// and still IsImmuneToPC (the very flag ACTION_START_INTRO clears) — and whose
+// Custom hook (id 9, StartNethekurseIntro) calls DoAction(ACTION_START_INTRO)
+// on his AI: precisely what the area-trigger script does, reusing its own
+// `_introStarted` idempotence guard. Once immunity drops the predicate reads
+// false forever (fight, RP, or DONE all clear it), so the repeat can never
+// spin; Repeatable covers a full despawn/respawn, which reconstructs the AI
+// with `_canAggro = false` and re-arms the deadlock. Firing the intro is
+// enough on its own: the RP runs, and either he finishes killing his four
+// peons and AttackStarts the nearest player himself, or the tank engages him
+// first and JustEngagedWith cancels the RP — both end in a normal fight.
 namespace
 {
+    // --- wake Nethekurse (first boss immune until his client-only intro) ---
+    constexpr uint32 SH_NETHEKURSE = 16807;             // Grand Warlock Nethekurse
+    // Comfortably beyond boss engage range so the event fires as soon as
+    // boss-nav parks the tank at him, before the engage loop settles into its
+    // deadlock — but near enough that it can never fire from across the dungeon
+    // (mirrors ZF_ZUMRAH_SCAN).
+    constexpr float SH_NETHEKURSE_SCAN = 60.0f;
+    constexpr uint32 SH_HOOK_START_NETHEKURSE_INTRO = 9;  // ObjectiveHookRegistry id
+
+    bool ShNethekurseDormant(Player* bot, AiObjectContext* context);
+
     // Corridor axis is y~314, z~2, x increasing east.
     constexpr float SH_ENTRY_X = 300.0f, SH_ENTRY_Y = 314.0f, SH_ENTRY_Z = 2.0f;
     // Near cluster (3 zealots + the Scout) sits at x332..341 and charges the tank;
@@ -227,6 +270,41 @@ void RegisterShatteredHallsEvents(std::vector<DungeonEvent>& out)
                                 SH_SENTINEL_SEEK_RADIUS)
                 .Timeout(SH_SENTINEL_TIMEOUT)
             .Build());
+
+    // Wake Nethekurse: fire his client-only intro once the party reaches him, so
+    // he drops SetImmuneToAll and fights an all-bot party the same way he fights
+    // a human whose client tripped area trigger 4347 on the walk in. Folded
+    // under Nethekurse in the panel — it is his pull, not a step of its own.
+    out.push_back(EventBuilder(540, 5, "Wake Grand Warlock Nethekurse")
+                      .Conditional(&ShNethekurseDormant)
+                      .Repeatable()
+                      .PanelBeforeBoss(SH_NETHEKURSE)
+                      .Custom(SH_HOOK_START_NETHEKURSE_INTRO)
+                      .Build());
+}
+
+// --- the wake-up gate (event 5, repeatable) ------------------------------
+// DUE while Nethekurse is alive, within scan range, and still carrying the
+// spawn-time PC-immunity his intro clears. Reads false the instant
+// ACTION_START_INTRO lands (hook 9, a human's area trigger, or a lockpicked
+// door — SetImmuneToAll(false) is synchronous inside all of them) and once he
+// is dead or out of range, so the repeat can never spin: the only state that
+// keeps it true is the exact deadlock it fixes.
+//
+// Tests IsImmuneToPC DIRECTLY rather than asking IsValidAttackTarget — the
+// same lesson as ZfZumrahAsleep: read the one value the whole bug is about,
+// which is also the value the hook's DoAction writes.
+namespace
+{
+    bool ShNethekurseDormant(Player* bot, AiObjectContext* /*context*/)
+    {
+        Creature* nethekurse = bot->FindNearestCreature(SH_NETHEKURSE, SH_NETHEKURSE_SCAN);
+        if (!nethekurse || !nethekurse->IsAlive())
+            return false;
+
+        // Still immune-to-PC => nobody has started his intro.
+        return nethekurse->IsImmuneToPC();
+    }
 }
 
 // --- roster patch --------------------------------------------------------

@@ -33,6 +33,7 @@
 #include "ServerFacade.h"
 #include "SharedDefines.h"
 #include "Ai/Dungeon/DungeonClear/DcApproachState.h"
+#include "Ai/Dungeon/DungeonClear/Data/BossPullbackRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Data/DcEventDoorRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearApproach.h"
@@ -1510,7 +1511,19 @@ bool DungeonClearAdvanceAction::Execute(Event /*event*/)
     // the boss actually is instead of parking at the spawn anchor. Falls back to
     // the static coords when the creature isn't loaded (far grid not streamed in
     // yet — see DC_BOSS_GRID_LOADED_RANGE).
-    Creature* const liveBoss = DcTargeting::GetLiveBoss(bot, context, next->entry);
+    //
+    // EXCEPTION — a PULL-BACK boss (BossPullbackRegistry). There the whole point
+    // is that the boss's live position is somewhere the party must never walk:
+    // Ghaz'an swims in the Underbog lake, ~150yd of path from his anchor and over
+    // a 47yd pit. Routing at him would march the party into the water, which is
+    // the wipe this exists to stop. Navigate to the hand-authored ANCHOR instead,
+    // and suppress the live-boss handle entirely so direct pursuit (FillPursuitObs
+    // / DoPursue, which bee-lines at the creature's current position) can never
+    // arm. Fetching the boss is the engage action's job, not the route's.
+    bool const pullback =
+        BossPullbackRegistry::Find(bot->GetMapId(), next->entry) != nullptr;
+    Creature* const liveBoss =
+        pullback ? nullptr : DcTargeting::GetLiveBoss(bot, context, next->entry);
     float const bossX = liveBoss ? liveBoss->GetPositionX() : next->x;
     float const bossY = liveBoss ? liveBoss->GetPositionY() : next->y;
     float const bossZ = liveBoss ? liveBoss->GetPositionZ() : next->z;

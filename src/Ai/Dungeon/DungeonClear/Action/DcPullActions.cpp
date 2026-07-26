@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "Creature.h"
+#include "CreatureAI.h"
 #include "DBCStores.h"
 #include "GameObject.h"
 #include "Group.h"
@@ -32,6 +33,7 @@
 #include "ServerFacade.h"
 #include "SharedDefines.h"
 #include "Ai/Dungeon/DungeonClear/DcApproachState.h"
+#include "Ai/Dungeon/DungeonClear/Data/BossPullbackRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Data/DcEventDoorRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearApproach.h"
@@ -45,6 +47,7 @@
 #include "Ai/Dungeon/DungeonClear/Util/ChunkedPathfinder.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcDoorPolicy.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcMovement.h"
+#include "Ai/Dungeon/DungeonClear/Util/NavmeshSnap.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcPathWorker.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTargeting.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTickMemo.h"
@@ -100,6 +103,187 @@ namespace
     // Per-leg watchdog (tag / return) — abort a leg that makes no progress so a
     // navmesh wedge can never freeze the pull.
     constexpr uint32 DC_PULL_LEG_TIMEOUT_MS = 10000;
+    // Per-leg watchdog for a PULL-BACK boss drag. The flat 10s above is sized to a
+    // trash pull, whose legs are a few yards — the tank commits just outside the
+    // pack's aggro. A BossPullbackRegistry drag is a different scale: Ghaz'an's
+    // anchor is ~150yd of PATH from him (~54yd straight-line), most of it swum out
+    // and then run back up a ramp, so a flat 10s would declare the tag leg wedged
+    // before the tank had even reached the water.
+    //
+    // Budget = straight-line leg * kPathDetourFactor (the anchor-to-boss route is
+    // ~2.7x its straight line here; 2.5 is the conservative round number) at
+    // kDragYardsPerSec, plus the flat timeout as slack. Deliberately still BOUNDED:
+    // a genuinely wedged drag must fall out to "fight in place" rather than freeze
+    // the run, which is why this is not simply disabled for a pull-back.
+    constexpr float DC_PULLBACK_PATH_DETOUR = 2.5f;
+    constexpr float DC_PULLBACK_YARDS_PER_SEC = 4.0f;   // pessimistic: swimming + snares
+    uint32 DcPullLegTimeoutMs(DcPullContext const& pull, float legDist)
+    {
+        if (!pull.bossPullback)
+            return DC_PULL_LEG_TIMEOUT_MS;
+        float const travel = std::max(0.0f, legDist) * DC_PULLBACK_PATH_DETOUR;
+        uint32 const budget =
+            static_cast<uint32>((travel / DC_PULLBACK_YARDS_PER_SEC) * 1000.0f) +
+            DC_PULL_LEG_TIMEOUT_MS;
+        return std::max(DC_PULL_LEG_TIMEOUT_MS, budget);
+    }
+
+    // Put the tank on a boss's threat list — ONE DIRECTION ONLY: the boss attacks
+    // the tank, never the tank attacks the boss.
+    //
+    // That asymmetry is the whole point and it is load-bearing. The obvious-looking
+    // other half — bot->Attack(boss) + ChangeEngine(BOT_STATE_COMBAT), which is what
+    // EngageDirect and the Black Morass driver do — gives the TANK a victim, and
+    // stock combat's MoveChase then drives it AT the boss. For Ghaz'an that means
+    // straight into the lake, with the party following. This is not theoretical: it
+    // is exactly what an earlier version of this did.
+    //
+    // So we only ever ask the CREATURE to come to US. Aggro alone flags the tank
+    // into combat, which is all the maneuver needs — the drag-back leg then owns the
+    // tank's movement at MOVEMENT_COMBAT priority and runs it home to the camp,
+    // outranking any chase stock combat may later decide on.
+    //
+    // PER-ENCOUNTER OPT-IN. The caller only reaches this when the boss's own
+    // registry row carries a positive forceAggroRange, which today is exactly one
+    // row. Forcing bypasses the boss's aggro logic — normal, tuned behaviour that
+    // should be left alone almost everywhere — so it is reserved for a boss that
+    // cannot be tagged the ordinary way at all. See BossPullback::forceAggroRange.
+    //
+    // Ghaz'an is that boss. His script walks him a waypoint lap and parks him on a
+    // platform which — along with the pipe leading to it — is MISSING from the
+    // extracted navmesh, and he does not reliably finish the lap, so he is often
+    // still out in the water when the party is ready. Either way there is no
+    // reachable spot inside his aggro bubble: natural aggro can never fire, and the
+    // tag leg could only burn its watchdog holding for it before the run stalled.
+    //
+    // Idempotent: no-ops once he is already in combat. Returns true when the boss
+    // is (now) engaged on us.
+    bool DcForceBossAggroOnTank(Player* bot, Creature* boss)
+    {
+        if (!bot || !boss || !boss->IsAlive())
+            return false;
+
+        if (!boss->IsInCombat())
+        {
+            // He may be sitting in the reset/home idle after his waypoint lap;
+            // clear it first or the AI settles straight back into it.
+            if (boss->IsInEvadeMode())
+                boss->ClearUnitState(UNIT_STATE_EVADE);
+            // Adds forced threat on the tank (or SetInCombatWith for a threat-less
+            // unit) — this is the "get added to his aggro list" half.
+            boss->EngageWithTarget(bot);
+            // ...and this makes his AI actually pick the tank up and come, rather
+            // than merely holding threat while standing still.
+            if (boss->AI())
+                boss->AI()->AttackStart(bot);
+        }
+
+        // Face him so the tank looks like it pulled rather than spinning on the
+        // spot, but deliberately NO SetSelection / Attack / engine flip: see above.
+        if (!bot->HasInArc(CAST_ANGLE_IN_FRONT, boss))
+            ServerFacade::instance().SetFacingTo(bot, boss);
+
+        return boss->IsInCombat();
+    }
+
+    // The furthest point along the route toward `boss` that the tank can stand on
+    // WITHOUT being in the water — "as close as it can get without getting wet".
+    //
+    // Derived from the real navmesh route rather than a straight line, because the
+    // straight line from the anchor to Ghaz'an cuts through rock: the route runs
+    // along the upper ring, down the south-east ramp, and only then meets the
+    // water. Walking the route and stopping at the first wet sample lands the tank
+    // on the actual shoreline whatever shape it is, and needs no second
+    // hand-authored coordinate to maintain.
+    //
+    // The route is DENSIFIED before testing. PathGenerator returns string-pulled
+    // CORNER points, so a single leg can run for tens of yards and dip through
+    // water with both of its endpoints dry — testing only the vertices would walk
+    // the tank straight through the lake. Sampled every DC_DRY_STANDOFF_STEP yards.
+    //
+    // Returns nullopt when the route is unusable, or when even the tank's current
+    // position is wet (nothing to aim at — the caller keeps what it has). When the
+    // whole route is dry it returns the far end, i.e. the boss himself, which is
+    // the correct answer for a boss standing on reachable ground.
+    constexpr float DC_DRY_STANDOFF_STEP = 3.0f;
+    // How far BACK from the water's edge the stand-off is placed. The last dry
+    // sample is, by definition, the last spot that is still dry — standing exactly
+    // there leaves no room for error, and the tank was observed ending up in the
+    // water anyway: the arrival tolerance (DC_PULL_CAMP_ARRIVE) is satisfied
+    // anywhere within 5yd of the target, including 5yd PAST it, and a
+    // MOVEMENT_COMBAT glide can carry a little further still. Backing the aim point
+    // off by more than that tolerance makes the overshoot land on dry ground
+    // instead of in the lake. Costs a couple of yards of pull range and nothing
+    // else — the force-aggro reaches far past this either way.
+    constexpr float DC_DRY_STANDOFF_BACKOFF = 8.0f;
+
+    std::optional<Position> DcDryStandoffToward(Player* bot, Unit* boss)
+    {
+        if (!bot || !boss)
+            return std::nullopt;
+        Map* const map = bot->GetMap();
+        if (!map)
+            return std::nullopt;
+
+        PathGenerator gen(bot);
+        gen.CalculatePath(boss->GetPositionX(), boss->GetPositionY(),
+                          boss->GetPositionZ(), /*forceDest*/ false);
+        Movement::PointsArray const& path = gen.GetPath();
+        if (path.size() < 2)
+            return std::nullopt;
+
+        uint32 const phase = bot->GetPhaseMask();
+        float const collision = bot->GetCollisionHeight();
+
+        // Every dry sample, in route order, so the back-off below can step back
+        // along the ROUTE rather than in a straight line — the shoreline here is at
+        // the foot of a ramp, and a straight-line back-off would aim into the ramp
+        // wall instead of up it.
+        std::vector<Position> dry;
+        bool hitWater = false;
+        for (std::size_t i = 1; i < path.size() && !hitWater; ++i)
+        {
+            G3D::Vector3 const& a = path[i - 1];
+            G3D::Vector3 const& b = path[i];
+            float const legLen = (b - a).length();
+            uint32 const steps =
+                std::max(1u, static_cast<uint32>(std::ceil(legLen / DC_DRY_STANDOFF_STEP)));
+            for (uint32 s = 1; s <= steps; ++s)
+            {
+                float const t = static_cast<float>(s) / static_cast<float>(steps);
+                float const x = a.x + (b.x - a.x) * t;
+                float const y = a.y + (b.y - a.y) * t;
+                float const z = a.z + (b.z - a.z) * t;
+                if (map->IsInWater(phase, x, y, z, collision))
+                {
+                    hitWater = true;    // first wet sample — the route ends here
+                    break;
+                }
+                dry.push_back(Position(x, y, z));
+            }
+        }
+
+        if (dry.empty())
+            return std::nullopt;
+
+        // Whole route dry (the boss is on ground we can walk to): aim at the far
+        // end, i.e. him. No back-off — there is no water to keep clear of.
+        if (!hitWater)
+            return dry.back();
+
+        // Water ahead: walk back from the edge along the samples we just took until
+        // we have DC_DRY_STANDOFF_BACKOFF yards of margin. If the dry stretch is
+        // shorter than the back-off, the very first dry sample is the best we have.
+        float back = 0.0f;
+        for (std::size_t i = dry.size(); i-- > 1;)
+        {
+            back += dry[i].GetExactDist(&dry[i - 1]);
+            if (back >= DC_DRY_STANDOFF_BACKOFF)
+                return dry[i - 1];
+        }
+        return dry.front();
+    }
+
     // Consecutive fizzled pulls of the SAME pack (Engage cleanup found the pull
     // target alive and idle — the drag never delivered it) before the pack is
     // handed to the normal walk-in engage via abortTarget. Casters and planted
@@ -115,6 +299,21 @@ namespace
     constexpr uint32 DC_PULL_PARTY_SET_TIMEOUT_MS = 8000;
     // How close to camp the tank must get on the return before releasing.
     constexpr float DC_PULL_CAMP_ARRIVE = 5.0f;
+    // ...and, for a PULL-BACK only, how close the BOSS must also be before the
+    // party is released. The tank gets home long before a boss it pulled from the
+    // water's edge, and releasing on tank-arrival alone sent the whole party
+    // sprinting at the inbound boss (into the lake). Sized a little over melee
+    // range plus the camp slot spread, so the release lands as he closes on the
+    // anchor rather than after he is already swinging.
+    constexpr float DC_PULLBACK_RELEASE_RANGE = 18.0f;
+    // Where a summoned pull-back boss lands, measured out from the anchor toward
+    // the tank. Far enough that he does not materialise inside the party (a
+    // knockback or cleave landing on everyone at once), close enough to be inside
+    // the release range so the fight starts the same tick.
+    constexpr float DC_PULLBACK_SUMMON_OFFSET = 6.0f;
+    static_assert(DC_PULLBACK_SUMMON_OFFSET < DC_PULLBACK_RELEASE_RANGE,
+                  "a summoned boss must land inside the release range, else the "
+                  "party is held at camp with the boss already on top of them");
     // "Party is set" tolerance for the Forming gate. A touch wider than the hold
     // radius so a follower parked at the boundary reliably counts as set instead
     // of flickering in/out and never letting the tank tag.
@@ -201,6 +400,37 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
                 DC_PULL_TRACE("[DC:{}] pull idle: no pull target -> yield to advance",
                               bot->GetName());
                 return false;
+            }
+
+            // PULL-BACK boss (BossPullbackRegistry). Two things differ from a
+            // trash pull and both are structural, not tuning:
+            //
+            //  * The camp is the hand-authored ANCHOR, never ComputeSafeCamp's
+            //    trail-derived point. The anchor was chosen because it is the
+            //    nearest ground the party can survive on; a trail camp would be
+            //    "PullSetback yards back from wherever the tank is", which is not
+            //    the same place and carries no such guarantee.
+            //  * There is no glide-closer-to-commit phase. The tank is ALREADY on
+            //    the anchor — arriving there is what armed this pull — and Advance
+            //    deliberately routes to the anchor and never at the boss, so
+            //    yielding to it would just stand still forever. Commit now; the
+            //    Advancing leg is what covers the (long) distance out to the boss.
+            if (BossPullback const* pb =
+                    BossPullbackRegistry::Find(bot->GetMapId(), trash->GetEntry()))
+            {
+                pull.PublishCamp(Position(pb->campX, pb->campY, pb->campZ), now);
+                pull.bossPullback = true;
+                pull.losPull = false;   // not an LOS-break pull; distinct suppression
+                pull.pullTarget = trash->GetGUID();
+                DcMovement::StopBot(bot, DcMovement::Stop::Hold);
+                DcFaceIfNeeded(bot, trash);
+                DcSetPullPhase(context, DcPullPhase::Forming);
+                DC_PULL_INFO("[DC:{}] pull-back plan: boss {} at {:.1f}yd | anchor "
+                             "({:.1f},{:.1f},{:.1f}) -> forming, waiting for party to "
+                             "set on safe ground",
+                             bot->GetName(), trash->GetGUID().ToString(),
+                             bot->GetExactDist(trash), pb->campX, pb->campY, pb->campZ);
+                return true;
             }
 
             // Patrol-wait hold (decision == 3): the governor has the pull held at
@@ -407,7 +637,9 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
                 return false;
             }
 
-            if ((now - since) > DC_PULL_LEG_TIMEOUT_MS)
+            // Tag-leg budget: the camp-to-target span, so a pull-back's long haul
+            // out to the boss gets a proportionate watchdog (see DcPullLegTimeoutMs).
+            if ((now - since) > DcPullLegTimeoutMs(pull, camp.GetExactDist(trash)))
             {
                 // Stalled without aggro (e.g. the tag resisted and we never closed).
                 // Hand this pack to the normal walk-in engage so the run never hangs.
@@ -417,6 +649,119 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
                              "{:.1f}yd) -> normal engage", bot->GetName(),
                              trash->GetGUID().ToString(), bot->GetExactDist(trash));
                 return false;
+            }
+
+            // FORCE-AGGRO — per-encounter opt-in, keyed off the boss's own registry
+            // row (BossPullback::forceAggroRange > 0), NOT off "this is a pull-back
+            // pull". A pull-back boss whose row leaves the field at its 0 default
+            // falls straight through to the ordinary tag machinery below, exactly
+            // like every other boss in every other dungeon. Today one row opts in.
+            //
+            // Everything below this point — the ranged tag, the creep to the aggro
+            // edge, the hold-for-aggro dwell — assumes the target will notice a tank
+            // standing in its bubble. Ghaz'an is the boss that breaks the
+            // assumption outright: his platform and its pipe are missing from the
+            // navmesh, and he is often still in the water when the party is set, so
+            // there is no reachable spot inside his aggro range at all. The tag leg
+            // could only burn its watchdog before the run stalled — the reported
+            // "tank waits for him until he times out".
+            //
+            // The shape is: walk out to the water's edge, get on his threat list
+            // from there, run home. Three deliberate properties:
+            //
+            //  * The tank stops at the last DRY point on the route
+            //    (DcDryStandoffToward). It goes as close as it can and no closer —
+            //    it must never wade in, because the party ends up wherever the tank
+            //    takes the fight.
+            //  * The aggro is ONE-DIRECTIONAL (DcForceBossAggroOnTank): he attacks
+            //    the tank, the tank never attacks him. Giving the tank a victim here
+            //    hands it to stock MoveChase, which walks it into the lake with the
+            //    party in tow — the observed failure.
+            //  * The run home is issued on the SAME tick as the aggro, at
+            //    MOVEMENT_COMBAT priority, so the retreat is already in flight
+            //    before he arrives and does not wait on the engine flip.
+            BossPullback const* const forceRow =
+                pull.bossPullback
+                    ? BossPullbackRegistry::Find(bot->GetMapId(), trash->GetEntry())
+                    : nullptr;
+            if (forceRow && forceRow->forceAggroRange > 0.0f)
+            {
+                float const toBoss = bot->GetExactDist(trash);
+                if (toBoss > forceRow->forceAggroRange)
+                {
+                    // Out of range entirely — fall through to the walk-in below and
+                    // force on a later tick.
+                    DC_PULL_TRACE("[DC:{}] pull-back: boss at {:.1f}yd > force range "
+                                  "{:.0f} -> closing first", bot->GetName(), toBoss,
+                                  forceRow->forceAggroRange);
+                }
+                else
+                {
+                    // Walk out to the shoreline first, if there is still dry ground
+                    // between us and him. `standoff` is the far end of the dry part
+                    // of the route (less a back-off margin), so when he is on
+                    // reachable ground it simply resolves to him and this
+                    // degenerates to a normal walk-in.
+                    //
+                    // ALREADY WET is checked first and is a hard stop, not a
+                    // preference. The stand-off aim point is only ever an aim point:
+                    // a glide can overshoot it, the shoreline can move as the boss
+                    // does, and the route can change under us. If any of that has
+                    // already put the tank in the water then walking further is the
+                    // exact failure this branch exists to avoid — pull from where we
+                    // stand and get out. (Deliberately no retreat-then-pull dance:
+                    // the aggro reaches from here, and the retreat is the very next
+                    // thing that happens anyway.)
+                    std::optional<Position> const standoff =
+                        bot->IsInWater() ? std::nullopt : DcDryStandoffToward(bot, trash);
+                    if (bot->IsInWater())
+                    {
+                        DC_PULL_DEBUG("[DC:{}] pull-back: tank is in the water at the "
+                                      "approach — pulling from here rather than "
+                                      "wading further", bot->GetName());
+                    }
+                    if (standoff.has_value() &&
+                        bot->GetExactDist(&*standoff) > DC_PULL_CAMP_ARRIVE)
+                    {
+                        DC_PULL_TRACE("[DC:{}] pull-back: walking to the dry stand-off "
+                                      "({:.1f},{:.1f},{:.1f}), {:.1f}yd off, before "
+                                      "pulling", bot->GetName(),
+                                      standoff->GetPositionX(), standoff->GetPositionY(),
+                                      standoff->GetPositionZ(),
+                                      bot->GetExactDist(&*standoff));
+                        DcMoveTo(bot->GetMapId(), standoff->GetPositionX(),
+                                 standoff->GetPositionY(), standoff->GetPositionZ(),
+                                 /*idle*/ false, /*react*/ false, /*normal_only*/ false,
+                                 /*exact_waypoint*/ false,
+                                 MovementPriority::MOVEMENT_COMBAT);
+                        return true;
+                    }
+
+                    // At the water's edge (or already as close as the route allows):
+                    // put ourselves on his threat list and immediately head home.
+                    Creature* const bossCreature = trash->ToCreature();
+                    if (bossCreature && DcForceBossAggroOnTank(bot, bossCreature))
+                    {
+                        pull.tagTarget = trash->GetGUID();
+                        // Stamp the return leg here rather than waiting for the
+                        // maneuver's first combat tick, so the turn-and-plant /
+                        // watchdog arithmetic measures the real leg and the retreat
+                        // starts THIS tick.
+                        pull.returnLegStartDist = bot->GetExactDist(&camp);
+                        pull.plantTicks = 0;
+                        DcSetPullPhase(context, DcPullPhase::Returning);
+                        DC_PULL_INFO("[DC:{}] pull-back: on {}'s threat list from the "
+                                     "dry stand-off ({:.1f}yd out) -> running home to "
+                                     "the anchor, {:.1f}yd", bot->GetName(),
+                                     trash->GetGUID().ToString(), toBoss,
+                                     pull.returnLegStartDist);
+                        DcMoveTo(bot->GetMapId(), camp.GetPositionX(), camp.GetPositionY(),
+                                 camp.GetPositionZ(), /*idle*/ false, /*react*/ false,
+                                 /*normal_only*/ false, /*exact_waypoint*/ false,
+                                 MovementPriority::MOVEMENT_COMBAT);
+                        return true;
+                    }
+                }
             }
 
             // Prefer a RANGED tag: pull from spell range so the tank tags and the
@@ -517,10 +862,38 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
                     // Pack too high-level to ever notice us on its own: force the tag
                     // with a melee swing so combat starts and the maneuver drag-back
                     // (combat engine) takes over.
+                    //
+                    // The last two lines are what actually make that sentence true,
+                    // and this site was missing both — unlike its two siblings below
+                    // (the CC-abort engage and the pack-gathered plant), which carry
+                    // the full pattern. Engine transitions in mod-playerbots are
+                    // ACTION-DRIVEN, not derived from bot->IsInCombat(): UpdateAI only
+                    // auto-switches to/from BOT_STATE_DEAD, and stock reaches the
+                    // combat engine solely through AttackAction / PullActions calling
+                    // ChangeEngine. Player::Attack alone just hands the bot a victim
+                    // and lets the CORE swing it — no AI involvement — so without the
+                    // flip the tank stays on the NON-combat engine, where no class
+                    // rotation exists to run and DungeonClearPullManeuverTrigger (a
+                    // COMBAT-engine trigger) can never fire. The tank would white-hit
+                    // the pack in place with no abilities and no drag-back, which is
+                    // exactly the "forced attack, but never a real rotation" shape.
+                    //
+                    // CurrentTarget matters just as much: flipping in with no current
+                    // target lets the stock "drop target" action (relevance 99) read
+                    // the target as invalid and bounce the bot straight back out — the
+                    // 1-tick engine ping-pong DungeonClearMultiplier documents, whose
+                    // suppressor is scoped to assisting FOLLOWERS and so does not
+                    // cover the leader tank here.
+                    //
+                    // Narrow by construction: forceTag only when the pack's aggro
+                    // range is at or below melee reach, and the branch is gated on
+                    // !IsInCombat(), so it fires at most once per pull.
                     bot->SetSelection(trash->GetGUID());
                     if (!bot->HasInArc(CAST_ANGLE_IN_FRONT, trash))
                         ServerFacade::instance().SetFacingTo(bot, trash);
+                    context->GetValue<Unit*>(DcKey::Stock::CurrentTarget)->Set(trash);
                     bot->Attack(trash, true);
+                    botAI->ChangeEngine(BOT_STATE_COMBAT);
                     DC_PULL_TRACE("[DC:{}] pull advancing: force body-tag ({:.1f}yd)",
                                   bot->GetName(), toTag);
                     return true;
@@ -564,12 +937,41 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
         }
 
         case DcPullPhase::Returning:
+        {
             // Reached here only out of combat (the maneuver runs in combat): the
             // pack leashed / evaded mid-return. Release the party and reset.
+            //
+            // A PULL-BACK retreat is the one case where "the tank is out of combat"
+            // does NOT mean that. Its Returning leg is entered by the tag branch on
+            // the same tick it puts the tank on the boss's threat list, and the
+            // tank's own combat flag can lag that by a tick — and the boss is a long
+            // way off, so nothing is hitting the tank yet either. Releasing the
+            // party on that tick would dump them out of the camp hold and send them
+            // at an inbound boss, which is the beeline this whole maneuver exists to
+            // stop. Keep running home while the BOSS is still engaged; only fall
+            // through to the release once he has genuinely dropped combat (a real
+            // evade), and let the leg watchdog bound it either way.
+            if (pull.bossPullback)
+            {
+                Unit* const pulled = pull.pullTarget.IsEmpty()
+                    ? nullptr : ObjectAccessor::GetUnit(*bot, pull.pullTarget);
+                if (pulled && pulled->IsAlive() && pulled->IsInCombat())
+                {
+                    DcMoveTo(bot->GetMapId(), camp.GetPositionX(), camp.GetPositionY(),
+                             camp.GetPositionZ(), /*idle*/ false, /*react*/ false,
+                             /*normal_only*/ false, /*exact_waypoint*/ false,
+                             MovementPriority::MOVEMENT_COMBAT);
+                    DC_PULL_TRACE("[DC:{}] pull-back: retreating to the anchor "
+                                  "({:.1f}yd) — boss engaged, combat flag not on us "
+                                  "yet", bot->GetName(), bot->GetExactDist(&camp));
+                    return true;
+                }
+            }
             DcSetPullPhase(context, DcPullPhase::Engage);
             DC_PULL_INFO("[DC:{}] advanced-pull: out of combat mid-return (pack "
                          "leashed/evaded) -> release party", bot->GetName());
             return false;
+        }
 
         case DcPullPhase::Engage:
         default:
@@ -624,6 +1026,15 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
             else
                 pull.fizzleTarget = ObjectGuid::Empty;  // count cleared by the kernel
             pull.pullTarget = ObjectGuid::Empty;
+
+            // End the pull-back session with the maneuver that opened it. The flag
+            // is otherwise cleared only by Reset() — which runs on run teardown, not
+            // between pulls — so leaving it set here would keep the WHOLE pull
+            // pipeline force-enabled for the rest of the run: every later pack would
+            // be camp-pulled even with the player's pull setting Off, and the party
+            // would stay camp-held at Ghaz'an's dead anchor. Per-pull flag, per-pull
+            // lifetime.
+            pull.bossPullback = false;
 
             DcSetPullPhase(context, DcPullPhase::Idle);
             DC_PULL_DEBUG("[DC:{}] advanced-pull: camp fight done -> idle, ready for "
@@ -803,8 +1214,88 @@ bool DungeonClearPullManeuverAction::Execute(Event /*event*/)
 
     if (dist <= DC_PULL_CAMP_ARRIVE)
     {
-        // Back at camp: stop and hand the fight to stock combat. Flipping to
-        // Engage is also what makes ReapStrandedPassives release the party.
+        // Back at camp. For an ordinary trash pull the pack is glued to the tank by
+        // now (it chased it the whole way), so arriving IS the end of the maneuver:
+        // stop, flip to Engage, and that flip is what releases the party.
+        //
+        // A PULL-BACK is different and releasing on tank-arrival alone is what made
+        // the whole party beeline into the lake. The tank can be home long before
+        // the boss is: it retreats from the water's edge while he is still swimming
+        // in, and on a forced pull it may barely have moved at all. Flipping to
+        // Engage there drops the camp hold, hands every follower to stock combat,
+        // and stock combat's only visible target is a boss 100+yd away in the water
+        // — so they all run at him.
+        //
+        // So hold the release until HE is actually here. Until then the tank waits
+        // on the anchor and the party stays pinned and passive behind it, which is
+        // the entire point of dragging him out. The leg watchdog below still bounds
+        // it: a boss that never arrives falls out to "fight in place" rather than
+        // holding the run forever.
+        if (pull.bossPullback)
+        {
+            Unit* const pulled = pull.pullTarget.IsEmpty()
+                ? nullptr : ObjectAccessor::GetUnit(*bot, pull.pullTarget);
+            if (pulled && pulled->IsAlive() &&
+                pulled->GetExactDist(&camp) > DC_PULLBACK_RELEASE_RANGE)
+            {
+                DcMovement::StopBot(bot, DcMovement::Stop::Soft);
+                DcFaceIfNeeded(bot, pulled);
+
+                // SUMMON-IF-STUCK. The tank is home and the boss is engaged and
+                // inbound — but if he is still IN THE WATER BELOW the anchor, he is
+                // not inbound in any useful sense: the way out of the lake is the
+                // pipe, the pipe is absent from the extracted navmesh, and a chase
+                // path with no geometry to follow leaves him hanging at the water's
+                // edge indefinitely. There is nothing to wait for, so bring him up.
+                //
+                // The water-and-below test is what keeps this to the actual failure
+                // rather than making it a general "boss is slow" shortcut: a boss
+                // who has climbed out onto dry ground fails it and walks the rest of
+                // the way himself, exactly as he should. Opt-in per row on top of
+                // that (summonWhenStuckBelow) — relocating a boss is a big hammer.
+                BossPullback const* const row =
+                    BossPullbackRegistry::Find(bot->GetMapId(), pulled->GetEntry());
+                if (row && row->summonWhenStuckBelow && pulled->IsInWater() &&
+                    pulled->GetPositionZ() < camp.GetPositionZ())
+                {
+                    // Land him a few yards off the anchor on the tank's side rather
+                    // than on top of the party: dropping a boss inside the healer is
+                    // how a knockback or a cleave catches everyone at once. Snapped
+                    // to the navmesh so he arrives on real ground; the anchor itself
+                    // is the fallback (it is known-good — the party is standing on
+                    // it).
+                    float const bearing = camp.GetAngle(bot);
+                    float const lx = camp.GetPositionX() + DC_PULLBACK_SUMMON_OFFSET *
+                                                               std::cos(bearing);
+                    float const ly = camp.GetPositionY() + DC_PULLBACK_SUMMON_OFFSET *
+                                                               std::sin(bearing);
+                    float lz = camp.GetPositionZ();
+                    NavmeshSnap::Result const snap =
+                        NavmeshSnap::Snap(bot->GetMap(), lx, ly, lz, 8.0f);
+                    float const tx = snap.ok ? snap.x : camp.GetPositionX();
+                    float const ty = snap.ok ? snap.y : camp.GetPositionY();
+                    float const tz = snap.ok ? snap.z : camp.GetPositionZ();
+
+                    LOG_INFO("playerbots.dungeonclear",
+                             "[DC:{}] pull-back: {} is stuck in the water {:.1f}yd "
+                             "below the anchor ({:.1f} vs {:.1f}) with no navmesh "
+                             "route out — summoning him to ({:.1f},{:.1f},{:.1f})",
+                             bot->GetName(), pulled->GetName(),
+                             camp.GetPositionZ() - pulled->GetPositionZ(),
+                             pulled->GetPositionZ(), camp.GetPositionZ(), tx, ty, tz);
+
+                    pulled->NearTeleportTo(tx, ty, tz, pulled->GetAngle(bot));
+                    return true;
+                }
+
+                DC_PULL_TRACE("[DC:{}] pull-back: home at the anchor, holding the "
+                              "party — boss still {:.1f}yd out (release at {:.0f})",
+                              bot->GetName(), pulled->GetExactDist(&camp),
+                              DC_PULLBACK_RELEASE_RANGE);
+                return true;
+            }
+        }
+
         DcMovement::StopBot(bot, DcMovement::Stop::Soft);
         DcSetPullPhase(context, DcPullPhase::Engage);
         DC_PULL_INFO("[DC:{}] advanced-pull: at camp ({:.1f}yd) -> engaging, party "
@@ -812,7 +1303,24 @@ bool DungeonClearPullManeuverAction::Execute(Event /*event*/)
         return false;
     }
 
-    if (legElapsed > DC_PULL_LEG_TIMEOUT_MS)
+    // Return-leg budget off the leg length stamped at the turn-around, so a
+    // pull-back's long haul home isn't cut short (see DcPullLegTimeoutMs).
+    //
+    // For a pull-back the leg covers TWO journeys, not one, and budgeting only the
+    // tank's would have made the watchdog fire during a perfectly healthy pull: the
+    // tank runs ~60yd home in ~13s and then WAITS at the anchor for the boss, who
+    // still has ~150yd of swim-and-ramp to cover. That wait happens inside this
+    // leg. Add the boss's remaining distance so the budget covers both; it stays
+    // bounded, so a boss who genuinely cannot path still falls out to fight-in-place
+    // instead of holding the run open forever.
+    float legBudgetDist = pull.returnLegStartDist;
+    if (pull.bossPullback)
+    {
+        if (Unit* const pulled = pull.pullTarget.IsEmpty()
+                ? nullptr : ObjectAccessor::GetUnit(*bot, pull.pullTarget))
+            legBudgetDist += pulled->GetExactDist(&camp);
+    }
+    if (legElapsed > DcPullLegTimeoutMs(pull, legBudgetDist))
     {
         // Return leg wedged — fight where we are rather than freeze.
         DcSetPullPhase(context, DcPullPhase::Engage);
@@ -830,7 +1338,15 @@ bool DungeonClearPullManeuverAction::Execute(Event /*event*/)
     // the corner) and gated on half the leg covered + a 2-tick debounce so a single
     // noisy distance read can't trip it. The plant point IS the new camp — re-stamp
     // it so the spread gate, status panel, and follower hold all follow the fight.
-    if (DcSettings::GetBool(bot, "PullPlantEnable"))
+    // Suppressed outright for a PULL-BACK drag. Turn-and-plant makes the fight
+    // happen "wherever the tank plants", which is exactly the freedom a pull-back
+    // must not have: the anchor was chosen because it is the only safe ground, and
+    // planting halfway home would drop the party back into the water the maneuver
+    // exists to leave. Same reasoning as the losPull suppression inside
+    // ShouldPlantEarly (there the point is reaching the corner; here it is reaching
+    // the anchor) — a distinct flag rather than reusing losPull so the addon status
+    // line and the LOS-camp logic keep their own meaning.
+    if (DcSettings::GetBool(bot, "PullPlantEnable") && !pull.bossPullback)
     {
         float const glueRadius = DcSettings::GetFloat(bot, "PullPlantGlueRadius");
         std::vector<float> attackerDists;

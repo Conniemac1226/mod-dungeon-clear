@@ -13,6 +13,7 @@
 
 #include "CharacterCache.h"
 #include "Chat.h"
+#include "Creature.h"
 #include "Group.h"
 #include "GroupMgr.h"
 #include "InstanceSaveMgr.h"
@@ -355,6 +356,9 @@ DcTestRunLive::RunSnapshot DcTestRunJob::Snapshot() const
             s.mapId = static_cast<std::int32_t>(p->GetMapId());
         DcTestRunLive::BotPos bp;
         bp.role = slot.role;
+        // The slot only knows class/spec/role; the name belongs to the char the
+        // pool handed out, so it has to come off the resolved player.
+        bp.name = p->GetName();
         bp.classId = slot.classId;
         bp.x = p->GetPositionX();
         bp.y = p->GetPositionY();
@@ -391,6 +395,17 @@ DcTestRunLive::RunSnapshot DcTestRunJob::Snapshot() const
     // Not under _obsMutex: the watchdog writes _sinceProgressMs outside it too,
     // and both that write and this read happen on the world thread.
     s.sinceProgressS = _sinceProgressMs / 1000;
+
+    // A wipe holds the run for the grace window (a battle rez can still save
+    // it), during which the live card would otherwise show a party doing
+    // nothing at all. Name the killer as soon as the harness sees the wipe
+    // rather than only in the finished record.
+    if (_wipedForMs > 0)
+    {
+        s.wiped = true;
+        s.wipeOnBoss = _engaged.isBoss;
+        s.wipeOpponent = _engaged.name;
+    }
 
     std::lock_guard<std::mutex> lock(_obsMutex);
     s.state = _lastStatusState;
@@ -537,6 +552,16 @@ void DcTestRunJob::TickProvisioning(bool& provisionBudget)
         PlayerbotFactory::InitTalentsBySpecNo(bot, specNo, true);
         factory.InitEquipment(false, true);
         factory.InitGlyphs(false);
+
+        // Gear first, enchants/gems second — the order the `autogear` then
+        // `maintenance` chat commands run in. Randomize() already ends with an
+        // ApplyEnchantAndGemsNew() pass, but the spec re-gear above swaps those
+        // enchanted/gemmed items out for freshly rolled bare ones, so without
+        // this second pass every spec-forced bot (i.e. every tank and healer in
+        // a test run) fights with no enchants and empty sockets. Cheap relative
+        // to Randomize, and it only touches what is currently equipped.
+        if (bot->GetLevel() >= sPlayerbotAIConfig.minEnchantingBotLevel)
+            factory.ApplyEnchantAndGemsNew();
     }
     if (bot->getClass() == CLASS_HUNTER)
     {
@@ -783,6 +808,103 @@ void DcTestRunJob::TickStarting()
         FailSetup("dc on did not take (look for 'DC command refused' in the DC log)");
 }
 
+// Gather this sample's combat picture off the party and fold it into the
+// engagement latch (DcTestRun::UpdateEngagement owns the rule).
+//
+// Only members that are alive and on the leader's map are read: a corpse holds
+// neither a victim nor an attacker list, so a party being wiped simply stops
+// contributing and the last engagement seen while somebody was standing is what
+// the wipe verdict reports.
+//
+// The run's own roster is the authority on what counts as a boss — it is what
+// every other line of the report names bosses by — and the creature-side flags
+// are the fallback for a summoned or phase-swapped boss the roster never listed
+// (Anzu, a Tuten'kash-style event spawn).
+void DcTestRunJob::TrackEngagement(Player* tank)
+{
+    if (!tank)
+        return;
+
+    DcTestRun::EngagementSample sample;
+
+    auto rosterName = [this](uint32 entry) -> std::string const*
+    {
+        for (BossRef const& ref : _roster)
+            if (ref.entry == entry && ref.isBoss)
+                return &ref.name;
+        return nullptr;
+    };
+
+    auto consider = [&](Unit const* u)
+    {
+        if (!u || !u->IsAlive())
+            return;
+        Creature const* creature = u->ToCreature();
+        if (!creature)
+            return;
+        std::string const* named = rosterName(creature->GetEntry());
+        if (sample.bossName.empty() &&
+            (named || creature->IsDungeonBoss() || creature->isWorldBoss()))
+        {
+            sample.bossEntry = creature->GetEntry();
+            sample.bossName = named ? *named : creature->GetName();
+        }
+        if (sample.trashName.empty())
+        {
+            sample.trashEntry = creature->GetEntry();
+            sample.trashName = creature->GetName();
+        }
+    };
+
+    auto scan = [&](Player* member)
+    {
+        if (!member || !member->IsAlive() || !member->IsInWorld() ||
+            member->GetMapId() != tank->GetMapId())
+            return;
+        sample.anyAlive = true;
+        if (!member->IsInCombat())
+            return;
+        sample.anyAliveInCombat = true;
+        // The victim covers whoever the member is swinging at; the attacker set
+        // covers the mob beating on a member with no target of its own (a
+        // healer, or anyone the pack peeled onto).
+        consider(member->GetVictim());
+        for (Unit const* attacker : member->getAttackers())
+            consider(attacker);
+    };
+
+    scan(tank);
+    if (Group* group = tank->GetGroup())
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            if (Player* member = ref->GetSource(); member && member != tank)
+                scan(member);
+
+    _engaged = DcTestRun::UpdateEngagement(_engaged, sample);
+}
+
+// Is anyone in the party on the leader's map a corpse right now? Separates a
+// run that ended because people died (worth the wipe post-mortem) from one that
+// ended for any other reason.
+bool DcTestRunJob::AnyMemberDead(Player* tank)
+{
+    if (!tank)
+        return false;
+    if (!tank->IsAlive())
+        return true;
+    Group* group = tank->GetGroup();
+    if (!group)
+        return false;
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (!member || member == tank || member->GetMapId() != tank->GetMapId())
+            continue;
+        if (!member->IsAlive())
+            return true;
+    }
+    return false;
+}
+
 void DcTestRunJob::TickMonitoring(uint32 dt)
 {
     DcTestRun::Observation obs;
@@ -917,6 +1039,10 @@ void DcTestRunJob::TickMonitoring(uint32 dt)
         _lastVictim = victimGuid;
         _lastVictimHpPct = victimHpPct;
 
+        // Sampled every monitor step while somebody is still standing, so the
+        // wipe verdict below can name what took the party down.
+        TrackEngagement(tank);
+
         if (next.has_value() && next->mapId == tank->GetMapId())
         {
             // Re-arm on target change: distance to a NEW anchor is unrelated to
@@ -1024,10 +1150,18 @@ void DcTestRunJob::TickMonitoring(uint32 dt)
             break;
         }
         case DcTestRun::Verdict::FailPartyWiped:
-            failReason = "party wiped" +
-                         (_lastAliveMember.empty() ? std::string()
-                                                   : " (last standing: " + _lastAliveMember + ")");
+        {
+            std::string const who =
+                _lastAliveMember.empty() ? std::string()
+                                         : " (last standing: " + _lastAliveMember + ")";
+            if (_engaged.Empty())
+                failReason = "party wiped out of combat" + who;
+            else if (_engaged.isBoss)
+                failReason = "party wiped on " + _engaged.name + who;
+            else
+                failReason = "party wiped to trash: " + _engaged.name + who;
             break;
+        }
         case DcTestRun::Verdict::FailPausedTimeout:
             failReason = "paused for over " + std::to_string(_limits.pauseGraceMs / 1000) +
                          "s: " + (pauseReason.empty() ? "(no reason)" : pauseReason);
@@ -1072,6 +1206,17 @@ void DcTestRunJob::Finish(DcTestRun::Verdict verdict, std::string const& failRea
 {
     _record.result = DcTestRun::VerdictName(verdict);
     _record.failReason = failReason;
+
+    // Wipe post-mortem. Also filled for a death bailout — the run ends as
+    // "disabled" with a corpse in the party, and "what killed us" is the same
+    // question there. Left empty for every outcome nobody died in, so a
+    // successful run that lost (and rezzed) a member carries no stale opponent.
+    if (verdict == DcTestRun::Verdict::FailPartyWiped || AnyMemberDead(FindTank()))
+    {
+        _record.wipeOnBoss = _engaged.isBoss;
+        _record.wipeOpponentEntry = _engaged.entry;
+        _record.wipeOpponent = _engaged.name;
+    }
     {
         std::lock_guard<std::mutex> lock(_obsMutex);
         _record.disableReason = _disableReason;

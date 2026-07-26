@@ -54,6 +54,28 @@ public:
     bool IsActive() override;
 };
 
+// COMBAT-engine sibling of DungeonClearEventDueTrigger. Fires only while the
+// leader IS in combat and the due conditional event is flagged
+// DungeonEvent::drivesInCombat — a continuous WAVE encounter whose event IS the
+// fight, so the driver must keep steering while the party is engaged.
+//
+// The non-combat copy stands down on bot->IsInCombat(), which is correct
+// everywhere the event's work happens BETWEEN pulls. It is fatal where the party
+// is in combat from the first pull to the last: the driver then runs only in the
+// shrinking gaps between waves and stops running entirely once the party falls
+// behind and combat stops dropping. Black Morass with two rifts open was exactly
+// that — nothing ever walked the tank to a portal to kill the rift keeper, so the
+// rifts never closed. See DungeonEvent::drivesInCombat.
+class DungeonClearEventDueCombatTrigger : public Trigger
+{
+public:
+    DungeonClearEventDueCombatTrigger(PlayerbotAI* botAI)
+        : Trigger(botAI, "dungeon clear event due combat", 1)
+    {
+    }
+    bool IsActive() override;
+};
+
 class DungeonClearBlockingTrashTrigger : public Trigger
 {
 public:

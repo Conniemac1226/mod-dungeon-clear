@@ -171,6 +171,10 @@ namespace DcTestRunRecord
         AppendEscaped(s, rec.stallAtEnd);
         s << ",\"phaseAtEnd\":";
         AppendEscaped(s, rec.phaseAtEnd);
+        s << ",\"wipeOnBoss\":" << (rec.wipeOnBoss ? "true" : "false")
+          << ",\"wipeOpponentEntry\":" << rec.wipeOpponentEntry
+          << ",\"wipeOpponent\":";
+        AppendEscaped(s, rec.wipeOpponent);
         s << ",\"diag\":";
         DcDiag::AppendJson(s, rec.diag);
         s << '}';

@@ -282,6 +282,28 @@ bool DungeonClearEventDueTrigger::IsActive()
     return DungeonEventExecutor::FindDueConditionalEvent(bot, context, map->GetId()) != nullptr;
 }
 
+bool DungeonClearEventDueCombatTrigger::IsActive()
+{
+    if (!IsEnabled(context, bot))
+        return false;
+    // The mirror image of the non-combat gate: this copy exists FOR the in-combat
+    // case, so a bot out of combat is the other rung's business.
+    if (!bot || !bot->IsInCombat() || bot->isDead())
+        return false;
+    if (!DcLeaderSignal::IsDungeonClearLeader(bot))
+        return false;
+    Map* map = bot->GetMap();
+    if (!map || !map->IsDungeon())
+        return false;
+    if (!DungeonEventRegistry::HasEvents(map->GetId()))
+        return false;
+
+    // requireDrivesInCombat: only an opted-in wave event may take a tick from the
+    // stock combat engine. Same call the action makes, so the two agree.
+    return DungeonEventExecutor::FindDueConditionalEvent(bot, context, map->GetId(),
+                                                         /*requireDrivesInCombat*/ true) != nullptr;
+}
+
 bool DungeonClearBlockingTrashTrigger::IsActive()
 {
     if (!IsEnabled(context, bot))
@@ -774,7 +796,16 @@ bool DungeonClearPullTrigger::IsActive()
     // set decision == 3 this tick.)
     bool const patrolWaiting =
         AI_VALUE(DcPullContext&, DcKey::PullContext).decision == DcPullDecisionCode::PatrolHold;
-    if (!pullModeCurrent && !patrolWaiting)
+    // A PULL-BACK boss (BossPullbackRegistry) runs the maneuver REGARDLESS of the
+    // player's pull setting. It isn't a tactical preference there: Ghaz'an's home
+    // is open water over a 47yd pit, so "pull Off" would mean the walk-in engage
+    // swims the party out to him — the wipe. The registry row IS the decision.
+    // Once the maneuver is in flight `bossPullback` keeps this true across the
+    // phases even if the tank drags out of the anchor's at-boss radius.
+    bool const pullback =
+        AI_VALUE(DcPullContext&, DcKey::PullContext).bossPullback ||
+        DcTargeting::IsPullbackBossDue(bot, context);
+    if (!pullModeCurrent && !patrolWaiting && !pullback)
         return false;
 
     uint32 const phase = static_cast<uint32>(AI_VALUE(DcPullContext&, DcKey::PullContext).phase);
@@ -802,11 +833,14 @@ bool DungeonClearPullTrigger::IsActive()
     if (DcTargeting::IsHoldingForSummonEvent(bot, context, *next))
         return false;
     // Normally the pull pipeline stands down at the boss (the at-boss engage owns
-    // it). The one exception is a room-wide-aggro boss with room trash still up:
-    // there the pull pipeline is what clears that room (honouring advanced/dynamic
-    // pull), so it must stay live at the boss until the room is clear.
+    // it). There are two exceptions. A room-wide-aggro boss with room trash still
+    // up: there the pull pipeline is what clears that room (honouring advanced/
+    // dynamic pull), so it must stay live at the boss until the room is clear. And
+    // a PULL-BACK boss: the pull pipeline is the ONLY thing that may engage him,
+    // because the walk-in engage would go to where he stands — which for Ghaz'an is
+    // the middle of a lake.
     if (DcTickMemoAccess::AtBossEngage(bot, context, *next) &&
-        !DcTargeting::IsRoomClearActive(bot, context))
+        !DcTargeting::IsRoomClearActive(bot, context) && !pullback)
         return false;
     if (!IsBetweenPullsReady(bot, context))
         return false;
@@ -863,7 +897,14 @@ bool DungeonClearPullManeuverTrigger::IsActive()
     // GetLeaderCampHold keep the camp hold alive through a pause while a
     // maneuver phase is holding — so the party stays pinned at camp until the
     // drag resolves to Engage, after which the normal paused gates hold the run.
-    if (!DcRun::Of(context).enabled || !AI_VALUE(bool, DcKey::PullMode))
+    // `bossPullback` is an alternative to the pull-mode bool for the same reason
+    // the non-combat pull trigger accepts it: a BossPullbackRegistry drag runs
+    // whatever the player's pull setting is, and the drag-back leg is the whole
+    // point of it. Without this the tag would land and then nothing would haul the
+    // boss home — the tank would fight Ghaz'an where it tagged him, in the water.
+    if (!DcRun::Of(context).enabled ||
+        (!AI_VALUE(bool, DcKey::PullMode) &&
+         !AI_VALUE(DcPullContext&, DcKey::PullContext).bossPullback))
         return false;
     if (!DcLeaderSignal::IsDungeonClearLeader(bot))
         return false;

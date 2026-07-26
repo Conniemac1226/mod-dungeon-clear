@@ -409,6 +409,22 @@ void DungeonClearCombatStrategy::InitTriggers(std::vector<TriggerNode*>& trigger
         "dungeon clear hazard vacate",
         { NextAction("dungeon clear hazard vacate", DcRel::HazardVacate) }));
 
+    // Conditional-event driver, COMBAT side. Fires only for an event that opted in
+    // with DrivesInCombat() — a continuous WAVE encounter where the party is in
+    // combat from the first pull to the last, so the non-combat copy (relevance 31)
+    // runs only in the gaps between waves and stops running at all once the party
+    // falls behind and combat stops dropping.
+    //
+    // Black Morass is why this exists. Its 18 rifts each pump one add every 15s
+    // until their KEEPER dies — killing the keeper is the only shutoff — and with
+    // two rifts open the party never left combat, so nothing ever walked the tank
+    // to a portal and no rift ever closed. Same failure the Hakkar handlers below
+    // hit, generalised onto the events framework instead of hand-copied per
+    // encounter. See DungeonEvent::drivesInCombat / DcRel::EventDueCombat.
+    triggers.push_back(new TriggerNode(
+        "dungeon clear event due combat",
+        { NextAction("dungeon clear run event combat", DcRel::EventDueCombat) }));
+
     // Sunken Temple Avatar of Hakkar orchestration, COMBAT side — THE place these
     // run. The encounter is a continuous wave fight, so every member is in combat
     // almost the whole time; with the handlers only in the non-combat strategy

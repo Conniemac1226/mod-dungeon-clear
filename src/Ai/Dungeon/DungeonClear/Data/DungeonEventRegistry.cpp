@@ -58,6 +58,18 @@ EventBuilder& EventBuilder::Persistent()
     return *this;
 }
 
+EventBuilder& EventBuilder::DrivesInCombat()
+{
+    _ev.drivesInCombat = true;
+    return *this;
+}
+
+EventBuilder& EventBuilder::StepsOwnMovement()
+{
+    _ev.stepsOwnMovement = true;
+    return *this;
+}
+
 EventBuilder& EventBuilder::HeroicOnly()
 {
     _ev.gate = DcDifficultyGate::HeroicOnly;
@@ -243,6 +255,13 @@ EventBuilder& EventBuilder::ClearRadius(float x, float y, float z, float radius,
     return *this;
 }
 
+EventBuilder& EventBuilder::OnlyEntries(std::vector<uint32> entries)
+{
+    if (!_ev.steps.empty())
+        _ev.steps.back().entryFilter = std::move(entries);
+    return *this;
+}
+
 EventBuilder& EventBuilder::Wait(uint32 durationMs)
 {
     EventStep& s = Add(EventStepKind::Wait);
@@ -362,6 +381,7 @@ namespace
             RegisterSteamvaultEvents(t);
             RegisterArcatrazEvents(t);
             RegisterSethekkHallsEvents(t);
+            RegisterBlackMorassEvents(t);
             return t;
         }();
         return kEvents;
