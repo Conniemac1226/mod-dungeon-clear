@@ -7,9 +7,17 @@
 
 namespace DcSmartRestDecision
 {
+    namespace
+    {
+        bool IsIncluded(Member const& m, Inputs const& in)
+        {
+            return in.includeHumans || m.isBot;
+        }
+    }
+
     float ManaTriggerPct(Member const& m, Inputs const& in)
     {
-        if (!m.isManaUser)
+        if (!IsIncluded(m, in) || !m.isManaUser)
             return 0.0f;
         if (m.isHealer)
             return in.healerManaTriggerPct;
@@ -30,6 +38,8 @@ namespace DcSmartRestDecision
 
     bool BelowTrigger(Member const& m, Inputs const& in)
     {
+        if (!IsIncluded(m, in))
+            return false;
         if (in.hpTriggerPct > 0.0f && m.hpPct < in.hpTriggerPct)
             return true;
         // Boss pull imminent: any enabled mana role short of its RELEASE bar
@@ -43,6 +53,8 @@ namespace DcSmartRestDecision
 
     bool BelowRelease(Member const& m, Inputs const& in)
     {
+        if (!IsIncluded(m, in))
+            return false;
         float const manaRelease = ManaReleaseBar(m, in);
         return m.hpPct < HpReleaseBar(m, in) ||
                (manaRelease > 0.0f && m.manaPct < manaRelease);

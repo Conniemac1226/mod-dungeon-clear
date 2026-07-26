@@ -47,6 +47,8 @@ namespace
                 m.manaPct = leader->GetPowerPct(POWER_MANA);
             m.isHealer = PlayerbotAI::IsHeal(leader);
             m.isTank = true;
+            PlayerbotAI* leaderAI = GET_PLAYERBOT_AI(leader);
+            m.isBot = leaderAI && !leaderAI->IsRealPlayer();
             out.push_back(m);
             if (players)
                 players->push_back(leader);
@@ -72,6 +74,8 @@ namespace
                 m.manaPct = member->GetPowerPct(POWER_MANA);
             m.isHealer = PlayerbotAI::IsHeal(member);
             m.isTank = member == leader;
+            PlayerbotAI* memberAI = GET_PLAYERBOT_AI(member);
+            m.isBot = memberAI && !memberAI->IsRealPlayer();
             out.push_back(m);
             if (players)
                 players->push_back(member);
@@ -85,6 +89,7 @@ namespace
         in.restElapsedMs = run.smartRestLatched ? now - run.smartRestSinceMs : 0;
         in.rearmed = run.smartRestRearmAtMs == 0 ||
                      static_cast<int32>(now - run.smartRestRearmAtMs) >= 0;
+        in.includeHumans = DcSettings::GetBool(leader, "SmartRestIncludeHumans");
         in.hpTriggerPct = static_cast<float>(DcSettings::GetUInt(leader, "SmartRestHealthPct"));
         in.dpsManaTriggerPct = static_cast<float>(DcSettings::GetUInt(leader, "SmartRestDpsManaPct"));
         in.tankManaTriggerPct = static_cast<float>(DcSettings::GetUInt(leader, "SmartRestTankManaPct"));
@@ -150,8 +155,8 @@ namespace DcSmartRest
         {
             if (verdict.timedOut)
             {
-                // Someone can't reach its release bar (AFK human, bot with no
-                // food) — push on rather than stall the run, and hold off
+                // Someone can't reach its release bar (AFK included human, bot
+                // with no food) — push on rather than stall the run, and hold off
                 // re-latching so the same member can't flap us straight back.
                 run.smartRestRearmAtMs = now + DC_SMART_REST_REARM_MS;
                 LOG_INFO("playerbots.dungeonclear",

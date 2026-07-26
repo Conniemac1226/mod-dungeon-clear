@@ -17,8 +17,10 @@
 // a LOW, role-based trigger (DPS mana, tank mana, healer mana, any-role HP)
 // latches a party-wide rest, and the release bar is full health but only a
 // near-full mana. A zero mana trigger disables that role for entry and release,
-// including at bosses. Between rests eating/drinking is fully suppressed. A
-// boss pull raises each enabled mana role's entry to its release bar.
+// including at bosses. Human players may be excluded entirely, leaving only
+// autonomous bots to start or hold a rest. Between rests eating/drinking is
+// fully suppressed. A boss pull raises each enabled mana role's entry to its
+// release bar.
 //
 // Extracted engine-free so it is unit-testable in isolation, mirroring
 // DecidePull / DecideCombatRegroup. DcSmartRest (the glue) gathers the live
@@ -43,16 +45,9 @@ namespace DcSmartRestDecision
     // send bots into the next pull hurt).
     constexpr float kManaReleasePct = 90.0f;
 
-    // Humans hold to the SAME bars as bots. They used to owe only their role
-    // trigger plus a 5% margin, on the reasoning that a human can't be forced
-    // to drink and would otherwise deadlock the latch. That made the feature
-    // useless in a group with a real player: at the default DPS trigger of 10
-    // the human released at 15%, a five-point rest indistinguishable from the
-    // legacy gate, and the party walked off while the player was still sitting
-    // (mod-dungeon-clear#6). The deadlock it guarded against is already bounded
-    // by the maxRestMs failsafe below — an AFK human costs one timeout, not a
-    // stalled run — so the split bought nothing and cost the whole point of
-    // Smart Rest: the party waits for YOU to finish drinking.
+    // When includeHumans is on, humans hold to the SAME bars as bots. When it
+    // is off, a human can neither start nor hold the latch on health or mana;
+    // normal party-spread checks still keep the tank from leaving them behind.
 
     // One living, same-map group member, snapshotted by the glue. Dead and
     // off-map members are the snapshot builder's job to exclude, not ours.
@@ -63,8 +58,7 @@ namespace DcSmartRestDecision
         bool  isManaUser = false; // powerType == POWER_MANA && maxMana > 0
         bool  isHealer = false;   // PlayerbotAI::IsHeal — selects the mana trigger
         bool  isTank = false;     // elected DC leader — selects the tank trigger
-        // No isBot: bots and humans are held to identical bars. See the
-        // kHumanReleaseMarginPct removal note above.
+        bool  isBot = false;      // PlayerbotAI exists and !IsRealPlayer()
     };
 
     struct Inputs
@@ -72,6 +66,7 @@ namespace DcSmartRestDecision
         bool          latched = false;     // stored latch (DcRunState::smartRestLatched)
         std::uint32_t restElapsedMs = 0;   // now - smartRestSinceMs; 0 when not latched
         bool          rearmed = true;      // false during the post-timeout cooldown
+        bool          includeHumans = true; // SmartRestIncludeHumans
         float         hpTriggerPct = 50.0f;       // SmartRestHealthPct (all roles)
         float         dpsManaTriggerPct = 0.0f;  // SmartRestDpsManaPct
         float         tankManaTriggerPct = 10.0f; // SmartRestTankManaPct
@@ -95,9 +90,9 @@ namespace DcSmartRestDecision
     // The member's mana trigger for its role. 0 = that dimension disabled.
     float ManaTriggerPct(Member const& m, Inputs const& in);
 
-    // Release bars for one member, bot and human alike: kReleasePct on HP and
-    // kManaReleasePct on mana when that role's trigger is enabled. Mana is 0 for
-    // non-mana users and roles whose mana trigger is zero.
+    // Release bars for one participating member: kReleasePct on HP and
+    // kManaReleasePct on mana when that role's trigger is enabled. Mana is 0
+    // for non-mana users and roles whose mana trigger is zero.
     float HpReleaseBar(Member const& m, Inputs const& in);
     float ManaReleaseBar(Member const& m, Inputs const& in);
 

@@ -190,9 +190,25 @@ DungeonClear.RestManaPct = 0
 DungeonClear.SmartRest = 0
 
 #
+#    DungeonClear.SmartRestIncludeHumans
+#        Smart Rest only. Controls whether human-controlled players can start
+#        or hold a rest because of their health or mana. When disabled, only
+#        autonomous bots participate in Smart Rest resource checks. The normal
+#        party-spread gate remains active, so the tank still stops if a human
+#        player falls too far behind.
+#            0 = ignore human health and mana
+#            1 = include humans like bots
+#
+#        Default: 1
+#
+
+DungeonClear.SmartRestIncludeHumans = 1
+
+#
 #    DungeonClear.SmartRestHealthPct
-#        Smart Rest only. Health % below which ANY party member (any role)
-#        triggers a full-rest stop.
+#        Smart Rest only. Health % below which any participating party member
+#        (any role) triggers a full-rest stop. Human players participate only
+#        when SmartRestIncludeHumans is enabled.
 #            0 = disable the health trigger
 #
 #        Default: 50
