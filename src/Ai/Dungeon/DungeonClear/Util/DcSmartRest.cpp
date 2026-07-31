@@ -146,10 +146,14 @@ namespace DcSmartRest
         if (verdict.latched && !run.smartRestLatched)
         {
             run.smartRestSinceMs = now;
-            LOG_INFO("playerbots.dungeonclear",
-                     "[DC:{}] smart rest: latched — party resting up ({} member(s) below {})",
-                     leader->GetName(), verdict.blockers.size(),
-                     in.bossPull ? "the boss-pull top-off bar" : "trigger");
+            // DEBUG, not INFO: a latch is the normal, expected event of every
+            // single rest cycle, so at INFO it was pure per-run noise in
+            // Server.log. The rest is already visible where it matters — the
+            // addon status line (DcStatusPublisher) names who we are waiting on.
+            LOG_DEBUG("playerbots.dungeonclear",
+                      "[DC:{}] smart rest: latched — party resting up ({} member(s) below {})",
+                      leader->GetName(), verdict.blockers.size(),
+                      in.bossPull ? "the boss-pull top-off bar" : "trigger");
         }
         else if (!verdict.latched && run.smartRestLatched)
         {

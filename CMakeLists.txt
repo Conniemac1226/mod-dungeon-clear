@@ -263,4 +263,33 @@ AC_ADD_CONFIG_FILE("${CMAKE_CURRENT_LIST_DIR}/conf/mod_dungeon_clear.conf.dist")
 #    t/TestWipeContext; DcTestRunJob::TrackEngagement is the engine glue, and
 #    the result rides out on the run record (wipeOnBoss/wipeOpponent) and the
 #    live heartbeat.)
+# Overrides/BlackMorassDriver.cpp
+#   (map 269's CONTROLLER half, lifted out of ObjectiveHookRegistry.cpp. Hooks 8
+#    and 12 are the only on-arrival behaviour in the module that re-decides from
+#    live world state every tick instead of doing one thing on arrival, so they
+#    carry their own movement (StepsOwnMovement + repath/reissue throttling),
+#    engagement (REACT_DEFENSIVE rift adds the normal pipeline cannot see) and
+#    rift/keeper/drainer selection layers. Registered via RegisterBlackMorassHooks,
+#    called explicitly from Hooks() — a static-lib TU with only constructor side
+#    effects gets dropped by the linker. The DECLARATIVE half of 269 stays in
+#    Data/Events/BlackMorassEvents.cpp.)
+# TestRun/DcTestRoster.{h,cpp}
+#   (`.dc test start <d> party=Tank,Heal,D1,D2,D3` — hand-picked parties of REAL
+#    player characters, from any account, launchable from the Command Deck. This
+#    is only the pure grammar (split, trim, positional roles, refuse a bad list),
+#    edge-pinned by t/TestTestRoster; the engine half is
+#    DcTestRunJob::CreateFromRoster + DcTestRunManager::StartRoster. Roster runs
+#    log in MASTERLESS (AddPlayerBot with masterAccountId 0 — the ownership gate
+#    refuses a hand-picked party on any other path), never roll the factory (no
+#    respec/regear/relevel: the characters fight as they are), and always unbind
+#    both difficulties first so every run gets a fresh instance.)
+# TestRun/DcTestGearTiers.{h,cpp}
+#   (per-run gear ceiling: `.dc test start <d> ilvl=N quality=epic`, the same two
+#    options on `.dc test plan start`, and the ladder of ceilings worth offering
+#    for a given dungeon — named raid tiers from the AutoGearScoreLimit conf
+#    table at the level cap, three steps around the dungeon's own gear below it.
+#    Pure kernel, edge-pinned by t/TestTestGearTiers; the engine half is
+#    DcTestRunJob::TickProvisioning building PlayerbotFactory with the resolved
+#    pair, and DcTestDungeonRegistry::WriteSidecar publishing the ladders for the
+#    Command Deck's start form.)
 # (this comment bumps mtime to force CMake re-glob on next build)

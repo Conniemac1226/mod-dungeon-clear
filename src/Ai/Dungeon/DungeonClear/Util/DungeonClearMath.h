@@ -171,6 +171,40 @@ namespace DungeonClearMath
                               std::uint32_t now, std::uint32_t graceMs,
                               std::uint32_t& ccSinceOut);
 
+    // Camp-safety valve (pure). A held passive follower should trigger the valve
+    // when it is in combat below `safetyHpPct` AND that has persisted for
+    // `graceMs`. `attackerIsPullTarget` is the caller's verdict that everything
+    // currently on the follower belongs to the pack being dragged — in which case
+    // this is an ordinary drag taking splash, not a failed pull, and the valve
+    // must not fire (raw HP% alone is the wrong question: a follower at 60% being
+    // splashed by the dragged pack is a normal drag; at 60% from something ELSE, a
+    // second pack found us and the maneuver is genuinely compromised).
+    // `safetyHpPct` <= 0 disables the valve outright. `since` is the timestamp the
+    // CURRENT continuous qualifying spell began (0 = fine); the latch/grace
+    // contract mirrors ShouldAbortPullForCc exactly (including the now==0 corner).
+    // `graceMs` == 0 fires on the first qualifying tick. Returns true to trip the
+    // valve and writes the updated latch to `sinceOut` (persisted in the
+    // follower's DcPullContext::campSafetySince by the caller).
+    bool ShouldTripCampSafety(bool inCombat, float healthPct, float safetyHpPct,
+                              bool attackerIsPullTarget,
+                              std::uint32_t since, std::uint32_t now,
+                              std::uint32_t graceMs, std::uint32_t& sinceOut);
+
+    // Pull-mode blocking-trash stand-down gate (pure). In advanced-pull mode the
+    // pull pipeline owns the pack it is working, so the blocking-trash trigger
+    // stands down for it (engage-trash outranks the pull's deliberate wait band
+    // and would otherwise preempt every pull). But a BYSTANDER — a pack the pull
+    // never selected — appearing inside the aggro-shaped scan while the pull is
+    // IDLE is exactly the case the scan exists for, and silently handing it to a
+    // pipeline that is not looking at it left the tank walking into it under
+    // Advance. Returns true to STAND DOWN (the pull pipeline owns the tick):
+    // always for the pull's own pack, and for anyone once a maneuver is in
+    // flight (non-Idle — never thrash it). Returns false only for a bystander
+    // while the pull is Idle: the blocking-trash walk-in owns that tick. The
+    // game-state read (pack identity vs decision/pull target, phase) stays at
+    // the trigger; this carries only the decision so it is unit-testable.
+    bool ShouldStandDownForPull(bool packIsPullsOwn, bool pullPhaseIdle);
+
     // Dynamic-verdict drop grace gate (pure). A standing Leeroy/Advanced verdict
     // must survive a TRANSIENT no-target read (door veto flicker, long-path cache
     // mid-rebuild, far-targets poll boundary): dropping it instantly flips the
@@ -333,6 +367,127 @@ namespace DungeonClearMath
         // arming tick (sinceMs nudged to 1) or a backward clock step / getMSTime wrap,
         // where "no time has elapsed yet" is the right answer.
         return now >= sinceMs && (now - sinceMs) >= timeoutMs;
+    }
+
+    // Bystander-detour borrow watchdog (pure, by-reference latch).
+    //
+    // Above commit range the tank's approach belongs to Advance (the long-path
+    // glide). When a bystander pack's aggro sphere actually sits on the line to
+    // the pull target, the pull BORROWS the tick and walks an orbit around it
+    // instead — but while it holds the tick, Advance's own wedge/stall ladder is
+    // not running, so the borrow must be bounded or a non-converging orbit would
+    // freeze the run outright. Bounding it in time is the same "preference, never
+    // refusal" rule the detour itself follows: when the borrow stops paying, hand
+    // the walk back and let the straight route happen.
+    //
+    // It is a NO-PROGRESS clock, not a plain deadline: `bestDist` records the
+    // closest the tank has been to the pack on this detour, and any tick that
+    // beats it by `progressEpsilon` restamps the clock. A long legitimate arc
+    // around a big sphere therefore never expires — only an orbit that has
+    // genuinely stopped closing burns the budget.
+    //
+    // `sinceMs == 0` means "not currently borrowing" and arms the clock.
+    // `timeoutMs == 0` disables the give-up entirely.
+    //
+    // The caller owns the latch either side of this: resetting it when the leg's
+    // target changes, and deciding what a `false` means. The pull makes it
+    // one-shot per pack (DcPullContext::avoidGaveUp) rather than simply retrying
+    // once the clock would re-arm — the tank closing one more yard under Advance
+    // is enough to satisfy the progress test, so a retrying caller would cancel
+    // Advance's spline every fraction of a second and thrash the movement it was
+    // supposed to be handing back.
+    inline bool ShouldKeepAvoidDetour(std::uint32_t now, float curDist,
+                                      std::uint32_t timeoutMs, float progressEpsilon,
+                                      std::uint32_t& sinceMs, float& bestDist)
+    {
+        if (sinceMs == 0 || curDist < bestDist - progressEpsilon)
+        {
+            sinceMs = now ? now : 1;   // arm; avoid the 0 "unarmed" sentinel on ms 0
+            bestDist = curDist;
+            return true;
+        }
+        if (timeoutMs == 0)
+            return true;
+        // `now >= sinceMs` guards the unsigned subtraction against a backward clock
+        // step / getMSTime wrap, where "no time has elapsed" is the right answer.
+        return !(now >= sinceMs && (now - sinceMs) >= timeoutMs);
+    }
+
+    // --- chase leash -------------------------------------------------------
+    // What the walk toward a MOVING trash target should do this tick.
+    enum class ChaseVerdict : std::uint32_t
+    {
+        Follow = 0,   // walk in as planned
+        Hold   = 1,   // stand still; let the mob come back to us
+        GiveUp = 2,   // the hold ran out — the caller decides what that means
+    };
+
+    // Chase-leash gate (pure, by-reference latch).
+    //
+    // A pull target is latched by GUID and its position is re-read live every
+    // tick, so a target that WALKS — a DB patrol, a wanderer, a mob repositioned
+    // by its own script — turns every approach into a pursuit. The tank follows it
+    // wherever it goes, and when the route it walks passes behind other packs the
+    // tank walks through those packs' aggro arcs and arrives at the camp with the
+    // whole room. That is a pursuit nobody chose: the pull was planned against the
+    // pack's position AT SELECTION TIME (that is what sized the estimate and where
+    // the camp was measured from), and the moment the pack leaves that spot the
+    // plan is about ground the mob is no longer standing on.
+    //
+    // A human tank does not chase a patrol. It waits at the spot it picked, and
+    // the patrol — by definition a loop — comes back. This is that rule:
+    //
+    //   `driftFromAnchor` : how far the target has moved from where it stood when
+    //                       we committed to it (2D).
+    //   `gapAtAnchor`     : distance from the tank's commit spot to that anchor.
+    //   `gapNow`          : distance from the SAME commit spot to the target now.
+    //                       Measured from the fixed origin, not the tank's live
+    //                       position — from a moving origin the gap always shrinks
+    //                       as we walk and the leash could never engage.
+    //   `destinationHot`  : the target is currently standing inside ANOTHER pack's
+    //                       aggro sphere. Reaching it means waking that pack no
+    //                       matter how the route bends, so it is never walkable
+    //                       ground however small the drift is.
+    //
+    // Follow while the target is still near where we picked it (`drift <=
+    // leashYards`) OR while it has come at least as close to our commit spot as it
+    // was then (`gapNow <= gapAtAnchor` — an inbound patrol rounding a wide loop
+    // is exactly what we are waiting for, and must not be held on drift alone).
+    // Otherwise the target is RECEDING or standing somewhere we must not follow it
+    // to: arm the hold latch and stand still until it comes back, and report
+    // GiveUp once the hold has burned `holdMs` so no patrol can stall a run.
+    //
+    // `leashYards` <= 0 disables the gate outright (Follow, latch cleared) —
+    // the historical always-chase behaviour, expressible from config.
+    // `holdMs` == 0 gives up on the first receding tick (never holds).
+    // Latch/clear contract mirrors ShouldWaitForPatrol: the latch stays armed past
+    // the timeout, so GiveUp repeats until the caller re-anchors or drops the
+    // target rather than silently re-entering a fresh hold.
+    inline ChaseVerdict DecideChase(float driftFromAnchor, float gapAtAnchor,
+                                    float gapNow, bool destinationHot,
+                                    float leashYards, std::uint32_t now,
+                                    std::uint32_t holdMs, std::uint32_t& holdSince)
+    {
+        if (leashYards <= 0.0f)
+        {
+            holdSince = 0;
+            return ChaseVerdict::Follow;
+        }
+        if (!destinationHot &&
+            (driftFromAnchor <= leashYards || gapNow <= gapAtAnchor))
+        {
+            holdSince = 0;
+            return ChaseVerdict::Follow;
+        }
+        if (holdMs == 0)
+            return ChaseVerdict::GiveUp;
+        if (holdSince == 0)
+            holdSince = now ? now : 1;   // arm; avoid the 0 "unarmed" sentinel on ms 0
+        // `now >= holdSince` guards the unsigned subtraction against a backward
+        // clock step / getMSTime wrap, where "no time has elapsed" is right.
+        if (now >= holdSince && (now - holdSince) >= holdMs)
+            return ChaseVerdict::GiveUp;
+        return ChaseVerdict::Hold;
     }
 
     // Engage-fizzle handoff latch (pure). An advanced-pull "camp fight" ended with

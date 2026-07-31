@@ -9,8 +9,11 @@
 #include <fstream>
 #include <sstream>
 
+#include "PlayerbotAIConfig.h"
+
 #include "Ai/Dungeon/DungeonClear/Settings/DcSettings.h"
 
+#include "TestRun/DcTestGearTiers.h"
 #include "TestRun/DcTestRunRecord.h"
 
 namespace DcTestDungeonRegistry
@@ -121,6 +124,26 @@ namespace DcTestDungeonRegistry
                 path = env;
 
         using DcTestRunRecord::EscapeJson;
+
+        // The ilvl ladder the dashboard's start form offers, per row and per
+        // difficulty (heroic runs at a different level, so a TBC row's two
+        // ladders differ). Emitted here rather than computed in the dashboard so
+        // the two can't drift: this file IS the catalogue.
+        auto appendLadder = [](std::ostringstream& out, std::uint32_t mapId, std::uint32_t level)
+        {
+            out << '[';
+            bool firstChoice = true;
+            for (DcTestGearTiers::Choice const& choice : DcTestGearTiers::Ladder(mapId, level))
+            {
+                if (!firstChoice)
+                    out << ',';
+                firstChoice = false;
+                out << "{\"ilvl\":" << choice.ilvl << ",\"label\":\"" << EscapeJson(choice.label)
+                    << "\"}";
+            }
+            out << ']';
+        };
+
         std::ostringstream s;
         s << "{\"limits\":{\"maxConcurrent\":"
           << DcSettings::GetUInt(ObjectGuid::Empty, "TestRun.MaxConcurrent")
@@ -128,7 +151,22 @@ namespace DcTestDungeonRegistry
           << DcSettings::GetUInt(ObjectGuid::Empty, "TestRun.MaxPlans")
           << ",\"planMaxTotal\":"
           << DcSettings::GetUInt(ObjectGuid::Empty, "TestRun.Plan.MaxTotal")
-          << "},\"dungeons\":[";
+          << "}";
+
+        // What a run gets when it asks for nothing. Read once at startup like
+        // the rest of this file, so it is a label for the form's "server
+        // default" entry, not an authority — the worldserver resolves the real
+        // values when the run starts.
+        s << ",\"gearDefaults\":{\"ilvl\":"
+          << (sPlayerbotAIConfig.autoGearScoreLimit > 0 ? sPlayerbotAIConfig.autoGearScoreLimit : 0)
+          << ",\"quality\":"
+          << (sPlayerbotAIConfig.autoGearQualityLimit > 0 ? sPlayerbotAIConfig.autoGearQualityLimit
+                                                          : 3)
+          << "},\"qualities\":[";
+        for (std::uint32_t q = 1; q <= 5; ++q)
+            s << (q > 1 ? "," : "") << "{\"v\":" << q << ",\"label\":\""
+              << DcTestGearTiers::QualityName(q) << "\"}";
+        s << "],\"dungeons\":[";
         bool first = true;
         for (Row const& row : All())
         {
@@ -140,7 +178,15 @@ namespace DcTestDungeonRegistry
               << ",\"mapId\":" << row.mapId
               << ",\"level\":" << row.recommendedLevel
               << ",\"heroicLevel\":" << row.heroicLevel
-              << ",\"wing\":\"" << EscapeJson(row.wing) << "\"}";
+              << ",\"wing\":\"" << EscapeJson(row.wing) << '"'
+              << ",\"gear\":";
+            appendLadder(s, row.mapId, row.recommendedLevel);
+            if (row.heroicLevel)
+            {
+                s << ",\"gearHeroic\":";
+                appendLadder(s, row.mapId, row.heroicLevel);
+            }
+            s << '}';
         }
         s << "]}";
 

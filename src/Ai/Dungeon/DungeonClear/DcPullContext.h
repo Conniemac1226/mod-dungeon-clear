@@ -100,6 +100,28 @@ struct DcPullContext
                                                  // on any tick and it can never
                                                  // silently freeze between them.
 
+    // --- bystander-detour borrow (approach, above commit range) -----------
+    // The tank's walk out to the chosen pack normally belongs to Advance. When a
+    // BYSTANDER pack's aggro sphere sits on that line the pull borrows the tick
+    // and orbits it instead (DcEngageGeometry::EnRoutePackAvoidPoint), which is
+    // what stops a correctly-sized heroic pull arriving with two extra packs
+    // stuck to it. Advance's wedge ladder is idle while we hold the tick, so the
+    // borrow runs on a no-progress clock — see DungeonClearMath::
+    // ShouldKeepAvoidDetour, which owns the arm/restamp/give-up rule.
+    ObjectGuid  avoidLegTarget;                  // pack the clock below belongs to;
+                                                 // a different pack restarts it
+    uint32      avoidSinceMs   = 0;              // getMSTime() of the last tick that
+                                                 // closed real distance; 0 = not
+                                                 // borrowing
+    float       avoidBestDist  = 0.0f;           // closest the tank has been to
+                                                 // avoidLegTarget on this detour
+    bool        avoidGaveUp    = false;          // the borrow expired for THIS pack:
+                                                 // don't take the tick again until
+                                                 // the pack changes. One-shot on
+                                                 // purpose — re-arming would cancel
+                                                 // Advance's spline again the moment
+                                                 // the tank closed a single yard
+
     // --- CC-assist gate ---------------------------------------------------
     uint32      ccSince    = 0;                  // getMSTime() the tank's CURRENT
                                                  // continuous drag-ruining CC
@@ -109,6 +131,32 @@ struct DcPullContext
                                                  // drag -> abort pull, party piles
                                                  // in" (DungeonClearMath::Should
                                                  // AbortPullForCc).
+
+    // --- camp-safety valve -------------------------------------------------
+    bool        partyReleased = false;           // the camp-safety valve released
+                                                 // the party from its passive hold
+                                                 // WITHOUT tearing the pull down —
+                                                 // the tank keeps dragging to camp
+                                                 // while the followers fight back.
+                                                 // Read by GetLeaderCampHold (the
+                                                 // party is no longer passive) and
+                                                 // ReapStrandedPassives (strip DC
+                                                 // passive at once, no release
+                                                 // delay). Set by SafetyRelease,
+                                                 // cleared when the next maneuver
+                                                 // starts (see Transition).
+    uint32      campSafetySince = 0;             // getMSTime() a HELD FOLLOWER's
+                                                 // current qualifying "in combat
+                                                 // below the safety HP floor with
+                                                 // a non-pull attacker" spell
+                                                 // began; 0 = fine. Lives in the
+                                                 // FOLLOWER's own copy of this
+                                                 // value (the leader's copy never
+                                                 // uses it) — the grace latch for
+                                                 // DungeonClearMath::
+                                                 // ShouldTripCampSafety. Re-armed
+                                                 // fresh on each new passive hold
+                                                 // (ApplyFollowerPassive).
 
     // --- per-target latches -----------------------------------------------
     ObjectGuid  abortTarget;                     // pack a pull gave up on; don't re-pull
@@ -149,6 +197,26 @@ struct DcPullContext
                                                  // Grace latch for DungeonClearMath::
                                                  // ShouldDropPullVerdict.
 
+    // --- verdict telemetry (read-only for everyone but the governor) -------
+    // What the classifier PREDICTED for the pack the standing verdict applies to,
+    // kept so an observer can line it up against how many mobs actually turned
+    // up. Nothing in the pull FSM reads these — they exist because "the tank
+    // over-pulls in heroic" is two different bugs (the estimate is wrong / the
+    // ceiling is wrong) that look identical from the outside, and only the
+    // predicted-vs-observed delta tells them apart. Refreshed on every verdict
+    // resolve (a Leeroy->Advanced upgrade re-stamps them); the harness samples
+    // the last values standing before the pull closes.
+    //
+    // `decisionSeq` is the thing an observer actually keys on: a monotone counter
+    // bumped once per NEW pack, so "a new pull started" is detectable even when
+    // the same pack is re-pulled after a fizzle (where decisionTarget alone never
+    // changes) and across the Dynamic verdict being dropped and re-taken.
+    uint32      decisionSeq        = 0;  // ++ per new pack latched
+    uint32      decisionTargetEntry = 0; // creature entry of decisionTarget
+    uint32      predictedThirds    = 0;  // DcPullClassification::fullCount
+    uint32      predictedCount     = 0;  // DcPullClassification::bodyCount
+    uint32      predictedCeiling   = 0;  // DcPullClassification::ceiling
+
     void Reset() { *this = DcPullContext{}; }
 
     // The ONLY way to transition into Engage (used by DcSetPullPhase and
@@ -180,8 +248,45 @@ struct DcPullContext
             EnterEngage(nowMs);
             return;
         }
+        // Entering a holding phase from Idle/Engage starts a NEW maneuver: any
+        // standing safety release belonged to the previous one. Deliberately NOT
+        // cleared by EnterEngage — a valve fire during Advancing aborts INTO
+        // Engage, and the flag must survive that transition so the reaper skips
+        // the graceful release delay (a safety release is always immediate).
+        if (phase == DcPullPhase::Idle || phase == DcPullPhase::Engage)
+            partyReleased = false;
         phase = p;
         phaseSince = nowMs;
+    }
+
+    // Camp-safety valve outcome (pure — gtested via TestPullDecisions). A held
+    // passive follower took real damage from something that is NOT the pack being
+    // dragged; the party must be freed to fight back. What happens to the PULL
+    // depends on the phase:
+    //   Returning (dragging)  keep the drag — the camp is the destination, and
+    //   Forming   (marking)   abandoning mid-drag fights wherever the party
+    //                         happens to be standing (the over-pull the drag
+    //                         exists to prevent). Release the party only.
+    //   Advancing             abort as before: the tank is still walking TOWARD
+    //                         the pack; a drag-back from a pull that never tagged
+    //                         is meaningless.
+    //   Idle / Engage         no-op — nothing is holding the party.
+    // Returns true when the pull itself was aborted (phase forced to Engage).
+    bool SafetyRelease(uint32 nowMs)
+    {
+        switch (phase)
+        {
+            case DcPullPhase::Forming:
+            case DcPullPhase::Returning:
+                partyReleased = true;
+                return false;
+            case DcPullPhase::Advancing:
+                partyReleased = true;  // immediate release — see Transition
+                EnterEngage(nowMs);
+                return true;
+            default:
+                return false;
+        }
     }
 
     // --- camp ownership (see campPublishedMs) -----------------------------

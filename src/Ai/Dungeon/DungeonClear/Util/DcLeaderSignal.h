@@ -7,6 +7,7 @@
 #define _DC_LEADER_SIGNAL_H
 
 #include "Define.h"
+#include "ObjectGuid.h"
 #include "Position.h"
 
 #include <vector>
@@ -213,10 +214,35 @@ public:
                                          float& radiusOut);
 
     // Force the leader of `bot`'s group to abandon the current pull and release
-    // the party (sets the leader's pull phase to Engage). Used by the camp-safety
-    // valve when a held, passive follower is taking unexpected damage. No-op if
-    // there is no leader or it isn't mid-pull.
+    // the party (sets the leader's pull phase to Engage). Used by the CC-abort
+    // path when the tank is control-locked mid-drag and the pull is genuinely
+    // failing. No-op if there is no leader or it isn't mid-pull.
     static void AbortLeaderPull(Player* bot);
+
+    // Release the party from their passive camp hold WITHOUT tearing down the
+    // leader's pull. The tank keeps dragging to camp; the followers stop being
+    // punching bags and fight back from the camp the drag is headed to. Used by
+    // the camp-safety valve, which wants "let them fight" and not "abandon the
+    // maneuver" — the abandon variant lands the whole party in the middle of the
+    // room the drag existed to leave. Per leader phase (DcPullContext::
+    // SafetyRelease): Forming/Returning keep the pull and only release the party;
+    // Advancing aborts as AbortLeaderPull did (the tank is still walking TOWARD
+    // the pack — a drag-back from a pull that never tagged is meaningless);
+    // Idle/Engage no-op.
+    static void ReleaseLeaderPullHold(Player* bot);
+
+    // True while the leader's current pull carries a standing camp-safety release
+    // (DcPullContext::partyReleased): the maneuver is still in flight but the
+    // party must NOT be passive, and any DC passive still applied is stripped at
+    // once (no graceful release delay). False when there is no leader / no pull.
+    static bool IsLeaderPullHoldReleased(Player* bot);
+
+    // The pack the leader's current pull tagged (DcPullContext::pullTarget), or
+    // an empty guid when there is no leader / no pull / nothing tagged yet. The
+    // camp-safety valve's attacker attribution reads this to decide whether what
+    // is hitting a held follower is the dragged pack (ordinary splash) or a
+    // second pack (the maneuver is compromised).
+    static ObjectGuid GetLeaderPullTarget(Player* bot);
 
     // Grant (or revoke) the leader tank immunity to the Daze mechanic for the
     // duration of an advanced-pull session. A creature hitting a moving target

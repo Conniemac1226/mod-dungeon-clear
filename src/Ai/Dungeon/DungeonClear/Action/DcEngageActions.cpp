@@ -344,7 +344,26 @@ bool DungeonClearEngageActionBase::EngageDirect(Unit* target)
         // yet) and is consumed each tick; the orbit emerges from per-tick re-aiming
         // and ends the moment the direct line clears. A detour that can't be pathed
         // falls through to the straight approach rather than freezing the clear.
-        if (std::optional<Position> wp = RoomAggroSkirtPoint(target))
+        //
+        // Then the general case: bystander PACKS whose aggro arcs the walk clips.
+        // Same ordering as MoveToSkirtingRoomAggro — the boss sphere is registry-
+        // declared and unrecoverable to wake, so it keeps priority, and only one
+        // orbit ever drives a tick. THIS is the walk-in the en-route avoidance was
+        // meant to cover: every trash/room/boss engage funnels through EngageDirect,
+        // whereas MoveToSkirtingRoomAggro is reached only from the pull's room-clear
+        // branch, so wiring it there alone left the ordinary "jog across the room at
+        // the far pack" — the case the feature exists for — walking a straight line.
+        //
+        // Not inside the final approach band: those last yards are the committed
+        // run-in (COMBAT priority below, deliberately uninterruptible), and there is
+        // nothing left to route around by then — a bystander close enough to matter
+        // at that range has either already aggroed or is inside its own padded
+        // sphere with us, where the orbit has no room to help. It also keeps the
+        // per-tick grid search off the ticks that matter most.
+        std::optional<Position> wp = RoomAggroSkirtPoint(target);
+        if (!wp && distance > attackRange + DC_COMBAT_APPROACH_RANGE)
+            wp = DcEngageGeometry::EnRoutePackAvoidPoint(bot, context, target);
+        if (wp)
         {
             bool const moved = DcMoveTo(bot->GetMapId(), wp->GetPositionX(),
                                       wp->GetPositionY(), wp->GetPositionZ(),
@@ -560,7 +579,15 @@ bool DungeonClearEngageActionBase::MoveToSkirtingRoomAggro(Unit* target,
     float dx = target->GetPositionX();
     float dy = target->GetPositionY();
     float dz = target->GetPositionZ();
-    if (std::optional<Position> wp = RoomAggroSkirtPoint(target))
+    // Room-aggro boss sphere first: it is registry-declared, encounter-critical
+    // (waking the boss mid-clear is unrecoverable), and its sphere is usually the
+    // biggest thing in the room. En-route pack avoidance is the general case and
+    // only gets a say once the boss sphere is clear — two orbits fighting over
+    // one destination on the same tick is the bounce both latches exist to stop.
+    std::optional<Position> wp = RoomAggroSkirtPoint(target);
+    if (!wp)
+        wp = DcEngageGeometry::EnRoutePackAvoidPoint(bot, context, target);
+    if (wp)
     {
         dx = wp->GetPositionX();
         dy = wp->GetPositionY();
@@ -696,6 +723,34 @@ bool DungeonClearEngageTrashAction::Execute(Event /*event*/)
     if (bot->GetDistance(target) > DC_ENGAGE_RANGE &&
         !IsDirectlyReachable(bot, target))
         return false;
+
+    // CHASE LEASH. The sticky above is deliberately commit-and-hold — it never
+    // releases on distance, because releasing on distance is what made the tank
+    // flip-flop between two equidistant mobs. The cost of that is a target which
+    // WALKS: the pick is pinned, EngageDirect re-aims at its live position every
+    // tick, and the tank follows a patrol wherever its route goes — including back
+    // behind other packs, waking every one it passes.
+    //
+    // The leash keeps the commitment (the sticky is untouched) and takes away the
+    // pursuit: while the mob stays near the ground we picked it on, walk in as
+    // before; once it recedes past the leash, stand still and let it come back —
+    // a patrol is a loop. Own the tick while holding so Advance can't glide the
+    // tank past the very pack we are waiting on. GiveUp re-anchors and walks, so
+    // this can only ever pace a chase, never refuse one.
+    switch (DcEngageGeometry::ChaseLeash(bot, context, target))
+    {
+        case DungeonClearMath::ChaseVerdict::Hold:
+            DcMovement::StopBot(bot, DcMovement::Stop::Hold);
+            DcFaceIfNeeded(bot, target);
+            LOG_DEBUG("playerbots.dungeonclear",
+                      "[DC:{}] engage trash: holding for {} to come back around "
+                      "rather than chasing it ({:.1f}yd)",
+                      bot->GetName(), target->GetGUID().ToString(),
+                      bot->GetExactDist(target));
+            return true;
+        default:
+            break;
+    }
 
     return EngageDirect(target);
 }

@@ -29,7 +29,8 @@ namespace DcTestPlan
         {
             out.ok = false;
             out.err = why +
-                " — usage: .dc test plan start <dungeon> [heroic] total=N [concurrent=N] [level=N] [seed=N]";
+                " — usage: .dc test plan start <dungeon> [heroic] total=N [concurrent=N] [level=N]"
+                " [seed=N] [ilvl=N|none] [quality=rare|epic|…]";
             return out;
         };
 
@@ -53,6 +54,29 @@ namespace DcTestPlan
 
             std::string const key = word.substr(0, eq);
             std::string const val = word.substr(eq + 1);
+
+            // The two gear options take words as well as numbers ("ilvl=none",
+            // "quality=epic"), so they are read before the numeric parse below
+            // rejects them.
+            if (key == "ilvl")
+            {
+                bool ok = false;
+                std::int32_t const ilvl = DcTestGearTiers::ParseIlvl(val, &ok);
+                if (!ok)
+                    return usage("bad item level in '" + word + "' (1-400, or none)");
+                out.spec.gear.ilvl = ilvl;
+                continue;
+            }
+            if (key == "quality")
+            {
+                std::uint32_t const q = DcTestGearTiers::ParseQuality(val);
+                if (q == 0)
+                    return usage("bad quality in '" + word +
+                                 "' (normal|uncommon|rare|epic|legendary, or 1-5)");
+                out.spec.gear.quality = q;
+                continue;
+            }
+
             char* end = nullptr;
             unsigned long const n = std::strtoul(val.c_str(), &end, 10);
             if (val.empty() || !end || *end != '\0')

@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "ObjectGuid.h"
+#include "TestRun/DcTestGearTiers.h"
 
 class DcTestRunJob;
 class Player;
@@ -53,7 +54,11 @@ public:
         NoMgr,           // permanent
         CapHit,          // transient — a run will finish
         BotBudget,       // transient — MaxAddedBots pre-check
-        PoolExhausted    // transient — other runs hold the pool chars
+        PoolExhausted,   // transient — other runs hold the pool chars
+        BadRoster,       // permanent — malformed party=, unknown/duplicate name
+        FactionMismatch, // permanent — a roster cannot span factions
+        CharacterOnline, // transient — a human is playing that character
+        CharacterBusy    // transient — another live run holds that character
     };
 
     // Validate + launch a run. On success sets *msg to the start confirmation
@@ -66,14 +71,41 @@ public:
     // heroicLevel as the default bot level (level override still wins).
     // planId ties the run to a `.dc test plan` campaign ("" = ad-hoc); errOut /
     // runIdOut are optional feedback for the plan scheduler.
+    // gear is the run's own item-level / quality ceiling; a default-constructed
+    // Spec inherits the AiPlayerbot.AutoGear* conf values.
     bool Start(Player* gm, std::string const& dungeonToken, uint32 levelOverride, uint32 seed,
-               bool heroic, std::string* msg, std::string const& planId = "",
-               StartErr* errOut = nullptr, std::string* runIdOut = nullptr);
+               bool heroic, DcTestGearTiers::Spec const& gear, std::string* msg,
+               std::string const& planId = "", StartErr* errOut = nullptr,
+               std::string* runIdOut = nullptr);
+
+    // Validate + launch a HAND-PICKED party (`.dc test start <d> party=a,b,c,d,e`).
+    // `partySpec` is the raw comma-separated name list; roles are positional
+    // (tank, heal, dps, dps, dps — see DcTestRoster).
+    //
+    // Refuses on: malformed list, a name no character answers to, a character a
+    // human is currently playing, a character another live run already holds, and
+    // a roster spanning both factions (which cannot be grouped). Level comes from
+    // the characters, so there is no level override and no comp seed.
+    //
+    // The characters are NOT respecced, regeared, or releveled — see
+    // DcTestRunJob::CreateFromRoster.
+    bool StartRoster(Player* gm, std::string const& dungeonToken, std::string const& partySpec,
+                     bool heroic, std::string* msg, std::string const& planId = "",
+                     StartErr* errOut = nullptr, std::string* runIdOut = nullptr);
 
     // Stop the run(s) the selector resolves to (see DcTestRunSelect). Bare
     // selector = the single active run. False (with an explanatory *msg) on
     // no-runs / ambiguous / not-found.
     bool Stop(std::string const& selector, std::string* msg);
+
+    // Resolve the selector to ONE run's leader tank, for `.dc test watch` — the
+    // GM camera needs a single seat, so "all" and a bare selector with several
+    // runs live are both refused with the run list in *msg (same selector
+    // grammar and messages as Stop, minus the fan-out). *tokenOut carries the
+    // run's dungeon token so the watcher can land at that row's entrance rather
+    // than on top of the tank.
+    bool WatchTarget(std::string const& selector, ObjectGuid* tankOut,
+                     std::string* msg, std::string* tokenOut = nullptr) const;
 
     std::string StatusText() const;
     bool IsActive() const { return !_runs.empty(); }

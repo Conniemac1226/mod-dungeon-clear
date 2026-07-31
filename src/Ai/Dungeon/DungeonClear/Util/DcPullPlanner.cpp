@@ -487,6 +487,7 @@ bool DcPullPlanner::ClassifyPullAdvanced(PlayerbotAI* botAI, Unit* target,
         out->fullCount = weightThirds;
         out->reducedCount = reducedThirds;
         out->ceiling = ceilingThirds;
+        out->bodyCount = count;
     }
     DC_PULL_DEBUG("[DC:{}] dynamic: estimated {} aggro on target {} among {} hostiles "
                   "within {:.0f}yd (low-lvl {}, spread {:.0f}, assist {:.0f}, weight "
@@ -642,7 +643,13 @@ void DcPullPlanner::UpdateDynamicPullMode(PlayerbotAI* botAI, AiObjectContext* c
     // shrunk exclusion turns into a dead-band / boss wake. Advanced is always the
     // safe direction, so forcing it for every pack in that room (A, robots, B alike)
     // is fine. See DcTargeting::RoomClearForcesAdvanced + RoomAggroBoss::pullOutRadius.
-    bool const forceAdv = DcTargeting::RoomClearForcesAdvanced(bot, context);
+    //
+    // PullForceAdvanced is the second, operator-driven reason: an A/B lever for
+    // measuring "always Advanced" against the tuned ceiling (off by default on
+    // both difficulties — see the registry row). Same direction as the room-clear
+    // force, so they simply OR together.
+    bool const forceAdv = DcTargeting::RoomClearForcesAdvanced(bot, context) ||
+                          DcSettings::GetBool(bot, "PullForceAdvanced");
 
     // Per-pack latch, UPGRADE-ONLY while approaching the SAME pack.
     //
@@ -684,6 +691,14 @@ void DcPullPlanner::UpdateDynamicPullMode(PlayerbotAI* botAI, AiObjectContext* c
     // stationary/slow patrol can't stall the run.
     auto resolve = [&](bool advanced, DcPullClassification const& cls)
     {
+        // Telemetry stamp (no gate reads these — see DcPullContext). Refreshed on
+        // every resolve, including the throttled same-pack re-check, so what an
+        // observer reads at commit time is the estimate the COMMITTED verdict was
+        // taken from, not the one from first sight.
+        pull.predictedThirds  = cls.fullCount;
+        pull.predictedCount   = cls.bodyCount;
+        pull.predictedCeiling = cls.ceiling;
+
         // Build the pure observation, run the latch math where the live gate did,
         // then let DecidePull arbitrate. Routing every commit through the pure
         // function is what keeps the captured fixtures honest: live and replay
@@ -772,6 +787,11 @@ void DcPullPlanner::UpdateDynamicPullMode(PlayerbotAI* botAI, AiObjectContext* c
     bool const advanced = ClassifyPullAdvanced(botAI, target, &cls) || forceAdv;
     pull.decisionTarget = target->GetGUID();
     pull.decisionSince = getMSTime();
+    // One tick of the telemetry sequence per NEW pack — the edge an observer
+    // splits its per-pull records on. Bumped here and nowhere else: the same-pack
+    // re-check above re-stamps the estimate but is still the SAME pull.
+    ++pull.decisionSeq;
+    pull.decisionTargetEntry = target->GetEntry();
     resolve(advanced, cls);
     // Report the verdict actually APPLIED (resolve can hold a patrol-contended pack
     // as a provisional LEEROY while it walks in, or as a WAIT at commit range), not

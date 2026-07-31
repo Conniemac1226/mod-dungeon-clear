@@ -71,6 +71,48 @@ struct DcApproachState
     int8 skirtOrbitDir         = 0;  // 0 = unlatched, +/-1 = committed orbit rotation
     ObjectGuid skirtOrbitTarget;     // trash GUID the current orbit latch is for
 
+    // En-route pack avoidance (DcEngageGeometry::EnRoutePackAvoidPoint) reuses
+    // the same orbit machinery, but around a BYSTANDER pack rather than a
+    // room-aggro boss — and which bystander is "the one in the way" changes as
+    // the tank rounds them one at a time. The latch is therefore keyed by the
+    // SPHERE being rounded, not by the destination: inheriting a "round left"
+    // committed for a pack we have already passed is the same two-point bounce
+    // the boss skirt latch exists to prevent. Reset when the chosen sphere
+    // changes, and by the approach reset below.
+    int8 avoidOrbitDir         = 0;  // 0 = unlatched, +/-1 = committed rotation
+    ObjectGuid avoidOrbitSphere;     // pack GUID the current avoid orbit is for
+
+    // --- chase leash (approach to a MOVING trash target) ------------------
+    // A trash target is latched by GUID and read live, so a walking mob turns
+    // every approach into a pursuit: the tank follows it across the room and
+    // wakes everything its route passes behind. The leash pins the approach to
+    // the ground the pull was PLANNED against — `chaseAnchor` is where the mob
+    // stood when we committed to walking at it, `chaseOrigin` where the tank
+    // stood then (the fixed origin the receding test is measured from; from the
+    // tank's live position the gap always shrinks as we walk and the leash could
+    // never engage). A target that recedes past the leash is waited out rather
+    // than chased — see DungeonClearMath::DecideChase.
+    //
+    // Keyed by `chaseTarget`, so a different pack simply re-anchors; there is no
+    // stale-latch window. Shared by BOTH walks that aim at a live trash unit (the
+    // pull's tag leg and the engage walk-in) so they can never disagree about how
+    // far the same mob has drifted.
+    ObjectGuid chaseTarget;          // target the anchor below belongs to
+    Position   chaseAnchor;          // where THAT MOB stood when we committed
+    Position   chaseOrigin;          // where the TANK stood then (gap origin)
+    uint32     chaseHoldSince  = 0;  // getMSTime() the current hold began; 0 = not holding
+
+    // Mid-glide hazard probe (Advance). While a continuous escort spline is in
+    // flight the hop ladder short-circuits (the ride outranks everything), so a
+    // PATROL can wander into the committed window after launch unobserved. The
+    // probe re-tests the remaining window against the bystander avoid-spheres at
+    // most every DC_GLIDE_HAZARD_PROBE_MS and halts the glide (escort-aware
+    // stop) when something violates it. The ignore latch is what stops a
+    // stop/launch ping-pong: the sphere that caused the last interrupt is
+    // skipped, so the tank interrupts only for something NEW.
+    uint32 glideHazardProbeMs  = 0;  // last probe timestamp (getMSTime)
+    ObjectGuid glideHazardIgnore;    // sphere behind the last interrupt
+
     // --- blocking-door interaction ----------------------------------------
     // Last door the bot clicked open and when, so the door-blocked action can
     // re-click an auto-closing gate (Strat's King's Square Gate re-shuts 3s
@@ -143,6 +185,14 @@ struct DcApproachState
         lastPos             = Position();
         skirtOrbitDir       = 0;
         skirtOrbitTarget.Clear();
+        avoidOrbitDir       = 0;
+        avoidOrbitSphere.Clear();
+        chaseTarget.Clear();
+        chaseAnchor         = Position();
+        chaseOrigin         = Position();
+        chaseHoldSince      = 0;
+        glideHazardProbeMs  = 0;
+        glideHazardIgnore.Clear();
         doorStallGuid.Clear();
         doorStallSinceMs    = 0;
         doorStallLastMs     = 0;

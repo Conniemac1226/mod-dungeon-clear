@@ -397,20 +397,42 @@ bool DungeonClearBlockingTrashTrigger::IsActive()
         return false;
     }
 
-    // In advanced-pull mode the pull pipeline OWNS trash packs: it LOS-pulls them
-    // to camp rather than engaging in place. Stand down so the tank glides in
-    // under Advance until the pull-start range, instead of walking up and fighting
-    // here (engage-trash outranks advance, so without this it would preempt the
-    // pull for any pack in the 20-35yd band the pull is deliberately waiting to
-    // close). The one exception is a pack a prior pull gave up on (abort target):
-    // fall through to the normal walk-in so the run never livelocks on it.
+    // In advanced-pull mode the pull pipeline OWNS the trash pack it is working:
+    // it LOS-pulls it to camp rather than engaging in place. Stand down so the
+    // tank glides in under Advance until the pull-start range, instead of
+    // walking up and fighting here (engage-trash outranks advance, so without
+    // this it would preempt the pull for any pack in the 20-35yd band the pull
+    // is deliberately waiting to close). Two exceptions fall through to the
+    // normal walk-in:
+    //   * a pack a prior pull gave up on (abort target) — so the run never
+    //     livelocks on it, and
+    //   * a BYSTANDER — a pack the pull never selected — found by our
+    //     aggro-shaped scan while the pull phase is IDLE (nothing in flight to
+    //     disturb). Handing a pack the pipeline is not looking at to that
+    //     pipeline was a silent no-op, and in heroic (always pull mode) it left
+    //     Advance — the one component with no aggro awareness — as the only
+    //     thing steering the tank into the room. Once anything is in flight
+    //     (non-Idle) we keep standing down as before; the maneuver must not be
+    //     thrashed. Decision core: DungeonClearMath::ShouldStandDownForPull.
     if (AI_VALUE(bool, DcKey::PullModeCurrent) &&
         trash->GetGUID() != AI_VALUE(DcPullContext&, DcKey::PullContext).abortTarget)
     {
-        DC_PULL_DEBUG("[DC:{}] blocking-trash: pull mode owns pack {} ({:.1f}yd) -> "
-                      "stand down for the pull pipeline",
-                      bot->GetName(), trash->GetGUID().ToString(), bot->GetExactDist(trash));
-        return false;
+        DcPullContext const& pull = AI_VALUE(DcPullContext&, DcKey::PullContext);
+        bool const packIsPullsOwn = trash->GetGUID() == pull.decisionTarget ||
+                                    trash->GetGUID() == pull.pullTarget;
+        if (DungeonClearMath::ShouldStandDownForPull(
+                packIsPullsOwn, pull.phase == DcPullPhase::Idle))
+        {
+            DC_PULL_DEBUG("[DC:{}] blocking-trash: pull mode owns pack {} ({:.1f}yd) -> "
+                          "stand down for the pull pipeline",
+                          bot->GetName(), trash->GetGUID().ToString(),
+                          bot->GetExactDist(trash));
+            return false;
+        }
+        DC_PULL_DEBUG("[DC:{}] blocking-trash: bystander pack {} ({:.1f}yd) with the "
+                      "pull idle -> owning the tick",
+                      bot->GetName(), trash->GetGUID().ToString(),
+                      bot->GetExactDist(trash));
     }
 
     return true;

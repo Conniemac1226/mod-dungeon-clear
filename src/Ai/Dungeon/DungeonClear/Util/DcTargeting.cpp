@@ -206,6 +206,11 @@ namespace
 
         Unit* best = nullptr;
         float bestDistFromBot = std::numeric_limits<float>::max();
+        // Scan-cost telemetry for the heroic band widening (plan §C.4): how many
+        // candidates actually landed in a corridor band this scan (i.e. survived
+        // the AABB pre-filter AND the per-candidate band test — the ones that
+        // cost real work). Logged with the winner below.
+        uint32 inBandCount = 0;
 
         for (ObjectGuid guid : candidates)
         {
@@ -258,6 +263,7 @@ namespace
             }
             if (!inCorridor)
                 continue;
+            ++inBandCount;
 
             // Expensive gates last, and per-candidate so a closer out-of-LOS
             // mob can't shadow a visible one further along the corridor.
@@ -269,6 +275,11 @@ namespace
             best = u;
             bestDistFromBot = distFromBot;
         }
+        if (best)
+            DC_PULL_DEBUG("[DC:{}] blocking-trash: {} candidate(s) in band -> {} "
+                          "at {:.1f}yd",
+                          bot->GetName(), inBandCount, best->GetGUID().ToString(),
+                          bestDistFromBot);
         return best;
     }
 }

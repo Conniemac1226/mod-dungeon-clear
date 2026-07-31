@@ -72,6 +72,46 @@ constexpr float DC_TRASH_CONE_HALF_ANGLE = 1.0471975512f;  // pi/3 == 60°
 // does not.
 constexpr bool  DC_USE_CORRIDOR_SCAN = true;
 constexpr float DC_CORRIDOR_LOOKAHEAD = 35.0f;
+
+// Mid-glide hazard probe cadence (Advance). While a continuous escort spline is
+// in flight the hop ladder short-circuits, so a patrol can enter the committed
+// window unobserved; the probe re-tests the remaining window against the
+// bystander avoid-spheres at most this often. At ~7yd/s glide speed this is a
+// ~3.5yd resolution — far finer than the 35yd capped window — for one grid
+// visit per half-second per tank. Gated on AdvanceWindowYards > 0 and
+// PullEnRouteAvoid, so normal difficulty pays nothing.
+constexpr uint32 DC_GLIDE_HAZARD_PROBE_MS = 500;
+
+// En-route truncation shaping (Advance; DcEngageGeometry::TruncateWindowAtSphere).
+//
+// DC_AVOID_MIN_GLIDE is the floor on what a truncated window is allowed to be.
+// Below it the "stop at the hazard threshold" is indistinguishable from standing
+// still, and Advance would spend the tick either issuing a 2yd spline or — when
+// the truncation leaves the lone seed point — dropping into the per-point MoveTo
+// walk, whose per-hop LastMovement delay is the ~2yd/s crawl the spline window
+// exists to eliminate. A tank that close to a pack has nothing left to avoid, so
+// the truncation is declined and the glide runs; the pack is owned from there by
+// the blocking-trash detector and the pull pipeline. Sized just above one
+// polyline point spacing (~4yd) so a truncation always buys at least one real
+// leg of travel.
+constexpr float DC_AVOID_MIN_GLIDE = 6.0f;
+// How far OUTSIDE the sphere the truncated window's last point sits. Parking
+// exactly on the boundary reads as "inside" to the next tick's test (the
+// crossing solve rejects a start point already within r), which would decline
+// every following truncation for that sphere; a yard of clearance keeps the stop
+// re-derivable. Small on purpose — the sphere is already padded by
+// PullEnRouteMargin, so this is anti-jitter, not safety margin.
+constexpr float DC_AVOID_EDGE_BACKOFF = 1.0f;
+
+// Longest single sidestep the BYSTANDER orbit (DcEngageGeometry::OrbitRing) will
+// issue. The room-aggro boss skirt steps a fixed angle, which is a ~12yd chord at
+// a 20yd stand-off and a ~35yd chord at 60 — fine for a boss orbit the tank is
+// committed to running all the way around, wrong for a trash pack it is merely
+// walking past, because the pull's early-out routinely cancels that leg one tick
+// after issuing it. A leg this size is cheap enough to abandon and still long
+// enough to change the approach line.
+constexpr float DC_ORBIT_MAX_LEG_YARDS = 12.0f;
+
 // Half-width of the path "blocking trash" band. Widened from 8 to 18 so it
 // roughly matches level-80 elite aggro radius: a pack sitting a few yards off the
 // route line still aggros as the tank passes, so it must count as blocking trash.
@@ -99,6 +139,20 @@ constexpr float DC_PULL_START_RANGE = 26.0f;
 // disagreed, NOBODY moved the camp, and the spread gate (camp-anchored in pull
 // mode) kept passing while the tank glided away from the party.
 constexpr uint32 DC_CAMP_PUBLISH_FRESH_MS = 1000;
+
+// Bystander-detour borrow budget: how long the pull may keep driving the
+// approach around another pack's aggro sphere WITHOUT the tank getting any
+// closer to the pack it is walking at, before it hands the walk back to Advance.
+// The clock restamps on every yard of real progress (DungeonClearMath::
+// ShouldKeepAvoidDetour), so this only ever measures a stalled orbit — 8s of
+// pure sideways travel is already far more than any legitimate arc needs, and
+// the bound is what keeps a non-converging orbit from freezing the run while
+// Advance's own wedge ladder is parked.
+constexpr uint32 DC_PULL_AVOID_STALL_MS = 8000;
+// A tick has to beat the detour's best distance-to-pack by this much to count as
+// progress and restamp the clock. Absorbs the sub-yard jitter of a glide so an
+// orbit that is merely drifting can't hold the borrow open forever.
+constexpr float DC_PULL_AVOID_PROGRESS_YD = 1.0f;
 
 // The max party-spread default lives in DcSettingsRegistry ("PartyMaxSpread");
 // the trigger, the advance gate, and the status publisher all read it through

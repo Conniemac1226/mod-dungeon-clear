@@ -17,6 +17,22 @@
 # and clamps every override to the registry range (see DcSettingsRegistry.h);
 # the values here remain the fallback for anyone without an override. The
 # DEBUGGING and ADVANCED PATHING settings are server-only and NOT overridable.
+#
+# HEROIC DIFFICULTY: a handful of settings resolve to a different built-in
+# default while the run is inside a dungeon at Heroic difficulty, because heroic
+# trash is a different problem (every mob elite, a mis-sized pull ends the run).
+# Any setting can be given its own heroic value by appending ".Heroic" to the
+# key:
+#
+#     DungeonClear.PullDynamicMaxLeeroyMobs = 5          # normal difficulty
+#     DungeonClear.PullDynamicMaxLeeroyMobs.Heroic = 2   # heroic difficulty
+#
+# The full resolution order is: per-player override -> "<key>.Heroic" (heroic
+# runs only) -> built-in heroic default -> "<key>" -> built-in default. A player
+# override is difficulty-blind and beats both heroic layers, so a value someone
+# set for their run is never overruled by a heroic default. Every key that ships
+# with a heroic default is listed in the HEROIC DEFAULTS section at the end of
+# the general settings; writing a "<key>.Heroic" line replaces it.
 
 ########################################
 # GENERAL SETTINGS  (per-player overridable — see note above)
@@ -593,9 +609,12 @@ DungeonClear.BossEngageRangeCap = 30.0
 #        yards. The floor ensures a mob sitting right on the route line always
 #        counts as blocking; the cap bounds how far off the line a giant-aggro
 #        elite can still be pulled (and pads the broad-phase reject box). Only
-#        used when DynamicAggroRange = 1.
+#        used when DynamicAggroRange = 1. The band is the unified aggro reach
+#        (the mob's notice distance + both combat reaches + AggroRangeMargin) —
+#        the same sizing the en-route avoidance sphere uses, so detection and
+#        avoidance can never disagree about what "inside aggro" means.
 #
-#        Defaults: 8.0 / 30.0
+#        Defaults: 8.0 / 30.0 (cap 42.0 in Heroic — see HEROIC DEFAULTS below)
 #
 
 DungeonClear.TrashWidthFloor = 8.0
@@ -770,14 +789,32 @@ DungeonClear.SwimMaxRange = 250.0
 #        Camp-safety valve for advanced pull mode (`dc pull`). While a pull is in
 #        progress the DPS and healer wait passive at the camp, so they can't
 #        defend themselves if a patrol clips the camp or the pull goes sideways.
-#        If a held, passive party member is in combat and drops below this health
-#        percent, the pull is aborted and the whole party is released to fight
-#        back. 0 disables the valve (rely only on the short pull window).
+#        If a held, passive party member is in combat below this health percent
+#        and what is hitting it is NOT the pack being dragged (splash from the
+#        dragged pack is an ordinary drag, not a failed pull), the party is
+#        released to fight back. An in-flight drag-back is KEPT — the tank
+#        finishes hauling the pack to camp while the freed party fights from
+#        there; only a pull still walking OUT to its pack (nothing tagged yet) is
+#        aborted outright. 0 disables the valve (rely only on the short pull
+#        window).
 #
 #        Default: 50.0
 #
 
 DungeonClear.PullSafetyHpPct = 50.0
+
+#
+#    DungeonClear.PullSafetyGrace
+#        Seconds the qualifying state above must PERSIST before the valve fires.
+#        A single stray hit that the follower shrugs off inside the grace never
+#        throws the maneuver away on a flicker; sustained damage (something is
+#        really camping the camp) releases the party. 0 fires on the first
+#        qualifying tick.
+#
+#        Default: 0.0
+#
+
+DungeonClear.PullSafetyGrace = 0.0
 
 #
 #    DungeonClear.PullSetback
@@ -1070,6 +1107,26 @@ DungeonClear.PullCommitRangeCap = 34.0
 DungeonClear.PullDynamicMaxLeeroyMobs = 5
 
 #
+#    DungeonClear.PullForceAdvanced
+#        Dynamic pull only. With 1, EVERY pack is pulled with the careful
+#        Advanced pull-to-camp maneuver regardless of how small the estimate
+#        above says it is. This exists so "always Advanced" can be measured
+#        against a tuned ceiling rather than guessed at — it is not the
+#        recommended way to make heroic runs safe. Advanced runs the full
+#        form/advance/drag-back sequence on single-mob packs too, which is pure
+#        run time, and it has failure modes a Leeroy does not (the drag can
+#        fizzle, the camp can land across a vertical seam).
+#
+#        To force it for heroic runs only, use the difficulty suffix rather than
+#        turning it on globally:
+#            DungeonClear.PullForceAdvanced.Heroic = 1
+#
+#        Default: 0 (let the estimate decide)
+#
+
+DungeonClear.PullForceAdvanced = 0
+
+#
 #    DungeonClear.PullCombatSpread
 #        Dynamic pull only. Yards added to every mob's proximity-aggro reach in the
 #        estimate above, modelling the party drifting to flank/kite/reposition
@@ -1153,14 +1210,136 @@ DungeonClear.PullPatrolWait = 1
 DungeonClear.PullPatrolWaitSec = 8.0
 
 #
+#    DungeonClear.PullChaseLeash
+#        How far (yards) a pull/engage target may drift from the spot it was
+#        standing on when the tank picked it, before the tank stops walking at it
+#        and waits for it to come back instead of chasing it. PullPatrolWait above
+#        handles a patrol that CONTENDS the pack being pulled; this handles the
+#        patrol that IS the pack. Targets are latched by GUID and re-aimed at their
+#        live position every tick, so a mob that walks turns the approach into a
+#        pursuit — and when its route runs back behind other packs the tank walks
+#        through all of their aggro arcs and arrives with the whole room. The plan
+#        being executed (the pull size estimate, the camp placement) was measured
+#        against where the mob stood at selection, so once it has left that ground
+#        the walk is chasing a plan about somewhere else. A human tank waits: a
+#        patrol is a loop and comes back to you.
+#
+#        Sized above ordinary wander/patrol wobble so a pack milling around its
+#        spawn never trips it. A target that has come at least as close to the
+#        tank's commit spot as it was when picked is never held — that is an
+#        inbound patrol, which is exactly what the wait is for.
+#            0 = off (always chase, the historical behaviour)
+#
+#        Default: 15.0
+#
+
+DungeonClear.PullChaseLeash = 15.0
+
+#
+#    DungeonClear.PullChaseWaitSec
+#        The longest (seconds) the tank stands and waits for a target that has
+#        drifted past PullChaseLeash, before re-anchoring and walking at it anyway
+#        — so a mob that has genuinely left (despawned patrol route, script
+#        relocation) can never stall a run. On the advanced pull's tag leg the pack
+#        is instead handed to the normal walk-in engage, exactly as the tag-leg
+#        watchdog does. Deliberately shorter than that 10s watchdog so the leash,
+#        which knows why the leg is failing, is the clock that fires.
+#            0 = never hold (give up on the first receding tick)
+#
+#        Default: 6.0
+#
+
+DungeonClear.PullChaseWaitSec = 6.0
+
+#
+#    DungeonClear.PullEnRouteAvoid
+#        Detour the walk to a pack around OTHER packs' aggro radii. Sizing a pull
+#        answers "who joins a fight that stays put at the target", which says
+#        nothing about getting there: a pack 40yd off the line aggros nothing by
+#        standing still and everything when the tank jogs past it. With this on,
+#        the engage walk-in, the pull's tag leg, and the pull's approach across a
+#        room all bend around the nearest bystander sphere in the way, one at a
+#        time, and re-aim as each is passed. It is a preference, never a refusal:
+#        when no detour can be pathed the tank walks straight in as before, so a
+#        tight corridor cannot strand a run. The long-range glide honours it
+#        too: each Advance spline window is truncated at the first bystander
+#        sphere any of its legs violates, so the tank glides up to the hazard's
+#        threshold and stops there out of combat — a route that would thread a
+#        dense room now enters it one decision at a time — and a throttled
+#        mid-glide probe halts an in-flight window a patrol has wandered into.
+#        Overridable per run from the companion addon.
+#            0 = off (walk the direct line)
+#            1 = on
+#
+#        Default: 0 (1 in Heroic — see HEROIC DEFAULTS below)
+#
+
+DungeonClear.PullEnRouteAvoid = 0
+
+#
+#    DungeonClear.PullEnRouteMargin
+#        Yards of buffer added on top of a bystander's real aggro reach (plus both
+#        combat reaches and AggroRangeMargin) when PullEnRouteAvoid sizes the
+#        sphere to detour around. The buffer is for the PARTY, not the tank: the
+#        followers trail the tank imperfectly and cut the corner, so a detour that
+#        only just clears the pack for the tank still walks the healer through it.
+#
+#        Default: 4.0
+#
+
+DungeonClear.PullEnRouteMargin = 4.0
+
+#
+#    DungeonClear.AdvanceWindowYards
+#        Cap (yards) on one continuous-spline movement window issued by the
+#        Advance glide — the module's movement quantum on long routes. A window
+#        is a commitment: while the glide is healthy Advance performs no route
+#        evaluation at all, so an unbounded window (observed up to ~400yd)
+#        carries the tank through every pack's aggro bubble en route without a
+#        single blocking-trash or pull decision — the "tank was already in
+#        combat before any pull decision existed" over-pull. Capping the window
+#        makes the tank stop and re-evaluate at least once per this many yards.
+#        Sized to DC_CORRIDOR_LOOKAHEAD (35): the tank never travels further
+#        than the blocking-trash detector can see between two evaluations.
+#        Shorter windows re-issue more often; at the stock ReactDelay the
+#        expected glide duty-cycle loss is ~2%. 0 = unbounded (the historical
+#        behaviour). Overridable per run from the companion addon.
+#
+#        Default: 0.0 (35.0 in Heroic — see HEROIC DEFAULTS below)
+#
+
+DungeonClear.AdvanceWindowYards = 0.0
+
+#
 #    DungeonClear.SpectateEnable
-#        Master gate for the spectator free-camera (`.dc spectate` or the addon's
-#        Spectate button). The camera detaches the player from their character —
-#        the bots keep playing the body while the player free-flies the instance.
-#        Some servers consider this a cheat, so it can be disabled here: with 0,
-#        attempting to spectate is refused with "Spectator mode is disabled on
-#        this server." (an active spectate can still be ended). This is a
-#        server-only setting; players cannot override it from the addon.
+#        Master gate for the spectator camera, in both of its modes:
+#            `.dc spectate`              — free-flying camera (addon: left-click
+#                                          Spectate). Detaches the player from
+#                                          their character; the bots keep
+#                                          playing the body while the player
+#                                          flies the instance.
+#            `.dc spectate follow [name]`— follow cam (addon: right-click
+#                                          Spectate). The view rides a bot and
+#                                          tracks it as the server moves it,
+#                                          handing off to another tank if that
+#                                          one dies or logs out. A name switches
+#                                          seats directly (prefix match is fine).
+#            `.dc spectate next` / `prev` — move the camera to any OTHER bot in
+#                                          the instance, tank or not (addon: the
+#                                          < and > buttons). From no camera at
+#                                          all these start one, so a single
+#                                          keybind both starts and cycles.
+#            `.dc spectate list`         — the watchable bots here, marking the
+#                                          current seat.
+#            `.dc test watch [selector]` — GM only: teleport into a running
+#                                          `.dc test` instance (GM mode on so
+#                                          the run can't see you) and start the
+#                                          follow cam on arrival. `off` ends it.
+#        Neither mode requires a group. Some servers consider detaching the
+#        camera a cheat, so it can be disabled here: with 0, attempting to
+#        spectate is refused with "Spectator mode is disabled on this server."
+#        (an active spectate can still be ended). This is a server-only setting;
+#        players cannot override it from the addon.
 #            0 = disabled
 #            1 = enabled
 #        Default: 1 (enabled)
@@ -1174,12 +1353,113 @@ DungeonClear.SpectateEnable = 1
 #        or the addon's Spectate button) — how fast the detached camera flies,
 #        as a multiple of normal run speed. The camera is a possessed invisible
 #        dummy, so this affects only the camera, never the character (which
-#        keeps running under bot AI at its own speed).
+#        keeps running under bot AI at its own speed). Follow cam ignores this:
+#        it rides a bot rather than flying, so its speed is the bot's.
 #
 #        Default: 2.5
 #
 
 DungeonClear.SpectateSpeed = 2.5
+
+###############################################################################
+# HEROIC DEFAULTS
+#
+#   Every key below ships with a different built-in default while the run is
+#   inside a dungeon at Heroic difficulty. The lines are COMMENTED OUT and show
+#   the value the module already uses — uncomment one only to change it. Normal
+#   difficulty is untouched by anything in this section.
+#
+#   Why these and not others: in a TBC heroic every trash mob is elite and a
+#   mis-sized pull ends the run rather than costing a rough fight, so the pull
+#   safety profile has to change with the difficulty. Everything else — routing,
+#   doors, looting, events — behaves identically on both.
+###############################################################################
+
+#    The pull ceiling. This is the important one. The Leeroy-vs-Advanced verdict
+#    weighs the estimated pack in thirds of an elite (elite = 3, normal = 1),
+#    which on normal difficulty stops a room of weak trash forcing the careful
+#    maneuver. In a heroic every mob is elite, so the weighting collapses to a
+#    head count and a ceiling of 5 face-pulls five elites. 2 is what a human
+#    tank pulls.
+# DungeonClear.PullDynamicMaxLeeroyMobs.Heroic = 2
+
+#    Pad every mob's proximity reach further, so a neighbour that is merely NEAR
+#    the fight is counted by the estimate instead of joining it uncounted. A
+#    lvl-72 elite has ~24yd of real reach, so 20 counts neighbours to ~44yd of
+#    the pull target — most of a heroic room. Deliberately loud: a pack that
+#    classifies LEEROY gets no camp, no party hold and no drag-back if the pull
+#    goes wrong, so pushing packs to ADVANCED is what arms that machinery. Drop
+#    toward 14-16 if runs trade wipes for stalls.
+# DungeonClear.PullCombatSpread.Heroic = 20.0
+
+#    Camp geometry: drag further back and demand more clearance from other
+#    packs. MaxDrag rises with SafeRadius or the placer cannot satisfy the
+#    bigger radius and silently falls back to the point it would have picked.
+# DungeonClear.PullSetback.Heroic = 35.0
+# DungeonClear.PullCampSafeRadius.Heroic = 35.0
+# DungeonClear.PullMaxDrag.Heroic = 55.0
+# DungeonClear.PullRangedMaxDrag.Heroic = 85.0
+
+#    Stop and form further out from the pack. (The commit-range CAP is NOT
+#    raised: its job is to keep the commit point inside the ~35yd pull-detection
+#    band, which is a property of the code, not of the difficulty.)
+# DungeonClear.PullCommitRangeFloor.Heroic = 20.0
+
+#    Trail the scouting tank further back — the party walking into a pack's
+#    aggro arc before the tank has decided anything is a top source of the pulls
+#    nobody chose.
+# DungeonClear.PullDynamicPartyLag.Heroic = 22.0
+
+#    Give the tank a real threat head start, and hold pets longer still. The
+#    panic bar rises with it: with the party held twice as long, a tank that is
+#    losing must be able to call them in sooner.
+# DungeonClear.PullPlayerReleaseDelay.Heroic = 3.0
+# DungeonClear.PullPetReleaseDelay.Heroic = 4.5
+# DungeonClear.PullThreatLeadPanicHp.Heroic = 70.0
+
+#    Release a held passive member while it still has the health to survive it —
+#    but only after the danger has persisted PullSafetyGrace seconds: one stray
+#    heroic elite hit on a cloth follower clears 35% easily, and without the
+#    grace the valve fires precisely in the scenario the drag-back exists to
+#    rescue.
+# DungeonClear.PullSafetyHpPct.Heroic = 65.0
+# DungeonClear.PullSafetyGrace.Heroic = 1.5
+
+#    Actually wait a patrol out. 8s gives up on plenty of real patrol loops, and
+#    giving up means committing into a pack that was about to be smaller.
+# DungeonClear.PullPatrolWaitSec.Heroic = 18.0
+
+#    En-route pack avoidance, ON for heroic and off for normal. The pull estimate
+#    answers "who joins a fight that STAYS PUT at the target" — the right question
+#    for sizing a pull, the wrong one for getting there. A pack 40yd off the path
+#    aggros nothing by standing still and everything when the tank jogs past it.
+#    With this on the walk to a pack detours around every OTHER pack's aggro
+#    sphere. It is a preference, never a refusal: if no detour can be snapped the
+#    tank walks straight in as before, so a tight corridor cannot strand the run.
+# DungeonClear.PullEnRouteAvoid.Heroic = 1
+
+#    Bound the Advance movement quantum to the blocking-trash lookahead
+#    (DC_CORRIDOR_LOOKAHEAD = 35): between two route evaluations the tank can
+#    never travel further than the detector can see, so a room is entered one
+#    decision at a time instead of in one 400yd unobserved glide.
+# DungeonClear.AdvanceWindowYards.Heroic = 35.0
+
+#    Unclip the blocking-trash band for heroic elites. With the unified aggro
+#    reach the common heroic elite's band lands at ~32-36yd, which a 30 cap
+#    silently clips — discarding exactly the reach the unification added. 42
+#    still keeps a lvl-70 elite's clamped 45yd notice out of band.
+# DungeonClear.TrashWidthCap.Heroic = 42.0
+
+#    Smart Rest is NOT part of the heroic profile. It was, briefly, forced on
+#    with high triggers; it made heroic runs crawl, because the high triggers
+#    latch the whole party at nearly every pack and the stop-and-eat cycles cost
+#    more run time than the deaths they prevent. It is opt-in on both
+#    difficulties now (DungeonClear.SmartRest above, or the addon per run). To
+#    bring it back for heroics only, uncomment these:
+# DungeonClear.SmartRest.Heroic = 1
+# DungeonClear.SmartRestHealthPct.Heroic = 70
+# DungeonClear.SmartRestDpsManaPct.Heroic = 35
+# DungeonClear.SmartRestHealerManaPct.Heroic = 60
 
 ###############################################################################
 # `.dc test` — AUTOMATED DUNGEON TEST RUNS

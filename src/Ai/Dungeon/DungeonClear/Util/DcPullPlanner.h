@@ -19,11 +19,18 @@ class AiObjectContext;
 // aggro estimate, the same estimate with lone (non-formation) patrollers excluded,
 // and the Leeroy ceiling they were compared against. `full > ceiling &&
 // reduced <= ceiling` is the patrol-contended condition.
+//
+// All three counts are in THIRDS OF AN ELITE (elite = 3, normal = 1), the unit the
+// verdict comparison works in. `bodyCount` is the same estimate as a plain head
+// count — not used by any gate, but it is what a human means by "how many mobs
+// will this pull", so it is what the pull telemetry compares against the number
+// that actually turned up.
 struct DcPullClassification
 {
     std::uint32_t fullCount    = 0;
     std::uint32_t reducedCount = 0;
     std::uint32_t ceiling      = 0;
+    std::uint32_t bodyCount    = 0;
 };
 
 class DcPullPlanner

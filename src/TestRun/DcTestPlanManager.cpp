@@ -105,15 +105,18 @@ bool DcTestPlanManager::Start(DcTestPlan::Spec spec, Player* gm, std::string* ms
     _plans.push_back(std::move(plan));
 
     LOG_INFO("playerbots.dungeonclear",
-             "TESTPLAN START {} dungeon={} total={} concurrent={} level={} heroic={} seedBase={} gm={}",
+             "TESTPLAN START {} dungeon={} total={} concurrent={} level={} heroic={} seedBase={} "
+             "gear={} gm={}",
              spec.planId, spec.dungeonToken, spec.total, spec.concurrent, spec.level,
-             spec.heroic ? 1 : 0, spec.seedBase, gm ? gm->GetName() : "<pending test driver>");
+             spec.heroic ? 1 : 0, spec.seedBase, DcTestGearTiers::Describe(spec.gear),
+             gm ? gm->GetName() : "<pending test driver>");
 
     if (msg)
-        *msg = Acore::StringFormat("Test plan started: {} {}{} total={} concurrent={}{}{}",
+        *msg = Acore::StringFormat("Test plan started: {} {}{} total={} concurrent={} gear={}{}{}",
                                    spec.planId, spec.dungeonToken,
                                    spec.heroic ? std::string(" (heroic)") : std::string(),
                                    spec.total, spec.concurrent,
+                                   DcTestGearTiers::Describe(spec.gear),
                                    spec.seedBase ? Acore::StringFormat(" seedBase={}", spec.seedBase)
                                                  : std::string(),
                                    gm ? std::string()
@@ -340,7 +343,8 @@ void DcTestPlanManager::TickPlan(Plan& plan, uint32 diff)
     DcTestRunManager::StartErr err = DcTestRunManager::StartErr::None;
     bool const ok = DcTestRunManager::Instance().Start(gm, plan.spec.dungeonToken,
                                                        plan.spec.level, seed, plan.spec.heroic,
-                                                       &msg, plan.spec.planId, &err, &runId);
+                                                       plan.spec.gear, &msg, plan.spec.planId,
+                                                       &err, &runId);
     if (ok)
     {
         ++plan.counters.launched;
@@ -425,6 +429,8 @@ void DcTestPlanManager::Finalize(Plan& plan)
     h.level = plan.spec.level;
     h.heroic = plan.spec.heroic;
     h.seedBase = plan.spec.seedBase;
+    h.gearIlvl = plan.spec.gear.ilvl;
+    h.gearQuality = plan.spec.gear.quality;
     h.startedAtMs = plan.startedAtMs;
     h.endedAtMs = NowUnixMs();
     h.durationS = static_cast<uint32>((h.endedAtMs - h.startedAtMs) / 1000);

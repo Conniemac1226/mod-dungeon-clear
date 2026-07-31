@@ -284,6 +284,26 @@ namespace
         return dry.front();
     }
 
+    // Tag-leg creep (see the body-tag branch of DcPullPhase::Advancing). How long
+    // the tank stands at the aggro edge before it starts stepping inward, and how
+    // fast it then steps.
+    //
+    // DO NOT SHORTEN THESE TO MAKE THE PULL LOOK SNAPPIER. That was tried (400ms /
+    // 6yd/s) and it made the pull visibly WORSE — the tank lurched several yards
+    // into the middle of the pack before turning around. The ramp is WALL-CLOCK but
+    // it is only sampled when the bot ticks, and a bot's think interval is not
+    // small: PlayerbotAI::GetReactDelay returns reactDelay*10..30 (1-3 SECONDS) for
+    // a bot with no real-player master, out of combat, which is exactly the state
+    // the whole pre-combat pull runs in. So the first sample after arrival can
+    // easily be 2s into the phase, and the ramp is applied in ONE step: at 3yd/s
+    // that is a gentle 1.5yd nudge, at 6yd/s it is a 10yd charge.
+    //
+    // The dead time these numbers appear to cause was never really the grace — it
+    // was the think interval. Fix the tick rate (DcTestRunJob keeps a real-player
+    // master installed for exactly this reason) and leave the ramp alone.
+    constexpr uint32 DC_PULL_TAG_CREEP_GRACE_MS = 1500;
+    constexpr float DC_PULL_TAG_CREEP_YARDS_PER_SEC = 3.0f;
+
     // Consecutive fizzled pulls of the SAME pack (Engage cleanup found the pull
     // target alive and idle — the drag never delivered it) before the pack is
     // handed to the normal walk-in engage via abortTarget. Casters and planted
@@ -505,6 +525,85 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
                                   toTrash, commitRange);
                     return true;
                 }
+                // Bystander detour on the way OUT to the pack.
+                //
+                // The tag leg (Advancing, below) already bends around other packs,
+                // but it only begins once the tank is inside commit range — by then
+                // the room has already been crossed, and crossing it is where the
+                // extra packs come from. Above commit range the walk is Advance's
+                // long-path glide, which routes for NAVIGATION and has no notion of
+                // anyone's aggro arc: it will happily jog the tank through two
+                // sleeping packs to reach the one the classifier correctly sized at
+                // three. That is the live heroic "predicted 3, fought 11".
+                //
+                // So when a bystander sphere genuinely sits on the line, borrow the
+                // tick and walk the orbit ourselves. Deliberately narrow:
+                //   * only when a sphere is actually violated (nullopt otherwise —
+                //     the overwhelmingly common tick yields to Advance untouched);
+                //   * only when the pack sits at the end of one complete on-level
+                //     route, i.e. the open-room case where Advance's chunked
+                //     long-path is buying nothing. A pack up a ramp or through a
+                //     corridor still goes to Advance, which is the only thing that
+                //     can route to it at all;
+                //   * only while the borrow keeps closing distance
+                //     (ShouldKeepAvoidDetour) — Advance's wedge/stall ladder is
+                //     parked while we hold the tick, so a non-converging orbit hands
+                //     the walk straight back instead of freezing the run.
+                // A failed snap or a failed move falls through to the yield exactly
+                // as before: preference, never refusal.
+                auto driveBystanderDetour = [&]() -> bool
+                {
+                    if (pull.avoidLegTarget != trash->GetGUID())
+                    {
+                        pull.avoidLegTarget = trash->GetGUID();
+                        pull.avoidSinceMs = 0;
+                        pull.avoidBestDist = 0.0f;
+                        pull.avoidGaveUp = false;
+                    }
+                    // Given up on this pack already: stay out of Advance's way for
+                    // the rest of the approach (and skip the grid search).
+                    if (pull.avoidGaveUp)
+                        return false;
+                    if (!DcEngageGeometry::IsEngageReachable(bot, trash,
+                                                             /*requireDirect*/ false))
+                        return false;
+                    std::optional<Position> const avoid =
+                        DcEngageGeometry::EnRoutePackAvoidPoint(bot, context, trash);
+                    if (!avoid)
+                    {
+                        // Line is clear — stop borrowing and let the clock rearm from
+                        // scratch on the next obstacle.
+                        pull.avoidSinceMs = 0;
+                        return false;
+                    }
+                    if (!DungeonClearMath::ShouldKeepAvoidDetour(
+                            now, toTrash, DC_PULL_AVOID_STALL_MS,
+                            DC_PULL_AVOID_PROGRESS_YD, pull.avoidSinceMs,
+                            pull.avoidBestDist))
+                    {
+                        pull.avoidGaveUp = true;
+                        DC_PULL_INFO("[DC:{}] pull idle: bystander detour stopped "
+                                     "closing on {} ({:.1f}yd) -> handing the walk "
+                                     "back to advance for this pack",
+                                     bot->GetName(), trash->GetGUID().ToString(),
+                                     toTrash);
+                        return false;
+                    }
+                    bool const moved =
+                        DcMoveTo(trash->GetMapId(), avoid->GetPositionX(),
+                                 avoid->GetPositionY(), avoid->GetPositionZ(),
+                                 /*idle*/ false, /*react*/ false, /*normal_only*/ false,
+                                 /*exact_waypoint*/ false, MovementPriority::MOVEMENT_NORMAL);
+                    if (!(moved || bot->isMoving() ||
+                          IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL)))
+                        return false;
+                    DC_PULL_DEBUG("[DC:{}] pull idle: detouring around a bystander pack "
+                                  "on the way to {} ({:.1f}yd) -> ({:.1f},{:.1f})",
+                                  bot->GetName(), trash->GetGUID().ToString(), toTrash,
+                                  avoid->GetPositionX(), avoid->GetPositionY());
+                    return true;
+                };
+
                 float const setback = DcSettings::GetFloat(bot, "PullSetback");
                 float const safeRadius = DcSettings::GetFloat(bot, "PullCampSafeRadius");
                 float const maxDrag = DcSettings::GetFloat(bot, "PullMaxDrag");
@@ -532,7 +631,7 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
                                       commitRange, camp.GetPositionX(),
                                       camp.GetPositionY(), camp.GetPositionZ(),
                                       candToTrash);
-                        return false;
+                        return driveBystanderDetour();
                     }
                     // Hysteresis kept the old camp: still assert ownership this tick.
                     pull.TouchCampOwnership(now);
@@ -541,7 +640,7 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
                               "{:.1f} -> glide closer before committing",
                               bot->GetName(), trash->GetGUID().ToString(), toTrash,
                               commitRange);
-                return false;
+                return driveBystanderDetour();
             }
             // Pick the camp: a generous distance back along the cleared route
             // (PullSetback) so the party gets real room, extended further only if
@@ -572,6 +671,14 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
             // cleanup can detect a fizzled drag (target alive + idle after the
             // camp fight) and latch the pack over to the walk-in engage.
             pull.pullTarget = trash->GetGUID();
+
+            // Anchor the chase leash HERE, not on the tag leg's first tick. This is
+            // the moment the plan exists: the camp above was measured against this
+            // spot and the aggro estimate was taken here. The tank then stands still
+            // for the whole Forming dwell while the party sets, so a lazily-anchored
+            // leash would stamp seconds later at wherever the pack had wandered to
+            // and measure drift from ground the plan never saw.
+            DcEngageGeometry::AnchorChase(bot, context, trash);
 
             // Halt the escort glide for real before committing. A plain StopMoving
             // does NOT cancel a launched escort spline (the door-blocked park is the
@@ -649,6 +756,50 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
                              "{:.1f}yd) -> normal engage", bot->GetName(),
                              trash->GetGUID().ToString(), bot->GetExactDist(trash));
                 return false;
+            }
+
+            // CHASE LEASH. The tag leg re-aims at the target's LIVE position every
+            // tick, so a pack that WALKS turns it into a pursuit: the tank follows
+            // a patrol wherever its route takes it — including back behind other
+            // packs — and arrives at the camp with the whole room. The plan this
+            // leg is executing (the size estimate, the camp) was measured against
+            // where the pack stood at commit; once it has receded from there, the
+            // leg is walking at ground the plan never covered.
+            //
+            // So hold instead of chasing. A patrol is a loop and comes back to us;
+            // holding is also what the party is set up for — they are already
+            // passive at the camp, so a few seconds of the tank standing at its
+            // commit spot costs nothing and risks nothing. GiveUp hands the pack to
+            // the normal walk-in engage exactly like the leg watchdog above (which
+            // is deliberately the longer of the two clocks), so a patrol that never
+            // comes back can never stall the run.
+            //
+            // The pull-back maneuver is exempt: its whole point is a long deliberate
+            // haul out to a boss that may be swimming/roaming, and its own
+            // distance-sized watchdog already bounds it.
+            if (!pull.bossPullback)
+            {
+                DungeonClearMath::ChaseVerdict const chase =
+                    DcEngageGeometry::ChaseLeash(bot, context, trash);
+                if (chase == DungeonClearMath::ChaseVerdict::Hold)
+                {
+                    DcMovement::StopBot(bot, DcMovement::Stop::Hold);
+                    DcFaceIfNeeded(bot, trash);
+                    DC_PULL_TRACE("[DC:{}] pull advancing: holding at the commit spot "
+                                  "for {} to come back ({:.1f}yd)", bot->GetName(),
+                                  trash->GetGUID().ToString(), bot->GetExactDist(trash));
+                    return true;
+                }
+                if (chase == DungeonClearMath::ChaseVerdict::GiveUp)
+                {
+                    pull.abortTarget = trash->GetGUID();
+                    DcSetPullPhase(context, DcPullPhase::Idle);
+                    DC_PULL_INFO("[DC:{}] advanced-pull: {} kept walking away from the "
+                                 "spot we planned the pull against ({:.1f}yd out) -> "
+                                 "normal engage", bot->GetName(),
+                                 trash->GetGUID().ToString(), bot->GetExactDist(trash));
+                    return false;
+                }
             }
 
             // FORCE-AGGRO — per-encounter opt-in, keyed off the boss's own registry
@@ -743,6 +894,12 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
                     if (bossCreature && DcForceBossAggroOnTank(bot, bossCreature))
                     {
                         pull.tagTarget = trash->GetGUID();
+                        // Drop the walk-out to the stand-off before turning round.
+                        // It was a MOVEMENT_COMBAT MoveTo, so its LastMovement wait
+                        // would refuse the equal-priority run-home below for the
+                        // rest of its budget while the boss closed on a stationary
+                        // tank — the same stall the maneuver's turn-around fixes.
+                        DcMovement::ClearMovementWait(bot);
                         // Stamp the return leg here rather than waiting for the
                         // maneuver's first combat tick, so the turn-and-plant /
                         // watchdog arithmetic measures the real leg and the retreat
@@ -776,7 +933,16 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
                         // Already tagged — hold and let aggro flip us to the
                         // combat-engine drag-back. The leg timeout above is the
                         // backstop if the tag somehow drew no aggro.
+                        //
+                        // The walk-in that got us here is over; drop its
+                        // MOVEMENT_COMBAT wait so it can't refuse the NEXT
+                        // MOVEMENT_COMBAT move. Two of those are queued up behind
+                        // this dwell — the creep-inward step below, and the
+                        // drag-back the moment aggro lands — and both would
+                        // otherwise be silently held down for whatever is left of
+                        // the approach budget while the pack chews on the tank.
                         DcMovement::StopBot(bot, DcMovement::Stop::Soft);
+                        DcMovement::ClearMovementWait(bot);
                         DcFaceIfNeeded(bot, trash);
                         DC_PULL_TRACE("[DC:{}] pull advancing: tagged, holding for aggro "
                                       "({:.1f}yd to target)", bot->GetName(),
@@ -793,7 +959,11 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
                         if (botAI->CastSpell(pick->spellId, trash))
                         {
                             pull.tagTarget = trash->GetGUID();
+                            // Same as the "already tagged" branch above: the tag has
+                            // landed, so the walk-in's MOVEMENT_COMBAT wait must not
+                            // survive to refuse the drag-back.
                             DcMovement::StopBot(bot, DcMovement::Stop::Soft);
+                            DcMovement::ClearMovementWait(bot);
                             DC_PULL_INFO("[DC:{}] advanced-pull: ranged tag spell {} at "
                                          "{:.1f}yd", bot->GetName(), pick->spellId, d);
                             return true;
@@ -840,11 +1010,23 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
                 // Creep the stop point inward the longer we go without aggro. A tank
                 // parked exactly at the edge is never re-evaluated (no relocation ->
                 // no MoveInLineOfSight), so stepping a little closer each tick is what
-                // ultimately trips the notice. Ramps to body contact within ~2s, well
-                // inside the leg watchdog, so a borderline stop can't hang the pull.
+                // ultimately trips the notice.
+                //
+                // The grace before the creep starts is DEAD TIME, and it is the
+                // "walks up to the mob and just stands there" beat in the pull: the
+                // tank has stopped, so by construction nothing will re-evaluate the
+                // pack's aggro until we move again. Waiting a beat is still right —
+                // the arrival tick itself usually trips the notice and re-creeping
+                // immediately would just add a redundant micro-move — but it only
+                // needs to be a couple of AI ticks, not a second and a half. Trimmed
+                // to DC_PULL_TAG_CREEP_GRACE_MS and sped up to
+                // DC_PULL_TAG_CREEP_YARDS_PER_SEC, so a pack that doesn't notice on
+                // arrival is walked into within a fraction of a second instead of
+                // several. Both stay far inside the leg watchdog.
                 uint32 const advancingMs = now - since;
-                if (advancingMs > 1500)
-                    tagStop -= ((advancingMs - 1500) / 1000.0f) * 3.0f;
+                if (advancingMs > DC_PULL_TAG_CREEP_GRACE_MS)
+                    tagStop -= ((advancingMs - DC_PULL_TAG_CREEP_GRACE_MS) / 1000.0f) *
+                               DC_PULL_TAG_CREEP_YARDS_PER_SEC;
                 // Floor at body contact. If the pack's aggro is at/below melee (a
                 // much-higher-level tank vs the core's 5yd minimum aggro), closing to
                 // the edge can't cross it — go to contact and actively tag instead.
@@ -901,7 +1083,16 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
                 // Inside the aggro bubble — hold and let the pack close / flip the
                 // engine to the maneuver drag-back. The leg timeout above is the
                 // backstop if nothing aggros (resisted / non-hostile).
+                //
+                // This is the tick the walk-in ENDS on, and the walk-in was a
+                // MOVEMENT_COMBAT MoveTo whose LastMovement wait is still running.
+                // Leaving it up means the next MOVEMENT_COMBAT move — the creep
+                // step, or the drag-back once aggro lands — is refused
+                // (IsWaitingForLastMove yields to a strictly greater priority only)
+                // for whatever is left of the approach budget, with the tank stood
+                // in the pack taking hits. Stop::Soft does not zero it, so say so.
                 DcMovement::StopBot(bot, DcMovement::Stop::Soft);
+                DcMovement::ClearMovementWait(bot);
                 DcFaceIfNeeded(bot, trash);
                 DC_PULL_TRACE("[DC:{}] pull advancing: at aggro edge ({:.1f}yd, "
                               "hold for aggro)", bot->GetName(), toTag);
@@ -912,12 +1103,25 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
             // not the pack's centre, so the run stops at the aggro edge.
             float tagX = trash->GetPositionX();
             float tagY = trash->GetPositionY();
-            float const tagZ = trash->GetPositionZ();
+            float tagZ = trash->GetPositionZ();
             if (trashCreature && toTag > 0.1f)
             {
                 float const f = tagStop / toTag;
                 tagX = trash->GetPositionX() + (bot->GetPositionX() - trash->GetPositionX()) * f;
                 tagY = trash->GetPositionY() + (bot->GetPositionY() - trash->GetPositionY()) * f;
+            }
+
+            // The tag leg is the one the tank walks ALONE and the one most worth
+            // protecting: it goes out to a pack we have deliberately decided to
+            // peel, and any bystander it wakes on the way arrives at the camp with
+            // the pack we wanted. Detour around them; a failed snap falls through
+            // to the direct line exactly as before.
+            if (std::optional<Position> avoid =
+                    DcEngageGeometry::EnRoutePackAvoidPoint(bot, context, trash))
+            {
+                tagX = avoid->GetPositionX();
+                tagY = avoid->GetPositionY();
+                tagZ = avoid->GetPositionZ();
             }
             DC_PULL_TRACE("[DC:{}] pull advancing: closing to aggro edge ({:.1f}yd, "
                           "stop {:.1f})", bot->GetName(), toTag, tagStop);
@@ -1119,6 +1323,43 @@ bool DungeonClearPullManeuverAction::Execute(Event /*event*/)
             pull.PublishCamp(Position(bot->GetPositionX(), bot->GetPositionY(),
                                       bot->GetPositionZ()),
                              now);
+
+        // KILL THE INBOUND LEG BEFORE TURNING AROUND. This is the difference
+        // between "aggro -> turn -> run" and the sluggish "aggro -> keep walking
+        // into the pack -> stand there -> turn -> run" the player sees, and it is
+        // not cosmetic: every one of those wasted ticks is free swings on the tank.
+        //
+        // Two distinct things are still in flight at this instant, both left over
+        // from the tag leg, and both have to go:
+        //
+        //  1. The point-move itself. The tag leg was issued as a MOVEMENT_COMBAT
+        //     MoveTo toward the aggro edge. Aggro normally lands at the very START
+        //     of that leg — PullCommitRange deliberately Forms the tank a hair
+        //     outside the pack's real bubble, so the first few yards of the walk-in
+        //     are what trip it — and the instant the tank is in combat the
+        //     non-combat pull trigger goes silent. Nobody cancels the move, so the
+        //     MotionMaster happily finishes carrying the tank INTO the pack while
+        //     the engine flip is happening.
+        //
+        //  2. The LastMovement wait. That same MoveTo recorded a wait sized to the
+        //     whole leg's travel time at MOVEMENT_COMBAT priority.
+        //     MovementAction::IsWaitingForLastMove refuses a new move whose
+        //     priority is not STRICTLY GREATER than the recorded one, so the
+        //     run-home below — also MOVEMENT_COMBAT — is silently refused for the
+        //     remainder of that budget. The maneuver still returns true (it owns
+        //     the tick), so the tank just stands and eats the pack until the stale
+        //     clock runs out.
+        //
+        // Hold clears (1): it kills a coasting glide, and no-ops when the tank is
+        // already parked at the aggro edge. ClearMovementWait clears (2)
+        // unconditionally — which is the half Hold's standing-still early-out would
+        // otherwise skip, and the half that actually blocks the retreat. Deliberately
+        // NOT StopBot(HardPin): this is a leg being REPLACED, not halted, and the
+        // run-home issued at the bottom of this same tick re-points the MotionMaster
+        // by itself. Hard-pinning first would only add a stop spline the very next
+        // statement overwrites.
+        DcMovement::StopBot(bot, DcMovement::Stop::Hold);
+        DcMovement::ClearMovementWait(bot);
 
         // Stamp the return-leg length and clear the plant latch: the turn-and-plant
         // gate (below) requires at least half of THIS leg covered, and the debounce
@@ -1403,9 +1644,31 @@ bool DungeonClearPullManeuverAction::Execute(Event /*event*/)
     // combat chase/attack can't grab the tank and fight at the pack instead.
     DC_PULL_TRACE("[DC:{}] pull returning: {:.1f}yd to camp ({} ms into leg)",
                   bot->GetName(), dist, legElapsed);
-    DcMoveTo(bot->GetMapId(), camp.GetPositionX(), camp.GetPositionY(), camp.GetPositionZ(),
-           /*idle*/ false, /*react*/ false, /*normal_only*/ false,
-           /*exact_waypoint*/ false, MovementPriority::MOVEMENT_COMBAT);
+    bool const moved =
+        DcMoveTo(bot->GetMapId(), camp.GetPositionX(), camp.GetPositionY(), camp.GetPositionZ(),
+                 /*idle*/ false, /*react*/ false, /*normal_only*/ false,
+                 /*exact_waypoint*/ false, MovementPriority::MOVEMENT_COMBAT);
+
+    // BACKSTOP: refused, standing still, and a stale equal-priority LastMovement
+    // wait is what's holding the retreat down. Every known source of one is cleared
+    // at the turn-around now, so reaching here means a path we haven't found — and
+    // what it costs is the tank standing in the pack taking free hits until the
+    // clock lapses, invisibly, because the maneuver returns true either way. Break
+    // the wait so the next tick can issue, and log it: a silent no-op here is
+    // exactly what made this stall so hard to see in the first place.
+    //
+    // Keyed on the wait itself rather than on "refused", because DcMoveTo also
+    // returns false for a duplicate destination (the normal every-tick case while
+    // the glide is already running), while the run is paused, and while the bot
+    // cannot move at all under CC — none of which this should touch.
+    if (!moved && !bot->isMoving() &&
+        IsWaitingForLastMove(MovementPriority::MOVEMENT_COMBAT))
+    {
+        DcMovement::StopBot(bot, DcMovement::Stop::HardPin);
+        DC_PULL_DEBUG("[DC:{}] pull returning: run-home refused while standing at "
+                      "{:.1f}yd from camp -> cleared the stale movement wait",
+                      bot->GetName(), dist);
+    }
     return true;
 }
 

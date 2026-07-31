@@ -582,7 +582,11 @@ bool DcLeaderSignal::GetLeaderCampHold(Player* bot, Position& campOut, bool& pas
         return false;
 
     campOut = camp;
-    passiveOut = IsPullPhaseHolding(static_cast<uint32>(pull.phase));
+    // A standing camp-safety release keeps the maneuver (the tank is still
+    // dragging) but frees the party: still camped, no longer passive — the same
+    // posture as holding at camp between pulls.
+    passiveOut = IsPullPhaseHolding(static_cast<uint32>(pull.phase)) &&
+                 !pull.partyReleased;
     return true;
 }
 bool DcLeaderSignal::IsLeaderCampFightActive(Player* bot)
@@ -1105,6 +1109,55 @@ void DcLeaderSignal::AbortLeaderPull(Player* bot)
         DC_PULL_INFO("[DC:{}] advanced-pull: leader pull aborted (forced to Engage) "
                      "-> party released", leader->GetName());
     }
+}
+void DcLeaderSignal::ReleaseLeaderPullHold(Player* bot)
+{
+    if (!bot)
+        return;
+    Player* leader = FindLeaderTank(bot);
+    if (!leader)
+        return;
+    PlayerbotAI* leaderAI = GET_PLAYERBOT_AI(leader);
+    if (!leaderAI)
+        return;
+    AiObjectContext* ctx = leaderAI->GetAiObjectContext();
+    DcPullContext& pull = ctx->GetValue<DcPullContext&>(DcKey::PullContext)->Get();
+    DcPullPhase const before = pull.phase;
+    bool const aborted = pull.SafetyRelease(getMSTime());
+    if (aborted)
+        DC_PULL_INFO("[DC:{}] advanced-pull: safety release during Advancing -> "
+                     "pull aborted (forced to Engage), party released",
+                     leader->GetName());
+    else if (pull.partyReleased && IsPullPhaseHolding(static_cast<uint32>(before)))
+        DC_PULL_INFO("[DC:{}] advanced-pull: safety release -> party freed to "
+                     "fight, tank keeps the drag (phase {})",
+                     leader->GetName(), static_cast<uint32>(before));
+}
+bool DcLeaderSignal::IsLeaderPullHoldReleased(Player* bot)
+{
+    if (!bot)
+        return false;
+    Player* leader = FindLeaderTank(bot);
+    if (!leader)
+        return false;
+    PlayerbotAI* leaderAI = GET_PLAYERBOT_AI(leader);
+    if (!leaderAI)
+        return false;
+    AiObjectContext* ctx = leaderAI->GetAiObjectContext();
+    return ctx->GetValue<DcPullContext&>(DcKey::PullContext)->Get().partyReleased;
+}
+ObjectGuid DcLeaderSignal::GetLeaderPullTarget(Player* bot)
+{
+    if (!bot)
+        return ObjectGuid::Empty;
+    Player* leader = FindLeaderTank(bot);
+    if (!leader)
+        return ObjectGuid::Empty;
+    PlayerbotAI* leaderAI = GET_PLAYERBOT_AI(leader);
+    if (!leaderAI)
+        return ObjectGuid::Empty;
+    AiObjectContext* ctx = leaderAI->GetAiObjectContext();
+    return ctx->GetValue<DcPullContext&>(DcKey::PullContext)->Get().pullTarget;
 }
 void DcLeaderSignal::SetLeaderDazeImmunity(Player* leader, bool apply)
 {

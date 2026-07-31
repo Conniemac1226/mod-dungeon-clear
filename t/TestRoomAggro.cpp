@@ -269,3 +269,69 @@ TEST(RoomAggroSkirtTest, NonPositiveRadiusNeverSkirts)
     EXPECT_FALSE(DcEngageGeometry::NeedsRoomAggroSkirt(
         -30.0f, 0.0f, 30.0f, 0.0f, 0.0f, 0.0f, -5.0f));
 }
+
+// --- FirstViolatedSphere (the en-route avoidance chooser) -----------------
+//
+// Same chord test, now over a SET of bystander packs. The contract is
+// "nearest violated sphere to the bot", because the tank rounds obstacles one
+// at a time and the proven single-sphere orbit does the actual walking.
+
+namespace
+{
+    using Sphere = DcEngageGeometry::AvoidSphere;
+
+    Sphere At(float x, float y, float r)
+    {
+        Sphere s;
+        s.x = x;
+        s.y = y;
+        s.r = r;
+        return s;
+    }
+}
+
+TEST(DcEnRouteAvoidTest, NoSpheresMeansNoDetour)
+{
+    EXPECT_EQ(DcEngageGeometry::FirstViolatedSphere(0.f, 0.f, 50.f, 0.f, {}), -1);
+}
+
+TEST(DcEnRouteAvoidTest, ClearCorridorMeansNoDetour)
+{
+    // Two packs well off the line: the walk passes nothing.
+    std::vector<Sphere> const s{At(25.f, 40.f, 10.f), At(25.f, -40.f, 10.f)};
+    EXPECT_EQ(DcEngageGeometry::FirstViolatedSphere(0.f, 0.f, 50.f, 0.f, s), -1);
+}
+
+TEST(DcEnRouteAvoidTest, PicksTheViolatorNearestTheBot)
+{
+    // Three packs sitting ON the line at 10, 25 and 40 yards out. The tank must
+    // round the FIRST one it would reach — rounding the far one first would walk
+    // it straight through the near one.
+    std::vector<Sphere> const s{At(40.f, 0.f, 8.f), At(10.f, 0.f, 8.f), At(25.f, 0.f, 8.f)};
+    EXPECT_EQ(DcEngageGeometry::FirstViolatedSphere(0.f, 0.f, 50.f, 0.f, s), 1);
+}
+
+TEST(DcEnRouteAvoidTest, IgnoresClearSpheresWhenPickingTheNearest)
+{
+    // The nearest pack (index 0) is off the line; the violator further out is the
+    // one to round. "Nearest" is nearest VIOLATOR, not nearest pack.
+    std::vector<Sphere> const s{At(5.f, 30.f, 8.f), At(30.f, 0.f, 8.f)};
+    EXPECT_EQ(DcEngageGeometry::FirstViolatedSphere(0.f, 0.f, 50.f, 0.f, s), 1);
+}
+
+TEST(DcEnRouteAvoidTest, DegenerateRadiiAreSkipped)
+{
+    // A zero/negative radius is "no sphere" (a mob whose aggro range resolved to
+    // nothing), not "a sphere at the origin the tank must orbit".
+    std::vector<Sphere> const s{At(25.f, 0.f, 0.f), At(25.f, 0.f, -5.f)};
+    EXPECT_EQ(DcEngageGeometry::FirstViolatedSphere(0.f, 0.f, 50.f, 0.f, s), -1);
+}
+
+TEST(DcEnRouteAvoidTest, PackTheTankIsStandingInIsStillRounded)
+{
+    // Recovery case, inherited from NeedsRoomAggroSkirt: the tank has drifted
+    // inside a bystander's aggro sphere. It must be told to leave, not to read
+    // "already inside, nothing to avoid" and carry on through.
+    std::vector<Sphere> const s{At(3.f, 0.f, 10.f)};
+    EXPECT_EQ(DcEngageGeometry::FirstViolatedSphere(0.f, 0.f, 50.f, 0.f, s), 0);
+}

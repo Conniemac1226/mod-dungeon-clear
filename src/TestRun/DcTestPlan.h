@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+#include "TestRun/DcTestGearTiers.h"
+
 // Pure kernel for `.dc test plan` campaigns: a plan keeps up to `concurrent`
 // test runs of one dungeon in flight until `total` have completed, then the
 // outcomes are aggregated into one summary (DcTestPlanSummary). Engine-free —
@@ -29,6 +31,10 @@ namespace DcTestPlan
         bool heroic = false;           // children run at DUNGEON_DIFFICULTY_HEROIC
         std::uint32_t seedBase = 0;    // 0 = random comp per run;
                                        // N = child i replays seed N+i
+        // Gear ceiling every child run is geared to. Plan-wide rather than
+        // per-child on purpose: a campaign exists to compare runs against each
+        // other, which only means anything at one ceiling.
+        DcTestGearTiers::Spec gear;
     };
 
     struct Counters
@@ -42,6 +48,19 @@ namespace DcTestPlan
     // One finished child run, distilled from its DcTestRunRecord::Record by the
     // run manager's erase pass. bossKills keeps only named mask-kills (in kill
     // order) — anchor "objective" completions carry no name worth aggregating.
+    // One pull carried up from a child run for the plan-level pull stats. The
+    // full DcTestRunRecord::PullEntry stays in the run's own JSONL; the plan only
+    // needs the two numbers whose relationship is the diagnosis (what the
+    // governor predicted vs. what showed up), plus the two flags that split the
+    // population (which maneuver it chose, and whether the party died on it).
+    struct PullSample
+    {
+        std::uint32_t predicted = 0;
+        std::uint32_t observed = 0;
+        bool advanced = false;
+        bool wipedHere = false;
+    };
+
     struct RunOutcome
     {
         std::string runId;
@@ -51,6 +70,14 @@ namespace DcTestPlan
         std::uint32_t bossesKilled = 0;
         std::uint32_t bossesTotal = 0;
         std::vector<std::string> bossKills;
+        // Every boss on the run's roster, in progression order. Gives the plan
+        // summary a denominator that includes bosses no run ever reached.
+        std::vector<std::string> bossRoster;
+        // What the party was down to when the run ended, boss or trash; empty
+        // when nobody died or nothing was on them (DcTestRunRecord::wipeOpponent).
+        std::string wipeOpponent;
+        bool wipeOnBoss = false;
+        std::vector<PullSample> pulls;
     };
 
     // How many new runs to launch this tick: bounded by the plan's remaining
@@ -85,9 +112,9 @@ namespace DcTestPlan
     }
 
     // `.dc test plan start <token> [heroic] total=N [concurrent=N] [level=N]
-    // [seed=N]`. Fills token/heroic/total/concurrent/level/seedBase; planId is
-    // left empty. ok is false with a usage-shaped err on a missing token/total,
-    // a duplicate bare word, or a malformed key=value.
+    // [seed=N] [ilvl=N|none] [quality=N|epic|…]`. Fills the whole Spec except
+    // planId. ok is false with a usage-shaped err on a missing token/total, a
+    // duplicate bare word, or a malformed key=value.
     struct ParseResult
     {
         bool ok = false;

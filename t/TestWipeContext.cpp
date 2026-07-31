@@ -126,3 +126,77 @@ TEST(DcWipeContextTest, InCombatWithNoResolvedOpponentHoldsTheLatch)
     e = UpdateEngagement(e, s);
     EXPECT_EQ(e.name, "Ghaz'an");
 }
+
+// ---- blame selection -------------------------------------------------------------
+
+TEST(DcWipeContextTest, BlamePrefersTheLiveLatch)
+{
+    Engagement const live{true, 18105, "Ghaz'an"};
+    Engagement const atDeath{false, 17826, "Bog Giant"};
+    EXPECT_EQ(DcTestRun::BlameFor(live, atDeath).name, "Ghaz'an");
+}
+
+TEST(DcWipeContextTest, BlameFallsBackToTheLastDeathWhenTheLatchCleared)
+{
+    // The rez-timeout shape: the survivors killed the pack and disengaged, so
+    // the live latch is legitimately empty — but the corpse still knows what
+    // put it there, and that is the whole point of the death log.
+    Engagement const atDeath{true, 23035, "Anzu"};
+    Engagement const blame = DcTestRun::BlameFor({}, atDeath);
+    EXPECT_TRUE(blame.isBoss);
+    EXPECT_EQ(blame.name, "Anzu");
+}
+
+TEST(DcWipeContextTest, BlameStaysEmptyWhenTheLastDeathHadNoOpponent)
+{
+    // A member who dropped combat and then fell must not be filed against a
+    // boss the party disengaged from long before.
+    EXPECT_TRUE(DcTestRun::BlameFor({}, {}).Empty());
+}
+
+// ---- report strings --------------------------------------------------------------
+
+TEST(DcWipeContextTest, BlameSuffixDistinguishesBossFromTrash)
+{
+    EXPECT_EQ(DcTestRun::BlameSuffix({true, 23035, "Anzu"}),
+              " \xe2\x80\x94 killed by Anzu");
+    EXPECT_EQ(DcTestRun::BlameSuffix({false, 18129, "Avian Ripper"}),
+              " \xe2\x80\x94 killed by trash: Avian Ripper");
+    EXPECT_EQ(DcTestRun::BlameSuffix({}), "");
+}
+
+TEST(DcWipeContextTest, StripResumeHintCutsTheChatCallToAction)
+{
+    // The two rez-recovery bailouts verbatim.
+    EXPECT_EQ(DcTestRun::StripResumeHint(
+                  "Eranel died and no one left alive can resurrect \xe2\x80\x94 dungeon clear "
+                  "disabled. Type 'dc on' when ready to resume."),
+              "Eranel died and no one left alive can resurrect");
+    EXPECT_EQ(DcTestRun::StripResumeHint(
+                  "Couldn't get Zesh resurrected in time \xe2\x80\x94 dungeon clear "
+                  "disabled. Type 'dc on' when ready to resume."),
+              "Couldn't get Zesh resurrected in time");
+}
+
+TEST(DcWipeContextTest, StripResumeHintLeavesReasonsWithoutTheHintAlone)
+{
+    EXPECT_EQ(DcTestRun::StripResumeHint("test run teardown"), "test run teardown");
+    EXPECT_EQ(DcTestRun::StripResumeHint(""), "");
+}
+
+TEST(DcWipeContextTest, StripResumeHintKeepsAnEmDashInTheReasonsOwnBody)
+{
+    // Bounded lookback: only the dash INTRODUCING the hint is a cut point, so a
+    // reason that legitimately uses one further back keeps it.
+    EXPECT_EQ(DcTestRun::StripResumeHint(
+                  "the tank \xe2\x80\x94 who was leading \xe2\x80\x94 vanished, and this trailing "
+                  "clause is well over forty bytes long. Type 'dc on' when ready to resume."),
+              "the tank \xe2\x80\x94 who was leading \xe2\x80\x94 vanished, and this trailing "
+              "clause is well over forty bytes long");
+}
+
+TEST(DcWipeContextTest, StripResumeHintHandlesTheHintWithNoLeadingDash)
+{
+    EXPECT_EQ(DcTestRun::StripResumeHint("Bero died. Type 'dc on' when ready to resume."),
+              "Bero died");
+}

@@ -114,6 +114,16 @@ namespace
     // unique, so a wide flat scan can only return the intended NPC.
     constexpr float DC_EVENT_GOSSIP_APPROACH = 100.0f;
 
+    // How close to a ClearRadius centre the tank must be before its "no hostile
+    // left" answer is trusted as "the room is clear" (see the ClearRadius case in
+    // RunStep). The volume's candidate filter runs a STRICT per-candidate
+    // reachability probe FROM THE BOT, so the verdict is only as good as the
+    // vantage point: taken from outside the volume it reports clear over live
+    // trash. A hair above the 8yd default MoveTo parking radius, so a tank that
+    // has settled on the anchor is never ping-ponged by float noise, and tight
+    // enough that the probe's reach comfortably spans any sane clear radius.
+    constexpr float DC_EVENT_CLEAR_JUDGE_RADIUS = 12.0f;
+
     // Issue a one-shot move toward (x,y,z) if not already moving there. Short,
     // intra-room hops — the surrounding objective travel got the party into the
     // room; this just closes the last few yards to an interactable.
@@ -421,28 +431,62 @@ StepResult DungeonEventExecutor::RunStep(Player* bot, AiObjectContext* context,
             // Gate only, like KillCreature: Running while any reachable hostile
             // remains inside the point's radius/floor band, Done once none do. The
             // engage itself is driven by DcObjectiveArriveAction (engage pipeline).
-            // Evaluated only once the tank is AT the objective (the arrive trigger
-            // gates this), so the in-radius creatures are loaded — no premature
-            // "clear" while still travelling in.
+            //
+            // This used to lean on "the arrive trigger only fires once the tank is
+            // AT the objective, so nothing can be judged prematurely". That is an
+            // assumption about every caller's arriveRadius, and it does not hold —
+            // see the vantage-point check below.
             float const r = step.radius > 0.0f ? step.radius : 50.0f;
             Unit* u = DcTargeting::NearestHostileNearPoint(bot, context, step.x, step.y,
                                                            step.z, r, step.zBand,
                                                            &step.entryFilter);
-            // Diagnostic: a ClearRadius that completes in ~0ms is "premature" —
-            // it found no hostile because the tank evaluated it from too far
-            // (arriveRadius too large for the design assumption that 'arrived'
-            // means 'among the mobs'). Log the gap so that's unambiguous: bot's
-            // distance to the clear centre + whether a target was found.
-            if (!u)
+            if (u)
+                return StepResult::Running;
+
+            // NOTHING FOUND — which is only evidence the room is clear if the
+            // tank was standing somewhere it could actually SEE the room.
+            // NearestHostileNearPoint filters every candidate through the STRICT
+            // DcEngageGeometry::IsEngageReachable probe, a single
+            // PathGenerator::CalculatePath from the BOT. That probe degrades to
+            // "unreachable" well before the volume's own radius runs out: a mob
+            // 90yd off is past PathGenerator's poly budget and comes back
+            // PATHFIND_INCOMPLETE, and requireDirect additionally rejects any
+            // route far longer than the straight line. So a verdict taken from
+            // outside the volume reads "clear" over a room full of live trash.
+            //
+            // Live (Sethekk Halls, heroic): the tank crossed the objective's
+            // arrive radius at the room's south doorway, the event advanced to
+            // this step while it was still ~80yd from the summon anchor, this
+            // gate answered "clear" on the first evaluation, and the very next
+            // step poked the Anzu summon into an untouched room — the NE/NW
+            // packs were never engaged by anything, because AtObjective (30)
+            // outranks BlockingTrash (25) and this step is the only rung that
+            // sweeps a room rather than a path corridor.
+            //
+            // So the verdict is only trusted from INSIDE the judging radius —
+            // i.e. essentially at the anchor, where the strict probe's reach
+            // covers the whole volume. From anywhere else, walk back and stay
+            // Running. This also re-centres the tank after it has chased a mob
+            // to the far edge, so the next sweep is judged from the anchor too.
+            float const botToCentre = bot->GetExactDist(step.x, step.y, step.z);
+            if (botToCentre > DC_EVENT_CLEAR_JUDGE_RADIUS)
             {
-                float const botToCentre =
-                    bot->GetExactDist(step.x, step.y, step.z);
                 LOG_DEBUG("playerbots.dungeonclear",
-                          "[DC:{}] ClearRadius DONE: no hostile in r={:.0f} of "
-                          "({:.0f},{:.0f},{:.0f}); botDistToCentre={:.1f}",
-                          bot->GetName(), r, step.x, step.y, step.z, botToCentre);
+                          "[DC:{}] ClearRadius: no hostile in r={:.0f} of "
+                          "({:.0f},{:.0f},{:.0f}) but judged from {:.1f}yd out "
+                          "(> {:.0f}) — too far to certify, returning to the "
+                          "centre",
+                          bot->GetName(), r, step.x, step.y, step.z, botToCentre,
+                          DC_EVENT_CLEAR_JUDGE_RADIUS);
+                HopTo(bot, step.x, step.y, step.z);
+                return StepResult::Running;
             }
-            return u ? StepResult::Running : StepResult::Done;
+
+            LOG_DEBUG("playerbots.dungeonclear",
+                      "[DC:{}] ClearRadius DONE: no hostile in r={:.0f} of "
+                      "({:.0f},{:.0f},{:.0f}); botDistToCentre={:.1f}",
+                      bot->GetName(), r, step.x, step.y, step.z, botToCentre);
+            return StepResult::Done;
         }
 
         case EventStepKind::Wait:

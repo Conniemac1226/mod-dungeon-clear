@@ -161,6 +161,36 @@ bool DungeonClearMath::ShouldAbortPullForCc(bool impaired, std::uint32_t ccSince
     return elapsed >= graceMs;
 }
 
+bool DungeonClearMath::ShouldTripCampSafety(bool inCombat, float healthPct,
+                                            float safetyHpPct,
+                                            bool attackerIsPullTarget,
+                                            std::uint32_t since, std::uint32_t now,
+                                            std::uint32_t graceMs,
+                                            std::uint32_t& sinceOut)
+{
+    bool const qualifying = inCombat && safetyHpPct > 0.0f &&
+                            healthPct < safetyHpPct && !attackerIsPullTarget;
+    if (!qualifying)
+    {
+        sinceOut = 0;
+        return false;
+    }
+    // Arm the latch on the first qualifying tick. Never store 0 (it means
+    // "fine"), so a follower qualifying at the very first millisecond still
+    // latches. Same contract as ShouldAbortPullForCc.
+    std::uint32_t const start = since != 0 ? since : (now != 0 ? now : 1u);
+    sinceOut = start;
+    std::uint32_t const elapsed = now >= start ? now - start : 0u;
+    return elapsed >= graceMs;
+}
+
+bool DungeonClearMath::ShouldStandDownForPull(bool packIsPullsOwn, bool pullPhaseIdle)
+{
+    if (packIsPullsOwn)
+        return true;          // the pipeline is (or is about to be) working it
+    return !pullPhaseIdle;    // in flight: never thrash the maneuver
+}
+
 bool DungeonClearMath::ShouldDropPullVerdict(bool targetPresent, std::uint32_t lostSince,
                                              std::uint32_t now, std::uint32_t graceMs,
                                              std::uint32_t& lostSinceOut)

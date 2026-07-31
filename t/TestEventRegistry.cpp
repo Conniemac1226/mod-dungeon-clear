@@ -604,3 +604,87 @@ TEST(DungeonEventIntegrityTest, BlackMorassAeonusIsFiledAsADrainerNotAKeeper)
     EXPECT_FALSE(has(BlackMorassDrainEntries(), kDeja));
     EXPECT_FALSE(has(BlackMorassDrainEntries(), kTemporus));
 }
+
+// --- objective-hook id space -------------------------------------------------
+// Hook ids are ONE FLAT SPACE shared by every dungeon, and unlike event
+// conditions (function pointers, so a typo is a compile error) nothing about an
+// id is checked by the compiler. Now that controllers register from their own
+// TUs (RegisterBlackMorassHooks) instead of one central initializer list, a
+// copy-pasted id is a live hazard: emplace() keeps the first row and silently
+// drops the second, so the losing dungeon's objective latches Done on arrival and
+// its event never runs, with nothing in the log to say why. ObjectiveHookRegistry
+// ::AddHook turns that into a LOG_ERROR; these cases turn it into a red test.
+
+TEST(DungeonEventIntegrityTest, AddHookRejectsDuplicateIdsAndKeepsTheFirst)
+{
+    auto const first  = [](Player*, AiObjectContext*, DungeonBossInfo const&)
+    { return ObjectiveArriveResult::Done; };
+    auto const second = [](Player*, AiObjectContext*, DungeonBossInfo const&)
+    { return ObjectiveArriveResult::Blocked; };
+
+    ObjectiveHookRegistry::HookTable t;
+    ObjectiveHookRegistry::AddHook(t, 42, first);
+    ObjectiveHookRegistry::AddHook(t, 42, second);
+
+    ASSERT_EQ(t.size(), 1u) << "a duplicate id must not add a second row";
+    EXPECT_EQ(t.at(42)(nullptr, nullptr, DungeonBossInfo{}), ObjectiveArriveResult::Done)
+        << "on a collision the FIRST registration wins; if the second silently"
+           " replaced it, whichever dungeon's TU happened to register last would"
+           " hijack the other's objective.";
+}
+
+TEST(DungeonEventIntegrityTest, AddHookRejectsReservedIdZeroAndEmptyCallables)
+{
+    ObjectiveHookRegistry::HookTable t;
+
+    ObjectiveHookRegistry::AddHook(t, 0, [](Player*, AiObjectContext*, DungeonBossInfo const&)
+                                   { return ObjectiveArriveResult::Done; });
+    EXPECT_TRUE(t.empty())
+        << "id 0 means 'no hook' on DungeonBossInfo::onArriveHook and EventStep::hookId;"
+           " registering it would make a hookless objective run someone's handler.";
+
+    ObjectiveHookRegistry::AddHook(t, 43, ObjectiveHookRegistry::Hook{});
+    EXPECT_TRUE(t.empty())
+        << "an empty callable would satisfy Has() but crash on Run()";
+}
+
+// The live table, cross-checked against what the per-dungeon appenders are
+// supposed to have contributed. This is what actually catches a controller TU
+// being dropped by the linker (the static-lib hazard the explicit
+// Register<Dungeon>Hooks calls exist to prevent) — its ids just stop resolving.
+TEST(DungeonEventIntegrityTest, EveryAuthoredObjectiveHookIdIsRegistered)
+{
+    struct Expected { uint32 id; char const* what; };
+    constexpr Expected kHooks[] = {
+        { 1, "BRD Ring of Law — EnsureRingStarted" },
+        { 2, "Deadmines — FireDefiasCannon" },
+        { 3, "Old Hillsbrad — GrantIncendiaryBombs" },
+        { 4, "The Mechanar — GrantCacheKeyAndLoot" },
+        { 5, "ZulFarrak — WakeZumrah" },
+        { 6, "Arcatraz — DriveMellicharWaves" },
+        { 7, "Sethekk Halls — DriveAnzuSummon" },
+        { 8, "Black Morass — DriveBlackMorassEvent (BlackMorassDriver.cpp)" },
+        { 9, "Shattered Halls — StartNethekurseIntro" },
+        { 12, "Black Morass — BmDriveWave (BlackMorassDriver.cpp)" },
+    };
+
+    for (Expected const& e : kHooks)
+        EXPECT_TRUE(ObjectiveHookRegistry::Has(e.id))
+            << "objective hook " << e.id << " (" << e.what << ") is not registered."
+               " If this is one of the Black Morass ids, the most likely cause is"
+               " BlackMorassDriver.cpp losing its RegisterBlackMorassHooks call from"
+               " Hooks() — the module is a static lib, so a TU nothing references"
+               " gets dropped along with its hooks.";
+
+    EXPECT_FALSE(ObjectiveHookRegistry::Has(0))
+        << "id 0 is the 'no hook' sentinel and must never resolve";
+
+    // 10 and 11 (BmCampActivePortal / BmPullDrainers) were the old Black Morass
+    // wave pair, retired into hook 12. They are left unused rather than recycled so
+    // an old log line naming them stays legible — recycling them would silently
+    // re-point historic diagnostics at unrelated behaviour.
+    EXPECT_FALSE(ObjectiveHookRegistry::Has(10))
+        << "hook id 10 is RETIRED (old BmCampActivePortal) and must stay unused";
+    EXPECT_FALSE(ObjectiveHookRegistry::Has(11))
+        << "hook id 11 is RETIRED (old BmPullDrainers) and must stay unused";
+}

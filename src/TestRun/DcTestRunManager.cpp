@@ -9,7 +9,10 @@
 #include <fstream>
 #include <limits>
 
+#include "CharacterCache.h"
+#include "ObjectAccessor.h"
 #include "ObjectGuid.h"
+#include "ObjectMgr.h"
 #include "Player.h"
 
 #include "Playerbots.h"
@@ -22,6 +25,7 @@
 #include "TestRun/DcTestDungeonRegistry.h"
 #include "TestRun/DcTestPlanManager.h"
 #include "TestRun/DcTestRunJob.h"
+#include "TestRun/DcTestRoster.h"
 #include "TestRun/DcTestRunLiveJson.h"
 #include "TestRun/DcTestRunRecord.h"
 #include "TestRun/DcTestRunSelect.h"
@@ -42,8 +46,8 @@ DcTestRunManager& DcTestRunManager::Instance()
 
 bool DcTestRunManager::Start(Player* gm, std::string const& dungeonToken,
                              uint32 levelOverride, uint32 seed, bool heroic,
-                             std::string* msg, std::string const& planId,
-                             StartErr* errOut, std::string* runIdOut)
+                             DcTestGearTiers::Spec const& gear, std::string* msg,
+                             std::string const& planId, StartErr* errOut, std::string* runIdOut)
 {
     if (errOut)
         *errOut = StartErr::None;
@@ -95,7 +99,7 @@ bool DcTestRunManager::Start(Player* gm, std::string const& dungeonToken,
     // world thread — no TOCTOU with other runs).
     std::string err;
     std::unique_ptr<DcTestRunJob> job =
-        DcTestRunJob::Create(gm, *row, levelOverride, seed, heroic, _reservedGuids, planId, &err);
+        DcTestRunJob::Create(gm, *row, levelOverride, seed, heroic, gear, _reservedGuids, planId, &err);
     if (!job)
         return fail(StartErr::PoolExhausted, err);
 
@@ -114,6 +118,161 @@ bool DcTestRunManager::Start(Player* gm, std::string const& dungeonToken,
     }
     if (msg)
         *msg = started;
+    return true;
+}
+
+bool DcTestRunManager::StartRoster(Player* gm, std::string const& dungeonToken,
+                                   std::string const& partySpec, bool heroic, std::string* msg,
+                                   std::string const& planId, StartErr* errOut,
+                                   std::string* runIdOut)
+{
+    if (errOut)
+        *errOut = StartErr::None;
+
+    auto fail = [&](StartErr kind, std::string const& why) -> bool
+    {
+        if (msg)
+            *msg = "Test run not started: " + why;
+        if (errOut)
+            *errOut = kind;
+        return false;
+    };
+
+    DcTestDungeonRegistry::Row const* row = DcTestDungeonRegistry::Find(dungeonToken);
+    if (!row)
+        return fail(StartErr::UnknownDungeon,
+                    "unknown dungeon '" + dungeonToken + "' — see .dc test list");
+
+    if (heroic && row->heroicLevel == 0)
+        return fail(StartErr::UnknownDungeon,
+                    "'" + std::string(row->token) + "' has no heroic mode (TBC heroics only for now)");
+
+    if (!gm || !GET_PLAYERBOT_MGR(gm))
+        return fail(StartErr::NoMgr, "no playerbot manager on this account");
+
+    uint32 const maxConcurrent = DcSettings::GetUInt(ObjectGuid::Empty, "TestRun.MaxConcurrent");
+    if (maxConcurrent != 0 && _runs.size() >= maxConcurrent)
+        return fail(StartErr::CapHit,
+                    "max concurrent test runs reached (" + std::to_string(maxConcurrent) +
+                    ") — .dc test stop <run> first");
+
+    // No MaxAddedBots pre-check here: roster members log in masterless
+    // (AddPlayerBot with masterAccountId 0), and that cap is only applied to bots
+    // added against a master's account.
+
+    DcTestRoster::Result const parsed = DcTestRoster::Parse(partySpec);
+    if (parsed.kind != DcTestRoster::Kind::Ok)
+        return fail(StartErr::BadRoster, parsed.detail);
+
+    std::vector<DcTestRunJob::RosterEntry> roster;
+    roster.reserve(parsed.members.size());
+    uint32 team = 0;
+    bool teamKnown = false;
+
+    for (DcTestRoster::Member const& m : parsed.members)
+    {
+        // The cache is keyed by the stored (capitalised) name; accept whatever
+        // case the Command Deck or the typist used.
+        std::string name = m.name;
+        normalizePlayerName(name);
+        ObjectGuid const guid = sCharacterCache->GetCharacterGuidByName(name);
+        if (!guid)
+            return fail(StartErr::BadRoster, "no character named '" + m.name + "'");
+
+        // A human playing the character wins: AddPlayerBot no-ops on a connected
+        // character, so without this the run would sit out its spawn timeout.
+        if (ObjectAccessor::FindConnectedPlayer(guid))
+            return fail(StartErr::CharacterOnline,
+                        "'" + name + "' is logged in — a roster character must be offline");
+
+        if (_reservedGuids.find(guid) != _reservedGuids.end())
+            return fail(StartErr::CharacterBusy,
+                        "'" + name + "' is already in another live test run");
+
+        // GetCharacterTeamByGuid returns TeamId, and 0 both for Alliance and for
+        // an unknown guid — safe here only because the guid resolved above.
+        uint32 const memberTeam = sCharacterCache->GetCharacterTeamByGuid(guid);
+        if (!teamKnown)
+        {
+            team = memberTeam;
+            teamKnown = true;
+        }
+        else if (memberTeam != team)
+            return fail(StartErr::FactionMismatch,
+                        "'" + name + "' is not the same faction as the rest of the roster — "
+                        "a cross-faction party cannot be grouped");
+
+        roster.push_back({guid, name, m.role});
+    }
+
+    std::string err;
+    std::unique_ptr<DcTestRunJob> job =
+        DcTestRunJob::CreateFromRoster(gm, *row, heroic, roster, planId, &err);
+    if (!job)
+        return fail(StartErr::BadRoster, err);
+
+    if (runIdOut)
+        *runIdOut = job->RunId();
+
+    for (ObjectGuid const& g : job->BotGuids())
+        _reservedGuids.insert(g);
+
+    std::string const started = "Test run started: " + job->StatusLine();
+    {
+        std::lock_guard<std::mutex> lock(_runsMutex);
+        _runs.push_back(std::move(job));
+    }
+    if (msg)
+        *msg = started;
+    return true;
+}
+
+bool DcTestRunManager::WatchTarget(std::string const& selector, ObjectGuid* tankOut,
+                                   std::string* msg, std::string* tokenOut) const
+{
+    std::vector<DcTestRunSelect::RunRef> refs;
+    refs.reserve(_runs.size());
+    for (auto const& job : _runs)
+        refs.push_back({job->RunId(), job->DungeonToken()});
+
+    DcTestRunSelect::Result const res = DcTestRunSelect::Resolve(selector, refs);
+    switch (res.kind)
+    {
+        case DcTestRunSelect::Kind::NoRuns:
+            if (msg)
+                *msg = "no test run active";
+            return false;
+        case DcTestRunSelect::Kind::Ambiguous:
+            if (msg)
+                *msg = "multiple test runs active — specify a runId or dungeon token:\n" +
+                       ListActiveRuns();
+            return false;
+        case DcTestRunSelect::Kind::NotFound:
+            if (msg)
+                *msg = "no run matches '" + selector + "' — active runs:\n" + ListActiveRuns();
+            return false;
+        case DcTestRunSelect::Kind::All:
+        case DcTestRunSelect::Kind::Matched:
+            break;
+    }
+
+    // A camera can only sit in one instance. "all", or a token matching several
+    // runs, is a question with no single answer — say so instead of guessing.
+    if (res.indices.size() != 1)
+    {
+        if (msg)
+            *msg = "'" + selector + "' matches " + std::to_string(res.indices.size()) +
+                   " runs — watch one at a time:\n" + ListActiveRuns();
+        return false;
+    }
+
+    DcTestRunJob const* job = _runs[res.indices.front()].get();
+    if (tankOut)
+        *tankOut = job->TankGuid();
+    if (tokenOut)
+        *tokenOut = job->DungeonToken();
+    if (msg)
+        *msg = job->RunId() + " (" + job->DungeonToken() + ")";
     return true;
 }
 
@@ -247,9 +406,16 @@ void DcTestRunManager::Tick(uint32 diff)
                     outcome.durationS = rec.durationS;
                     outcome.bossesKilled = rec.bossesKilled;
                     outcome.bossesTotal = rec.bossesTotal;
+                    outcome.bossRoster = rec.bossRoster;
+                    outcome.wipeOpponent = rec.wipeOpponent;
+                    outcome.wipeOnBoss = rec.wipeOnBoss;
                     for (DcTestRunRecord::BossKill const& kill : rec.bossTimeline)
                         if (kill.via == "mask")
                             outcome.bossKills.push_back(kill.name);
+                    outcome.pulls.reserve(rec.pulls.size());
+                    for (DcTestRunRecord::PullEntry const& p : rec.pulls)
+                        outcome.pulls.push_back({p.predictedCount, p.observedMax,
+                                                 p.advanced, p.wipedHere});
                     DcTestPlanManager::Instance().OnRunFinished((*it)->PlanId(),
                                                                 std::move(outcome));
                 }

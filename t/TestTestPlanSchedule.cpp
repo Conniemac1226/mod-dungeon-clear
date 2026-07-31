@@ -190,6 +190,33 @@ TEST(DcTestPlanParseTest, MalformedValueFails)
     EXPECT_FALSE(ParseStartArgs("deadmines total=10x").ok);
 }
 
+TEST(DcTestPlanParseTest, GearOptionsTakeWordsAsWellAsNumbers)
+{
+    ParseResult const r = ParseStartArgs("mechanar total=5 ilvl=141 quality=epic");
+    ASSERT_TRUE(r.ok) << r.err;
+    EXPECT_EQ(r.spec.gear.ilvl, 141);
+    EXPECT_EQ(r.spec.gear.quality, 4u);
+
+    // "none" removes the cap for the plan's runs; the numeric parse below the
+    // gear branch would have rejected the word outright.
+    ParseResult const none = ParseStartArgs("mechanar total=5 ilvl=none");
+    ASSERT_TRUE(none.ok) << none.err;
+    EXPECT_EQ(none.spec.gear.ilvl, DcTestGearTiers::kNoLimit);
+
+    // Omitted = inherit the AutoGear* conf values.
+    ParseResult const bare = ParseStartArgs("mechanar total=5");
+    ASSERT_TRUE(bare.ok) << bare.err;
+    EXPECT_TRUE(bare.spec.gear.IsDefault());
+}
+
+TEST(DcTestPlanParseTest, BadGearValuesFail)
+{
+    EXPECT_FALSE(ParseStartArgs("mechanar total=5 ilvl=abc").ok);
+    EXPECT_FALSE(ParseStartArgs("mechanar total=5 ilvl=99999").ok);
+    EXPECT_FALSE(ParseStartArgs("mechanar total=5 quality=shiny").ok);
+    EXPECT_FALSE(ParseStartArgs("mechanar total=5 quality=9").ok);
+}
+
 TEST(DcTestPlanParseTest, UnknownOptionFails)
 {
     ParseResult const r = ParseStartArgs("deadmines total=10 bogus=1");

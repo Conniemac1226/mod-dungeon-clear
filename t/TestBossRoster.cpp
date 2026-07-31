@@ -6,6 +6,7 @@
 #include "gtest/gtest.h"
 
 #include <algorithm>
+#include <cmath>
 
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonEventRegistry.h"
@@ -926,4 +927,166 @@ TEST(BossRosterRegistryTest, WailingCavernsEscortObjectiveSortsBeforeMutanus)
     EXPECT_LT(verdanIdx, dropIdx);
     EXPECT_LT(dropIdx, escortIdx);
     EXPECT_LT(escortIdx, mutanusIdx);
+}
+
+// Sethekk Halls (556): the forced-Anzu objective and its room pre-clear.
+//
+// REGRESSION GUARD for a live heroic failure: the tank walked to the Anzu summon
+// statue, poked the summon into a completely untouched room, and the freshly
+// summoned Anzu (SetInCombatWithZone) then chased the party the length of the
+// hall and on into Ikiss's chamber, so they fought Anzu, Ikiss and the uncleared
+// NE/NW packs together.
+//
+// The cause was the anchor's arriveRadius, not the sweep volume. DcRel::
+// AtObjective (30) outranks DcRel::BlockingTrash (25), so crossing the arrive
+// radius hands the tick to the objective action for good. At 55yd that happened
+// a whole room-length from the statue: the ordinary corridor trash-clear was
+// suppressed for the entire approach, and the ClearRadius gate was then judged
+// (and the summon poked) from ~80yd out, where the volume's STRICT per-candidate
+// reachability probe cannot confirm a route to anything and the gate answers
+// "clear" over a room full of live trash.
+//
+// Both halves are pinned here:
+//   * arriveRadius must stay SMALL — the walk in belongs to the corridor clear
+//     and the pull pipeline, and the event may only take over once the tank is
+//     actually at the statue. It must still exceed step 0's MoveTo radius so that
+//     step completes on arrival and IsPersistentAnchoredEventActive latches the
+//     trigger on, which is what frees the sweep to range the full clear radius.
+//   * the ClearRadius volume must cover the WHOLE room — see the companion test
+//     SethekkAnzuSweepSpansTheWholeAnteChamber, which pins it against the actual
+//     map-556 spawn coordinates rather than against a radius number.
+TEST(BossRosterRegistryTest, SethekkAnzuObjectiveHandsOverOnlyAtTheStatue)
+{
+    std::vector<DungeonBossInfo> base = {
+        Boss(18472, 0, "Darkweaver Syth", 556),
+        Boss(18473, 2, "Talon King Ikiss", 556),
+    };
+    std::vector<DungeonBossInfo> out =
+        BossRosterRegistry::Apply(556, DUNGEON_DIFFICULTY_HEROIC, base);
+
+    DungeonBossInfo const* anzu = Find(out, BossRosterRegistry::ObjectiveEntry(1));
+    ASSERT_NE(anzu, nullptr) << "heroic Sethekk must carry the Anzu objective anchor";
+    EXPECT_EQ(anzu->kind, DungeonAnchorKind::Objective);
+    EXPECT_EQ(anzu->eventId, 1u);
+
+    DungeonEvent const* ev = DungeonEventRegistry::Find(556, anzu->eventId);
+    ASSERT_NE(ev, nullptr);
+
+    float moveRadius = -1.0f;
+    float clearRadius = -1.0f;
+    for (EventStep const& s : ev->steps)
+    {
+        if (s.kind == EventStepKind::MoveTo && moveRadius < 0.0f)
+            moveRadius = s.radius;
+        if (s.kind == EventStepKind::ClearRadius)
+            clearRadius = s.radius;
+    }
+    ASSERT_GT(moveRadius, 0.0f) << "step 0 must park the tank on the anchor";
+    ASSERT_GT(clearRadius, 0.0f) << "the event must carry a ClearRadius sweep";
+
+    EXPECT_LE(anzu->arriveRadius, 15.0f)
+        << "arriveRadius too large -> the objective seizes the tick a room-length "
+           "out, suppressing the corridor trash-clear and letting the pre-clear be "
+           "judged (and the summon poked) from outside the room";
+    EXPECT_GT(anzu->arriveRadius, moveRadius)
+        << "arriveRadius must exceed the MoveTo radius so step 0 completes on "
+           "arrival and the persistent at-objective latch engages";
+
+    EXPECT_GT(clearRadius, 0.0f) << "the event must carry a ClearRadius sweep";
+}
+
+// Sethekk Halls (556): the Anzu pre-clear must sweep the WHOLE ante-chamber.
+//
+// REGRESSION GUARD for heroic run tr-20260726-112544-3 (tank Zeeron). By then the
+// vantage-point half of the earlier fix was working — the gate certified from
+// botDistToCentre=0.0, and everything inside the old 60yd volume really was dead
+// — but the summon still fired into a room with five elites standing in it. The
+// old geometry note called them "the Ikiss-corridor packs at 73-87yd" and
+// excluded them on purpose. They are not in Ikiss's corridor: Ikiss stands at
+// (44.7,287), a further 45-60yd on with nothing in between. They are the last
+// pack of THIS room, on the same flat floor, in a hall with no doors in it — and
+// the pull pipeline never reaches them either, because the tank stops at the
+// statue. So nothing cleared them before the poke; the party met them after Anzu
+// died (run ...-4 shows the same as a post-Anzu pull of entry 21904, 5 observed).
+//
+// The fix re-centres the sweep on the ROOM instead of the statue, which sits 53yd
+// from the room's south end and 87yd from its north end. This test pins the
+// INTENT against the real map-556 spawn coordinates rather than a radius number:
+// both ends of the room are inside the volume, and the two things that are NOT
+// this room's problem — the Syth-approach pack behind the party and Ikiss ahead
+// of it — stay outside.
+TEST(BossRosterRegistryTest, SethekkAnzuSweepSpansTheWholeAnteChamber)
+{
+    DungeonEvent const* ev = DungeonEventRegistry::Find(556, 1);
+    ASSERT_NE(ev, nullptr);
+
+    EventStep const* clear = nullptr;
+    for (EventStep const& s : ev->steps)
+        if (s.kind == EventStepKind::ClearRadius)
+            clear = &s;
+    ASSERT_NE(clear, nullptr) << "the Anzu event must carry a ClearRadius sweep";
+
+    auto covers = [&](float x, float y)
+    {
+        float const dx = x - clear->x;
+        float const dy = y - clear->y;
+        return std::sqrt(dx * dx + dy * dy) <= clear->radius;
+    };
+
+    // Both ends of the ante-chamber. South: the doorway trio (Sethekk Ravenguard
+    // 18322 guid 138666). North: the landing pack at the mouth of Ikiss's chamber
+    // (Sethekk Prophet 18325 guid 138688 is its far member, and the Avian Warhawk
+    // 21904 guid 138757 at its near end PATROLS).
+    EXPECT_TRUE(covers(-141.7f, 283.0f))
+        << "sweep must reach the south-doorway trio (Ravenguards + Cobalt Serpent)";
+    EXPECT_TRUE(covers(-1.2f, 289.9f))
+        << "sweep must reach the north-landing pack — this is the pack that was "
+           "left standing when the summon fired; it is part of the room, not of "
+           "the walk on to Ikiss";
+    EXPECT_TRUE(covers(-14.9f, 293.1f))
+        << "sweep must reach the north landing's patrolling Avian Warhawk";
+
+    // ...and no further. The Time-Lost Scryer (18319 guid 138648) is on the Syth
+    // approach BEHIND the party, dead on the way in; Talon King Ikiss is the next
+    // encounter and belongs to boss-nav, not to a trash sweep.
+    EXPECT_FALSE(covers(-171.1f, 282.3f))
+        << "sweep must not reach back down the Syth approach";
+    EXPECT_FALSE(covers(44.7f, 287.0f))
+        << "sweep must stop well short of Talon King Ikiss";
+
+    // Margin for the two patrollers at the volume's edges: the room's far corners
+    // sit ~70yd out, so a radius that only just reaches them would drop a mob that
+    // happened to be mid-patrol at judging time.
+    EXPECT_GE(clear->radius, 78.0f) << "no patrol margin on the room's far ends";
+
+    // A sweep that must walk the hall and fight what it finds cannot live on the
+    // 30s EventStepTimeout default: a timed-out step is Failed, and this event is
+    // Optional, so Failed skips the rest of the event — dropping the summon on
+    // exactly the runs where the pre-clear was needed.
+    EXPECT_GE(clear->timeoutMs, 120000u)
+        << "ClearRadius needs an explicit long timeout, or an uncleared room "
+           "silently skips the Anzu summon";
+
+    // The sweep leaves the tank at the room's centre; Anzu lands at the statue.
+    // A MoveTo must gather the party back before the summon step pokes.
+    size_t clearIdx = ev->steps.size();
+    size_t settleIdx = ev->steps.size();
+    size_t customIdx = ev->steps.size();
+    for (size_t i = 0; i < ev->steps.size(); ++i)
+    {
+        if (ev->steps[i].kind == EventStepKind::ClearRadius)
+            clearIdx = i;
+        else if (ev->steps[i].kind == EventStepKind::MoveTo && clearIdx < i &&
+                 settleIdx == ev->steps.size())
+            settleIdx = i;
+        else if (ev->steps[i].kind == EventStepKind::Custom &&
+                 customIdx == ev->steps.size())
+            customIdx = i;
+    }
+    ASSERT_LT(settleIdx, ev->steps.size())
+        << "no MoveTo after the sweep — the party would sit through the ~40s "
+           "theatrics spread down the hall wherever the last straggler died";
+    EXPECT_LT(settleIdx, customIdx) << "the re-settle must precede the summon poke";
+    EXPECT_NEAR(ev->steps[settleIdx].x, -88.0f, 1.0f);
+    EXPECT_NEAR(ev->steps[settleIdx].y, 288.0f, 1.0f);
 }
