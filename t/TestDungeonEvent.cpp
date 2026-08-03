@@ -1080,13 +1080,16 @@ TEST(DungeonEventConditional, ConditionalListFiltersByActivation)
     ASSERT_EQ(zf.size(), 1u);
     EXPECT_EQ(zf[0]->id, 3u);  // Wake Witch Doctor Zum'rah
 
-    // SFK has two faction-specific conditional events (Alliance + Horde).
+    // SFK has the two faction-specific courtyard events (Alliance + Horde) plus
+    // the Sorcerer's Gate voidwalker sweep.
     std::vector<DungeonEvent const*> sfk = DungeonEventRegistry::Conditional(33);
-    ASSERT_EQ(sfk.size(), 2u);
+    ASSERT_EQ(sfk.size(), 3u);
     EXPECT_EQ(sfk[0]->id, 1u);
     EXPECT_TRUE(static_cast<bool>(sfk[0]->condition));  // Alliance
     EXPECT_EQ(sfk[1]->id, 2u);
     EXPECT_TRUE(static_cast<bool>(sfk[1]->condition));  // Horde
+    EXPECT_EQ(sfk[2]->id, 3u);
+    EXPECT_TRUE(static_cast<bool>(sfk[2]->condition));  // Arugal's Voidwalkers
     for (DungeonEvent const* e : sfk)
         EXPECT_EQ(e->activation, EventActivation::Conditional);
 }
@@ -1122,6 +1125,62 @@ TEST(DungeonEventConditional, ShadowfangCourtyardEventShape)
         EXPECT_EQ(e->steps[4].goEntry, 18895u);
         EXPECT_EQ(e->steps[4].wantState, 0u);  // GO_STATE_ACTIVE (open)
     }
+}
+
+// The Sorcerer's Gate (18972) is opened by 'Arugal's Voidwalker - On Just Died -
+// Set GO State', not by the party. The gate wears an empty lock 85, so before
+// this event the door-blocked action rated itself entitled and clicked it open
+// inside the ~6s window between Fenrus dying and Arugal summoning the adds — the
+// party walked out, the voidwalkers spawned behind it, and the run wedged.
+//
+// The shape that fixes it, and why each piece is load-bearing:
+//   - an ARRIVAL step first, anchored on the summon ring, so the party is inside
+//     the adds' 40yd Attack-Start radius when they appear (and so the event
+//     can't false-latch "done" from across the map — the Stratholme #5 lint);
+//   - a WaitForSpawn gate BEFORE the sweep, or the sweep certifies the empty
+//     6s-window room clear and latches having killed nothing;
+//   - the sweep entry-filtered to the voidwalkers, with a by-entry
+//     KillCreatureEngage backstop for anything the position sweep can't see;
+//   - Persistent, because the sweep is a real fight and a combat gap would
+//     otherwise rewind a non-persistent event to step 0;
+//   - Optional, so a wipe that burned the adds' 60s out-of-combat despawn
+//     degrades to the door-blocked pause (which auto-resumes on open) instead
+//     of a hard event stall.
+TEST(DungeonEventConditional, ShadowfangSorcererGateVoidwalkerEventShape)
+{
+    DungeonEvent const* e = DungeonEventRegistry::Find(33, 3);
+    ASSERT_NE(e, nullptr);
+    EXPECT_EQ(e->activation, EventActivation::Conditional);
+    EXPECT_TRUE(static_cast<bool>(e->condition));
+    EXPECT_TRUE(e->persistent);
+    EXPECT_FALSE(e->required);
+
+    ASSERT_EQ(e->steps.size(), 5u);
+
+    // 1. Arrival on the summon ring — never straight to the gate.
+    EXPECT_EQ(e->steps[0].kind, EventStepKind::MoveTo);
+
+    // 2. Wait for the adds to exist before judging the room.
+    EXPECT_EQ(e->steps[1].kind, EventStepKind::WaitForSpawn);
+    EXPECT_EQ(e->steps[1].creatureEntry, 4627u);  // Arugal's Voidwalker
+
+    // 3. Sweep the ring, voidwalkers only.
+    EXPECT_EQ(e->steps[2].kind, EventStepKind::ClearRadius);
+    ASSERT_EQ(e->steps[2].entryFilter.size(), 1u);
+    EXPECT_EQ(e->steps[2].entryFilter[0], 4627u);
+    // The clear verdict is only trusted from within DC_EVENT_CLEAR_JUDGE_RADIUS
+    // (12) of the centre, so the arrival radius must land the tank inside it.
+    EXPECT_LE(e->steps[0].radius, 12.0f);
+
+    // 4. By-entry backstop for anything the position sweep couldn't resolve.
+    EXPECT_EQ(e->steps[3].kind, EventStepKind::KillCreature);
+    EXPECT_TRUE(e->steps[3].engage);
+    EXPECT_EQ(e->steps[3].creatureEntry, 4627u);
+
+    // 5. Confirm the gate the voidwalkers' death opens.
+    EXPECT_EQ(e->steps[4].kind, EventStepKind::WaitForGameObjectState);
+    EXPECT_EQ(e->steps[4].goEntry, 18972u);  // Sorcerer's Gate
+    EXPECT_EQ(e->steps[4].wantState, 0u);    // GO_STATE_ACTIVE (open)
 }
 
 // The synthetic latch key is pure, injective, and lives in a high range that

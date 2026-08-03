@@ -5,8 +5,11 @@
 
 #include "DungeonClearMath.h"
 
+#include "DungeonClearTuning.h"  // DC_PI
+
 #include <cmath>
 #include <cstddef>
+#include <limits>
 
 std::uint32_t DungeonClearMath::EstimateAggroCount(std::vector<DynPullMob> const& mobs,
                                                    std::size_t targetIdx,
@@ -191,6 +194,16 @@ bool DungeonClearMath::ShouldStandDownForPull(bool packIsPullsOwn, bool pullPhas
     return !pullPhaseIdle;    // in flight: never thrash the maneuver
 }
 
+bool DungeonClearMath::ShouldReleaseStandingPull(bool effectiveOn, bool standing, bool inCombat,
+                                                 bool holdingPhase, bool bossPullback)
+{
+    if (effectiveOn || !standing)
+        return false;             // the pull owns itself / nothing left standing
+    if (bossPullback)
+        return false;             // pull-back drags run with pull mode off by design
+    return !inCombat && !holdingPhase;  // never dismantle a maneuver in flight
+}
+
 bool DungeonClearMath::ShouldDropPullVerdict(bool targetPresent, std::uint32_t lostSince,
                                              std::uint32_t now, std::uint32_t graceMs,
                                              std::uint32_t& lostSinceOut)
@@ -372,6 +385,29 @@ float DungeonClearMath::DistSqToSegment2D(float px, float py,
     return dx * dx + dy * dy;
 }
 
+std::size_t DungeonClearMath::PathProgressCursor(std::vector<G3D::Vector3> const& route,
+                                                 float botX, float botY, float botZ)
+{
+    std::size_t cursor = 0;
+    float best = std::numeric_limits<float>::max();
+    for (std::size_t i = 0; i < route.size(); ++i)
+    {
+        float const dx = route[i].x - botX;
+        float const dy = route[i].y - botY;
+        float const dz = route[i].z - botZ;
+        // 3D, squared. The Z term is the whole point: it is what stops a route
+        // vertex a storey overhead from out-bidding the vertex on the floor the
+        // bot is actually standing on. See the header for the Shadowfang case.
+        float const d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < best)
+        {
+            best = d2;
+            cursor = i;
+        }
+    }
+    return cursor;
+}
+
 std::size_t DungeonClearMath::FindTrailRejoin(std::vector<Position> const& crumbs,
                                               Position const& cur, float rejoinRadius)
 {
@@ -487,7 +523,7 @@ std::vector<Position> DungeonClearMath::StandoffCandidates(Position const& targe
     // First candidate dead on the bot's side, then fan out alternately +/- so
     // nearer-to-bot angles are tried before the far side of the target.
     emit(baseAngle);
-    float const step = (2.0f * float(M_PI)) / float(ringPoints + 1);
+    float const step = (2.0f * DC_PI) / float(ringPoints + 1);
     for (std::uint32_t k = 1; k <= ringPoints; ++k)
     {
         float const off = step * float((k + 1) / 2);

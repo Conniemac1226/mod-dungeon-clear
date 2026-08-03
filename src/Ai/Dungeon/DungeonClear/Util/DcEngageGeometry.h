@@ -418,6 +418,39 @@ public:
     // Non-creatures return false.
     static bool IsRangedAttacker(Player* bot, Unit* u);
 
+    // True when the server is presenting `u` to every client AS A CORPSE
+    // (UNIT_DYNFLAG_DEAD), even though it is technically alive. Two producers:
+    // a creature_template with `dynamicflags & 32` — decorative bodies strewn
+    // across a wing — and the feign-death aura effect, which sets the same bit
+    // on a dormant scripted mob.
+    //
+    // Such a unit is NOT a pack. It does not notice you, does not chase, and
+    // does not fight, so the two things this predicate guards are both wrong for
+    // it: giving it an AggroRangeOf avoidance sphere (there is no aggro to
+    // avoid), and picking it as blocking trash to walk over and kill. Note it
+    // still passes IsAlive() and, for the corpse props, IsHostileTo() — which is
+    // exactly why it needs its own test rather than falling out of the existing
+    // liveness/hostility gates.
+    //
+    // ROOT CAUSE of tr-20260801-204608-7 (Arcatraz heroic): entries 21303
+    // "Defender Corpse" / 21304 "Warder Corpse" are 1-HP proximity bombs already
+    // on the DcHazardRegistry table as avoidance-only emitters, but the engage
+    // layer read them as live hostile elites and handed each a 20.4yd sphere.
+    // The advance glide then declined to honour a sphere it was already standing
+    // in ("too close to honour") and glided an ESCORT window, while the engage
+    // rung picked a corpse as blocking trash and issued a POINT detour around a
+    // second corpse — and DcMoveTo's ResolveEscortConflict cancels an in-flight
+    // escort, so the two rungs clobbered each other's movement generator ~2x/sec
+    // for 8.5 minutes at posDelta=0.00yd until the party wiped.
+    //
+    // Deliberately generic rather than a registry lookup: the world has ~97 such
+    // templates over ~1000 spawns (Auchenai's "Slain Auchenai Warrior", Naxx's
+    // corpse piles, …), so keying on the flag fixes every wing at once instead of
+    // waiting for each to be hand-authored onto the hazard table. Where a prop
+    // IS also a registered hazard, that registry keeps owning its keep-out radius
+    // — this only stops the aggro layer from inventing a second, conflicting one.
+    static bool IsDisplayedDead(Unit const* u);
+
     // True when `go` is a navigation-blocking door currently in its CLOSED
     // (corridor-blocking) visual state. Encapsulates the startOpen-inverted
     // GOState test shared by the blocking-door scan and the door-reopened

@@ -219,6 +219,11 @@ namespace
                 continue;
             if (!bot->IsHostileTo(u))
                 continue;
+            // A body on the floor is not a blocker: it never notices us and never
+            // fights, so walking over to melee it is pure detour. See
+            // DcEngageGeometry::IsDisplayedDead.
+            if (DcEngageGeometry::IsDisplayedDead(u))
+                continue;
 
             float const ux = u->GetPositionX();
             float const uy = u->GetPositionY();
@@ -307,6 +312,10 @@ Unit* DcTargeting::FindBlockingTrash(Player* bot,
             continue;
         if (!bot->IsHostileTo(u))
             continue;
+        // …but DO skip a unit displayed as a corpse: it cannot be the thing
+        // clawing at the healer. See DcEngageGeometry::IsDisplayedDead.
+        if (DcEngageGeometry::IsDisplayedDead(u))
+            continue;
         // Deliberately do NOT skip in-combat units. A hostile in our forward
         // corridor that's already engaged on another party member is *more*
         // reason to engage, not less — otherwise the tank walks past while
@@ -320,8 +329,8 @@ Unit* DcTargeting::FindBlockingTrash(Player* bot,
 
         float const ang = std::atan2(dy, dx);
         float delta = std::fabs(ang - bossAngle);
-        if (delta > static_cast<float>(M_PI))
-            delta = 2.0f * static_cast<float>(M_PI) - delta;
+        if (delta > DC_PI)
+            delta = 2.0f * DC_PI - delta;
         if (delta > halfAngle)
             continue;
 
@@ -513,7 +522,7 @@ Unit* DcTargeting::FindPullTarget(PlayerbotAI* botAI, DungeonBossInfo const& nex
     constexpr float kLookAhead = kPullLookAhead;
     constexpr float kWidth = 18.0f;
     constexpr float kConeRange = 35.0f;
-    float const kConeHalfAngle = static_cast<float>(M_PI) / 3.0f;  // 60°
+    float const kConeHalfAngle = DC_PI / 3.0f;  // 60°
 
     // Room-wide-aggro pre-clear: while the tank is at a flagged boss with room
     // trash still up, the pull pipeline targets that ROOM trash (nearest-first),

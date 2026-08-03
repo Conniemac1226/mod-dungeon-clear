@@ -25,6 +25,12 @@
  * and we synthesise no motion of our own. Free-fly needs client control (you
  * steer it); Follow must NOT have it. Do not "unify" them.
  *
+ * Neither mode opens at the BODY. Follow rides a bot by construction; Free
+ * summons its dummy at that same bot and hands the client across the gap under
+ * farsight before possessing it (see Start). A `.dc test watch` GM's body sits
+ * at the instance entrance for the whole run, so a free camera that spawned
+ * there meant flying the length of the dungeon to catch up with the party.
+ *
  * The watched unit is re-resolved on a slow tick (Tick below), so the camera
  * survives a leader-tank re-election, the tank dying, or the party moving on —
  * it hands off to another live tank bot on the map instead of freezing on a
@@ -67,14 +73,31 @@ namespace DcSpectator
     // player isn't following. For status readouts.
     ObjectGuid WatchedGuid(Player* player);
 
+    // True when GM mode was turned on BY US to hide this watcher (the flag
+    // RequestFollowOnArrival carries), on either a live camera or a still-
+    // pending arrival request. The GM-watch entry point reads it before ending
+    // one watch to start another: Stop restores the flip, so without carrying
+    // the answer forward the second hop would land the watcher visible and
+    // targetable in the middle of the next run.
+    bool HiddenByWatch(Player* player);
+
     // --- Free mode (possession) --------------------------------------------
 
     // Summon + possess the camera dummy. Returns false and fills `whyNot`
     // (when non-null) if the player is in a state that refuses possession.
+    //
+    // The dummy is summoned ON the bot the player would watch (the one a live
+    // Follow camera is riding, else the default seat), NOT on the player's
+    // body: `.dc test watch` parks that body at the instance entrance, so a
+    // camera opened there began a dungeon's length behind the run. Switching
+    // out of a live Follow camera is handled internally — that transition is
+    // what carries the client across the gap, so do NOT Stop first.
     bool Start(Player* player, std::string* whyNot = nullptr);
 
-    // Stop if active in any mode, else Start free-fly. Returns false only on a
-    // refused Start.
+    // Free -> off, Follow -> Free, nothing -> Free. Following is a step ON THE
+    // WAY to free-fly rather than a separate thing to cancel, so a watching GM
+    // toggles into the flying camera at the seat instead of back into their
+    // parked body. Returns false only on a refused Start.
     bool Toggle(Player* player, std::string* whyNot = nullptr);
 
     // --- Follow mode (farsight) --------------------------------------------

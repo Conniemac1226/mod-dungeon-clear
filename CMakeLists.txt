@@ -62,6 +62,10 @@ AC_ADD_CONFIG_FILE("${CMAKE_CURRENT_LIST_DIR}/conf/mod_dungeon_clear.conf.dist")
 # src/Util/DcSpectator.{h,cpp}
 #   (module-root src/Util/ — session plumbing, not bot AI: spectator
 #    free-camera via WORLD_TRIGGER possession, `.dc spectate` / addon button)
+# src/Util/DcWatchHop.{h,cpp}
+#   (pure instance-bind planner for `.dc test watch`: which binds to release,
+#    whether to re-bind, and whether the teleport must be forced far so a
+#    second watch lands in the LIVE copy instead of the finished one)
 # Data/RoomAggroRegistry.{h,cpp}
 #   (room-wide-aggro boss table: bosses that force the whole room into combat on
 #    engage; the tank clears the room before the pull — ClearRoomBeforeBoss)
@@ -183,7 +187,9 @@ AC_ADD_CONFIG_FILE("${CMAKE_CURRENT_LIST_DIR}/conf/mod_dungeon_clear.conf.dist")
 # TestRun/DcTestRunSelect.{h,cpp}, TestRun/DcTestRunLiveJson.{h,cpp}
 #   (concurrent-run refactor pure helpers: DcTestRunSelect resolves the
 #    `.dc test stop <selector>` precedence (bare/all/runId/dungeon-token) to a
-#    set of run indices; DcTestRunLiveJson builds the multi-run live-heartbeat
+#    set of run indices, and NextWatchIndex holds the `.dc test watch next`
+#    cycle rule (wrap, cold start, stay put when there is nowhere to hop);
+#    DcTestRunLiveJson builds the multi-run live-heartbeat
 #    JSON ({"active","ts","runs":[…]}) the dashboard polls. Both engine-free and
 #    edge-pinned by t/TestTestRunSelect + t/TestTestRunLiveJson. Paired with the
 #    DcTestRunJob per-run FSM extraction + DcTestRunManager registry rewrite.)
@@ -292,4 +298,12 @@ AC_ADD_CONFIG_FILE("${CMAKE_CURRENT_LIST_DIR}/conf/mod_dungeon_clear.conf.dist")
 #    DcTestRunJob::TickProvisioning building PlayerbotFactory with the resolved
 #    pair, and DcTestDungeonRegistry::WriteSidecar publishing the ladders for the
 #    Command Deck's start form.)
+# Util/DcCombatFlag.{h,cpp}
+#   (flag-vs-fight: the one shared answer for every rung that used to stand down
+#    on a bare bot->IsInCombat(). A 45yd hostile area aura flags the whole party
+#    in with nothing aggroed, and each rung that keyed on the raw flag froze on
+#    it in turn — the leader's driving ladder (fixed S1356), then the follower's
+#    follow-tank rung, the between-pulls rest floors, the stranded failsafe and
+#    the post-combat rez clock. MayDrive / IsPhantomFlag / AnyPartyEngagement,
+#    all over DungeonClearMath::MayDriveWhileFlagged's grace.)
 # (this comment bumps mtime to force CMake re-glob on next build)

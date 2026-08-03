@@ -46,4 +46,21 @@ namespace DcTestRunSelect
         // 5. Nothing matched.
         return {Kind::NotFound, {}};
     }
+
+    std::size_t NextWatchIndex(std::size_t count, std::size_t current)
+    {
+        if (count == 0)
+            return kNone;
+
+        // Not on a run (or on one that has since ended): take the first seat.
+        if (current >= count)
+            return 0;
+
+        // On the only run there is: staying put beats a round trip through a
+        // loading screen that lands where we already are.
+        if (count == 1)
+            return kNone;
+
+        return (current + 1) % count;
+    }
 }

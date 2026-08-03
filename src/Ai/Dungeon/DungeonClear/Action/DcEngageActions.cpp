@@ -58,6 +58,7 @@
 #include "Ai/Dungeon/DungeonClear/Util/DcPartyState.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcBreadcrumb.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcPathWorker.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcPullPlanner.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcRezRecovery.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcStrandedRecovery.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcSmartRest.h"
@@ -924,10 +925,14 @@ bool DungeonClearRoomPreClearHoldAction::Execute(Event /*event*/)
         lowRes = DcSmartRest::IsLatched(bot);
     else
     {
+        // The floors the between-pulls gate is actually holding for. Under a
+        // phantom flag they are 0/0 — deferring to a drink that cannot be taken
+        // (eating and drinking need out-of-combat) would park the tank at the
+        // standoff forever. See DcPartyState::GetRestGate.
+        DcPartyState::RestGate const rest = DcPartyState::GetRestGate(bot, context);
         uint32 const maxMana = bot->GetMaxPower(POWER_MANA);
-        bool const lowMana = maxMana > 0 &&
-            bot->GetPowerPct(POWER_MANA) < DcPartyState::RestMinMpPct(bot);
-        bool const lowHealth = bot->GetHealthPct() < DcPartyState::RestMinHpPct(bot);
+        bool const lowMana = maxMana > 0 && bot->GetPowerPct(POWER_MANA) < rest.minMp;
+        bool const lowHealth = bot->GetHealthPct() < rest.minHp;
         lowRes = lowMana || lowHealth;
     }
     if (lowRes)
@@ -1444,10 +1449,14 @@ DungeonClearEngageActionBase::EventRest DungeonClearEngageActionBase::EventRestD
 
     // Legacy per-target rest: the run set RestHealthPct / RestManaPct. Spread is
     // the cohesion gate's job, so measure rest ONLY (effectively-infinite spread).
-    float const minHp = DcPartyState::RestMinHpPct(bot);
-    float const minMp = DcPartyState::RestMinMpPct(bot);
+    DcPartyState::RestGate const rest = DcPartyState::GetRestGate(bot, context);
+    float const minHp = rest.minHp;
+    float const minMp = rest.minMp;
+    // No rest target configured -> never pause. Also the phantom-flag answer: the
+    // floors are 0/0 there because no one can eat or drink, so a set-piece must
+    // not stop for a rest that can never happen.
     if (minHp <= 0.0f && minMp <= 0.0f)
-        return EventRest::None;  // no rest target configured -> never pause
+        return EventRest::None;
     if (BotBelowRest(bot, minHp, minMp))
         return EventRest::Yield;
     if (!DcPartyState::IsPartyReady(bot, minHp, minMp, /*maxSpread*/ 100000.0f))
@@ -1512,10 +1521,20 @@ bool DungeonClearEngageActionBase::DriveUseItemOnGO(EventStep const& step)
     // this never self-deadlocks. Applied ONLY to the sustained TRAVEL legs below —
     // never the final in-reach plant or the doorway-threading detour — so a tank
     // essentially at a barrel always completes the plant even if the party lags.
+    //
+    // Measured through GetSpreadGate, NOT raw tank distance: in pull mode
+    // hold-at-camp PINS the followers at the camp, which legitimately sits
+    // PullSetback (40 > PartyMaxSpread 25) behind the tank — a tank-anchored
+    // check can then never pass, and the tank holds for a party that has been
+    // ordered to stand out of range of it. Same circular gate the between-pulls
+    // spread check was fixed for; "caught up" here also means "set at the camp
+    // they were told to hold" (with GetSpreadGate's own stale-camp/runaway
+    // backstop still enforcing an absolute cap on the tank gap).
     auto partyLagging = [&]() -> bool
     {
-        float const maxSpread = DcSettings::GetFloat(bot, "PartyMaxSpread");
-        return !DcPartyState::IsPartyReady(bot, /*minHp*/ 0.0f, /*minMp*/ 0.0f, maxSpread);
+        DcPartyState::SpreadGate const gate = DcPartyState::GetSpreadGate(bot, context);
+        return !DcPartyState::IsPartyReady(bot, /*minHp*/ 0.0f, /*minMp*/ 0.0f,
+                                           gate.maxSpread, gate.anchor, gate.maxTankGap);
     };
     auto holdForParty = [&]() -> bool
     {
@@ -1616,6 +1635,17 @@ bool DcObjectiveArriveAction::Execute(Event /*event*/)
     std::optional<DungeonBossInfo> next = AI_VALUE(std::optional<DungeonBossInfo>, DcKey::NextDungeonBoss);
     if (!next.has_value() || next->kind != DungeonAnchorKind::Objective)
         return false;
+
+    // We own the leader's tick for as long as this objective runs — including
+    // event steps that walk the tank a long way (Durnholde's barrels are ~170yd of
+    // courtyard). Keep the party's camp trailing us, exactly as the advance rung
+    // does: without it the camp freezes wherever the anchor navigation dropped us,
+    // the followers stay pinned there (hold-at-camp, relevance 28), and the
+    // cohesion gate below waits on a party that has been told not to come. Live
+    // in heroic Old Hillsbrad that stranded the party a terrace above the tank and
+    // froze the run — stranded-recovery teleported everyone forward every 60s and
+    // hold-at-camp walked them straight back to the stale camp.
+    DcPullPlanner::MaintainScoutCamp(botAI, context);
 
     DungeonEvent const* ev =
         next->eventId ? DungeonEventRegistry::Find(next->mapId, next->eventId) : nullptr;
@@ -1826,6 +1856,11 @@ bool DcRunEventAction::Execute(Event /*event*/)
                                                       _requireDrivesInCombat);
     if (!ev)
         return false;  // condition went false between trigger and action — stand down
+
+    // Same camp upkeep as the anchored objective drive: a conditional event drives
+    // the leader (room pre-clear, seek-and-kill, a walk to a lever) while advance
+    // stands down, so without this the party's camp goes stale behind us.
+    DcPullPlanner::MaintainScoutCamp(botAI, context);
 
     // Milestone 3: a room-aggro PRE-CLEAR event drives the engage pipeline
     // directly. The condition (room trash remains) gated us here; engage the

@@ -53,6 +53,21 @@ namespace
     // then despawn. One-shot, avoidance-only. Tighter 12 = 8yd trigger plus 4yd
     // margin, no route penalty box (12yd is inside ordinary pathing jitter).
     //
+    // NOT REGISTERED: the Eredar room's two 45yd auras. Its three spawn points are
+    // `creature_multispawn`, each rolling Eredar Soul-Eater (20879, "Entropic
+    // Aura" 36784 — 45yd, -25% haste and speed, no damage) or Eredar Deathbringer
+    // (20880, "Unholy Aura" 27987/38844 -> 27988/38845 — 45yd, 450 normal / 750
+    // heroic SCHOOL_DAMAGE every 2s to every enemy in range), re-rolled on every
+    // respawn.
+    //
+    // The Deathbringer's pulse is genuinely lethal, and a keep-out is still the
+    // wrong tool for it: 45yd is wider than the ranges the party works at, so
+    // sized honestly it refuses every route through the wing, and sized to obey
+    // the threat-1 rule (below caster range) it is a lie — at 30yd you take full
+    // damage. There is no standing-off from it and no routing around it. The only
+    // answer is to cross and kill, which is a set-piece: ArcatrazEvents.cpp event
+    // 2, a ClearRadius over the three spawns filtered to both entries.
+
     // Two corpse clusters overlap Sentinels — the (264.3,-61.3) Sentinel sits
     // beside a Defender Corpse at (272.1,-59.0), and the (395.4,18.2) Sentinel
     // sits inside the corpse pair (392.1,24.9)/(395.1,27.6) — so routing through

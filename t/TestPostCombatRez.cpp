@@ -40,7 +40,7 @@ namespace
         in.nowMs = 100000;
         in.pendingSinceMs = 0;   // clock not yet stamped
         in.timeoutMs = 90000;
-        in.partyInCombat = false;
+        in.partyEngaged = false;
         return in;
     }
 }
@@ -224,7 +224,7 @@ TEST(DcRezDecisionTest, CombatFreezesTheTimeout)
     Inputs in = BaseInputs();
     in.pendingSinceMs = 1000;
     in.nowMs = 1000 + in.timeoutMs * 10;
-    in.partyInCombat = true;
+    in.partyEngaged = true;
     Result const r = Decide(in, party);
     EXPECT_EQ(r.outcome, Outcome::Hold);
     EXPECT_EQ(r.reason, Reason::Recovering);
@@ -259,14 +259,14 @@ TEST(DcRezDecisionTest, ClockRestampTrajectoryFreezesAcrossCombat)
     // t=80s: an add pull — glue cleared the stamp while engaged.
     in.pendingSinceMs = 0;
     in.nowMs = 80000;
-    in.partyInCombat = true;
+    in.partyEngaged = true;
     EXPECT_EQ(Decide(in, party).outcome, Outcome::Hold);
 
     // t=100s: combat over, glue re-stamped. 90s elapsed since the FIRST stamp,
     // but the fresh budget holds.
     in.pendingSinceMs = 100000;
     in.nowMs = 100000 + 5000;
-    in.partyInCombat = false;
+    in.partyEngaged = false;
     EXPECT_EQ(Decide(in, party).outcome, Outcome::Hold);
 
     // ...and only the fresh budget expiring disables.

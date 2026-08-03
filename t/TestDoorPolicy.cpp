@@ -153,6 +153,32 @@ TEST(DcDoorPolicyTest, ScarletMonasteryWingDoorsAreKeyExempt)
     EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(0));
 }
 
+// --- Script-only denylist ---------------------------------------------------
+//
+// All three Shadowfang Keep gates ride the same empty lock 85 that CanOpenSlots
+// correctly rates "opens for anyone" — and all three are opened by SmartAI, not
+// by a click. Without the per-entry denylist the door-blocked action force-opens
+// each of them and skips its mechanic:
+//   18895 Courtyard Door — opened by the freed prisoner (Ashcrombe / Adamant).
+//   18972 Sorcerer's Gate — opened when the first of Arugal's Voidwalkers dies,
+//         ~6s after Fenrus. Clicking it walked the party out of the room before
+//         the adds even existed; they then spawned behind it and the run wedged.
+//   18971 Arugal's Lair — opened when Wolf Master Nandos dies. Nandos stands
+//         2.6yd in front of it, so clicking it lets the party walk past him
+//         straight to Archmage Arugal and skip an encounter.
+TEST(DcDoorPolicyTest, ShadowfangKeepEventGatesAreScriptOnly)
+{
+    EXPECT_TRUE(DcEventDoorRegistry::IsScriptOnly(18895));   // Courtyard Door
+    EXPECT_TRUE(DcEventDoorRegistry::IsScriptOnly(18972));   // Sorcerer's Gate
+    EXPECT_TRUE(DcEventDoorRegistry::IsScriptOnly(18971));   // Arugal's Lair
+
+    // Not a blanket refusal of lock-85 doors: the plainly clickable ones the
+    // tank must keep opening stay openable.
+    EXPECT_FALSE(DcEventDoorRegistry::IsScriptOnly(104600));  // SM High Inquisitor's
+    EXPECT_FALSE(DcEventDoorRegistry::IsScriptOnly(183049));  // Steamvault Main Chambers
+    EXPECT_FALSE(DcEventDoorRegistry::IsScriptOnly(0));
+}
+
 // --- Navigation-ignored allowlist -------------------------------------------
 //
 // The Steamvault's Main Chambers Access Panels are wall CONTROLS wearing a

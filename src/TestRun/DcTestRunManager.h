@@ -107,6 +107,23 @@ public:
     bool WatchTarget(std::string const& selector, ObjectGuid* tankOut,
                      std::string* msg, std::string* tokenOut = nullptr) const;
 
+    // `.dc test watch next` — the run AFTER the one `watcher` is currently
+    // sitting in, wrapping, so one repeated command tours every live run
+    // without anyone having to read a runId off the status list.
+    //
+    // "Currently sitting in" is the watcher's own map INSTANCE: watching is
+    // farsight from a body parked at that run's entrance, and every run gets a
+    // fresh copy, so the instance the watcher stands in names the run they are
+    // on with no extra bookkeeping to go stale.
+    //
+    // Only runs whose tank is already in world are candidates — a run still
+    // spawning its party has no seat to offer, and skipping it here is what
+    // keeps `next` from stalling the tour on a run that cannot be watched yet.
+    // False (with *msg) when there is nowhere to hop: no watchable run, or the
+    // only one is the one already up. See DcTestRunSelect::NextWatchIndex.
+    bool NextWatchTarget(Player* watcher, ObjectGuid* tankOut,
+                         std::string* msg, std::string* tokenOut = nullptr) const;
+
     std::string StatusText() const;
     bool IsActive() const { return !_runs.empty(); }
 

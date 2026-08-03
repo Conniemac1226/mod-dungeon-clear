@@ -45,7 +45,7 @@ namespace
         in.nowMs = 400000;
         in.lastProgressMs = 100000;       // 300s ago ...
         in.noProgressTimeoutMs = 300000;  // ... == the window: elapsed
-        in.partyInCombat = false;
+        in.partyEngaged = false;
         in.maxSpread = 25.0f;
         return in;
     }
@@ -141,10 +141,28 @@ TEST(DcStrandedRecoveryTest, FeatureOffNeverRecovers)
 TEST(DcStrandedRecoveryTest, CombatNeverRecovers)
 {
     Inputs in = StaleInputs();
-    in.partyInCombat = true;  // a fight is progress; never teleport mid-fight
+    in.partyEngaged = true;  // a fight is progress; never teleport mid-fight
     std::vector<Member> party = BaseParty();
     Strand(party, 2, 60.0f);
     EXPECT_FALSE(Decide(in, party).recover);
+}
+
+TEST(DcStrandedRecoveryTest, APhantomCombatFlagStillRecovers)
+{
+    // The Arcatraz freeze (tr-20260801-194932-20). A 45yd hostile area aura holds
+    // the whole party's combat flag with NOTHING aggroed, so followers stop where
+    // they stand and the tank waits on them forever. The glue used to pass the raw
+    // flag in here, which made this failsafe — the only thing that could have
+    // broken that deadlock — permanently unreachable. `partyEngaged` is a fight,
+    // and a flag with no fight behind it is not one.
+    Inputs in = StaleInputs();
+    in.partyEngaged = false;  // flagged, but nothing is fighting
+    std::vector<Member> party = BaseParty();
+    Strand(party, 2, 30.0f);
+    Strand(party, 3, 31.0f);
+    Result const r = Decide(in, party);
+    EXPECT_TRUE(r.recover);
+    EXPECT_EQ(r.strandedIdx.size(), 2u);
 }
 
 // --- who qualifies as a stray ------------------------------------------------

@@ -6,6 +6,7 @@
 #include "gtest/gtest.h"
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -415,6 +416,118 @@ TEST(DungeonEventIntegrityTest, SethekkAnzuEventIsWiredForForcedSummon)
     EXPECT_TRUE(ObjectiveHookRegistry::Has(7)) << "hook 7 (DriveAnzuSummon) must be registered";
     EXPECT_LT(clearStep, pokeStep) << "room must be cleared BEFORE the Anzu summon poke";
     EXPECT_LT(pokeStep, killStep) << "the summon poke must precede the Anzu kill step";
+}
+
+TEST(DungeonEventIntegrityTest, ArcatrazSoulEaterRoomIsAnEntryFilteredSweep)
+{
+    DungeonEvent const* ev = DungeonEventRegistry::Find(/*map*/ 552, /*eventId*/ 2);
+    ASSERT_NE(ev, nullptr) << "Arcatraz (552) event 2 (Eredar Soul-Eater room) is missing";
+
+    // Trash, not an encounter: conditional (its own proximity + completion gate),
+    // no roster objective. Persistent because the sweep is a fight and a mid-fight
+    // Drive gap would otherwise rewind the step list and restart the walk-in.
+    EXPECT_EQ(ev->activation, EventActivation::Conditional);
+    EXPECT_TRUE(ev->persistent) << "the sweep spans combat gaps";
+    // The 45yd aura is on the spawns in BOTH difficulties — never gate this heroic-only.
+    EXPECT_EQ(ev->gate, DcDifficultyGate::Any);
+
+    // Walk into the room, THEN sweep: the executor refuses to certify "clear" from
+    // further out than DC_EVENT_CLEAR_JUDGE_RADIUS (12), so judging has to happen
+    // from the middle of the room rather than the doorway.
+    int moveStep = -1;
+    int clearStep = -1;
+    for (size_t i = 0; i < ev->steps.size(); ++i)
+    {
+        if (ev->steps[i].kind == EventStepKind::MoveTo)
+            moveStep = static_cast<int>(i);
+        if (ev->steps[i].kind == EventStepKind::ClearRadius)
+            clearStep = static_cast<int>(i);
+    }
+    ASSERT_GE(moveStep, 0) << "must walk the tank into the room first";
+    ASSERT_GE(clearStep, 0) << "must sweep the room (a ClearRadius step)";
+    EXPECT_LT(moveStep, clearStep) << "arrive before judging the room clear";
+
+    // BY-ENTRY BACKSTOP (the Shattered Halls assassin lesson). A ClearRadius gate
+    // can only fight what AttackersValue::IsPossibleTarget (CanSeeOrDetect) and a
+    // strict IsEngageReachable let it see; anything they reject reads as "room
+    // clear" and latches the event done with a live 750-per-2s caster standing.
+    // KillCreatureEngage resolves by entry via FindNearestCreature — no visibility
+    // filter, looser reachability — so one per multispawn entry must follow the
+    // sweep and catch whatever it could not see.
+    std::vector<uint32> engageEntries;
+    for (size_t i = 0; i < ev->steps.size(); ++i)
+    {
+        EventStep const& s = ev->steps[i];
+        if (s.kind != EventStepKind::KillCreature || !s.engage)
+            continue;
+        EXPECT_GT(static_cast<int>(i), clearStep)
+            << "the by-entry backstop must follow the sweep, not precede it";
+        engageEntries.push_back(s.creatureEntry);
+    }
+    std::sort(engageEntries.begin(), engageEntries.end());
+    EXPECT_EQ(engageEntries, (std::vector<uint32>{20879u, 20880u}))
+        << "one KillCreatureEngage backstop per multispawn entry";
+
+    EventStep const& sweep = ev->steps[clearStep];
+
+    // The filter is the whole point: the sweep is the three Soul-Eaters and
+    // nothing else. Unfiltered it would also pull the Arcatraz Sentinel on the
+    // room's west edge (whose death summons the unkillable 21761 pulse) and offer
+    // up the three corpse props as targets.
+    //
+    // BOTH multispawn entries, and both must be the NORMAL ones. Every one of the
+    // three spawn points rolls 20879 or 20880 independently at spawn and again at
+    // each respawn, so a room can contain three Deathbringers and no Soul-Eater —
+    // a 20879-only filter would certify that room "clear" instantly. And
+    // Creature::InitEntry keeps GetEntry() on the normal entry in every
+    // difficulty, so the heroic templates (21595 / 21594) can never match.
+    ASSERT_EQ(sweep.entryFilter.size(), 2u);
+    EXPECT_NE(std::find(sweep.entryFilter.begin(), sweep.entryFilter.end(), 20879u),
+              sweep.entryFilter.end()) << "Eredar Soul-Eater";
+    EXPECT_NE(std::find(sweep.entryFilter.begin(), sweep.entryFilter.end(), 20880u),
+              sweep.entryFilter.end()) << "Eredar Deathbringer (multispawn variant)";
+    EXPECT_EQ(std::find(sweep.entryFilter.begin(), sweep.entryFilter.end(), 21595u),
+              sweep.entryFilter.end()) << "heroic template can never match GetEntry()";
+    EXPECT_EQ(std::find(sweep.entryFilter.begin(), sweep.entryFilter.end(), 21594u),
+              sweep.entryFilter.end()) << "heroic template can never match GetEntry()";
+
+    // Every spawn (305.7,148.1,24.9) / (285.5,146.2,22.3) / (301.8,127.4,22.3)
+    // must sit inside the volume, or the gate certifies with one still alive.
+    struct P { float x, y, z; };
+    static constexpr P kSpawns[] = {
+        { 305.7f, 148.1f, 24.9f }, { 285.5f, 146.2f, 22.3f }, { 301.8f, 127.4f, 22.3f },
+    };
+    for (P const& p : kSpawns)
+    {
+        float const dx = p.x - sweep.x;
+        float const dy = p.y - sweep.y;
+        EXPECT_LT(std::sqrt(dx * dx + dy * dy), sweep.radius) << "spawn outside the sweep radius";
+        EXPECT_LT(std::fabs(p.z - sweep.z), sweep.zBand) << "spawn outside the sweep z-band";
+    }
+
+    // ...and the tank must be able to judge from the anchor: the executor only
+    // trusts a "clear" verdict taken within 12yd of the centre, so the arrival
+    // radius has to land it inside that.
+    EXPECT_LE(ev->steps[moveStep].radius, 12.0f)
+        << "arrival radius must land the tank inside DC_EVENT_CLEAR_JUDGE_RADIUS";
+
+    // MUST-FINISH CONTRACT. The party cannot rest in this room (the aura holds it
+    // flagged, and every rest path bails on the raw combat flag), so a half-driven
+    // sweep leaves it standing in up to three 750-per-2s Unholy Auras with no way
+    // to recover. Two authoring mistakes would break that, and both look harmless:
+    //
+    //   Optional() — a Failed step would Skip instead of Stall, advancing the
+    //   clear with live Deathbringers behind the party.
+    EXPECT_TRUE(ev->required)
+        << "the Eredar room must not be skippable — a half-cleared room is the bug";
+    //
+    //   A tight timeout — required means Failed => Stalled, and DcRunEventAction
+    //   answers Stalled by PARKING the tank. In this room parking is the wipe, so
+    //   the timeout has to sit far past a real fight (3 elites, ~30-60s each for a
+    //   5-bot party) rather than close to it.
+    EXPECT_GE(sweep.timeoutMs, 300000u)
+        << "sweep timeout must be far past a legitimate 3-elite fight; a Stall here parks "
+           "the party inside the damage aura";
 }
 
 // --- drivesInCombat containment -------------------------------------------

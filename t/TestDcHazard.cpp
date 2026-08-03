@@ -189,3 +189,34 @@ TEST(DcHazardRegistry, SentinelBoxesDoNotOutrankTheNavmeshShortcutRows)
     float const shortcut = DcNavPenaltyRegistry::PenaltyAt(229, -126.1f, -390.3f, 44.4f);
     EXPECT_LT(hazard, shortcut);
 }
+
+// ===== The Eredar room's 45yd auras are cleared, not avoided =====
+//
+// The three multispawn points roll Eredar Soul-Eater (20879, a harmless 45yd
+// slow) or Eredar Deathbringer (20880, a 45yd 450/750-per-2s damage pulse).
+// Avoidance is the wrong tool at that width: sized honestly it refuses every
+// route through the wing, and sized below caster range it is a lie — at 30yd you
+// still take full damage. The party crosses and kills them instead
+// (ArcatrazEvents.cpp event 2). These guard against the registry re-growing a
+// keep-out row and re-introducing the pathing deadlock.
+
+TEST(DcHazardArcatrazTest, EredarRoomIsNotRegisteredAsEmitters)
+{
+    EXPECT_EQ(DcHazardRegistry::Find(552, 20879), nullptr);
+    EXPECT_EQ(DcHazardRegistry::Find(552, 20880), nullptr);
+    // Heroic templates can never be GetEntry(), so a row for either would be dead
+    // either way — assert it stays absent so nobody "fixes" the above by adding
+    // these instead.
+    EXPECT_EQ(DcHazardRegistry::Find(552, 21595), nullptr);
+    EXPECT_EQ(DcHazardRegistry::Find(552, 21594), nullptr);
+}
+
+TEST(DcHazardArcatrazTest, RegisteredEmittersStillRejectLegs)
+{
+    // Every surviving emitter is a genuine route hazard: a leg through the
+    // Sentinel's pulse must still be refused. Guards the SegmentClips path that
+    // the removed loiter-only branch used to short-circuit.
+    DcHazardEmitter const* e = DcHazardRegistry::Find(552, 20869);
+    ASSERT_NE(e, nullptr);
+    EXPECT_TRUE(DcHazardRegistry::SegmentClips(*e, 0, 0, 22, -40, 0, 22, 40, 0, 22));
+}

@@ -116,6 +116,21 @@ public:
     static std::optional<Position> ComputeTrailCamp(PlayerbotAI* botAI, float setback,
                                                     float maxDrag);
 
+    // Per-tick camp upkeep for the LEADER: lay a breadcrumb and keep the party's
+    // camp trailing `PullSetback` behind us while merely scouting (pull phase Idle,
+    // out of combat, no fresh pull publish). Hoisted out of
+    // DungeonClearAdvanceAction::Execute so it is no longer the exclusive property
+    // of the advance rung: any action that DRIVES the leader forward must call it,
+    // or the camp goes stale the moment a higher rung takes the tick and the party
+    // is left pinned at a spot the tank has walked away from — while the tank waits
+    // for a party that has been told to stand there. That deadlock is exactly what
+    // froze Old Hillsbrad: the barrel objective (DcObjectiveArriveAction, relevance
+    // 30) drove the tank ~76yd off the elevated walkway into the courtyard, advance
+    // (15) never ran again, and the party held on the walkway one terrace up.
+    // Idempotent within a tick (the breadcrumb has a spacing gate and the camp
+    // adoption is forward-only), so calling it from several rungs is safe.
+    static void MaintainScoutCamp(PlayerbotAI* botAI, AiObjectContext* context);
+
     // True when the party is "set" for the tank to pull: every living, on-map,
     // non-leader BOT follower is within `setRadius` of `camp` AND currently
     // running the combat-engine "passive" strategy (so it won't break the pull).

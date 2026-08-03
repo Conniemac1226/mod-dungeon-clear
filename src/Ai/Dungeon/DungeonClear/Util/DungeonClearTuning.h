@@ -30,6 +30,17 @@ using uint32 = std::uint32_t;  // matches the core's Define.h typedef; this
 // effectively file-global via the old anonymous-namespace defs) so call sites
 // stay unqualified and unchanged.
 
+// Portable pi. NOT M_PI: MSVC's <math.h> only defines the M_* macros when
+// _USE_MATH_DEFINES is set BEFORE the first inclusion of math.h, and any TU that
+// reaches <cmath> before the core's Define.h (which sets it on Windows) never
+// gets them — that is the "M_PI: undeclared identifier" build break on MSVC, and
+// its cascade inside Position.h ("fmod: no overloaded function takes 1
+// arguments", from the argument that failed to compile). The module's CMake also
+// forces _USE_MATH_DEFINES on the compiler command line so the CORE headers stay
+// buildable; this constant makes OUR sources not care either way. Keeps this
+// header constant-expression and core-include-free.
+constexpr float DC_PI = 3.14159265358979323846f;
+
 // Asymmetric ranges so a trash pack sitting just outside the boss room gets
 // engaged before the at-boss trigger fires. 22yd is just outside most level-80
 // elite aggro radii (~18-20yd), giving room to position before melee. The
@@ -59,11 +70,7 @@ static_assert(DC_ROOM_AGGRO_STANDOFF_BUFFER > 0.0f,
 // TUs feed it to DcTargeting::FindBlockingTrash, so it is one constant
 // despite the old per-context names (DC_ENGAGE_CONE_* / DC_TRASH_CONE_*).
 constexpr float DC_TRASH_CONE_RANGE = 35.0f;
-// pi/3 spelled as a literal rather than M_PI: MSVC only defines M_PI when
-// _USE_MATH_DEFINES is set before <cmath>, so the macro is absent on Windows
-// (broke the build with "M_PI: undeclared identifier"). The literal is
-// portable and keeps this header constant-expression and core-include-free.
-constexpr float DC_TRASH_CONE_HALF_ANGLE = 1.0471975512f;  // pi/3 == 60°
+constexpr float DC_TRASH_CONE_HALF_ANGLE = DC_PI / 3.0f;  // 60°
 
 // When true, evaluate "blocking trash" via the bot's actual mmap path polyline
 // instead of the geometric cone. Catches packs around corners and avoids "pack
@@ -153,6 +160,25 @@ constexpr uint32 DC_PULL_AVOID_STALL_MS = 8000;
 // progress and restamp the clock. Absorbs the sub-yard jitter of a glide so an
 // orbit that is merely drifting can't hold the borrow open forever.
 constexpr float DC_PULL_AVOID_PROGRESS_YD = 1.0f;
+
+// How long the leader must be FLAGGED in combat with no actual engagement —
+// nobody in the party has a victim and nothing is attacking anyone — before the
+// driving ladder resumes anyway (DungeonClearMath::MayDriveWhileFlagged).
+//
+// This exists because a hostile area aura can set the combat flag with no fight
+// behind it (the Arcatraz Eredar Soul-Eaters' Entropic Aura, 45yd against a ~20yd
+// aggro radius), and the old flag-only gate then froze the run permanently.
+//
+// The value is the guard against the opposite error, and is the whole safety
+// margin of the change: a genuine fight has one-tick holes when a target dies
+// before anything re-acquires, and resuming the drive in one of those would walk
+// the tank out of a live fight. 5s is several react delays — far longer than any
+// retarget hole — while costing a real freeze only five seconds. Compare
+// DungeonClearBreakStuckCombatTrigger's 15s, sized for the same hazard (a scripted
+// in-combat lull) but guarding a much stronger action: that one force-clears
+// combat, this one only resumes walking, so it can afford to be quicker. If a
+// fight is ever abandoned mid-pack, this is the number to raise.
+constexpr uint32 DC_FLAGGED_NO_ENGAGE_GRACE_MS = 5000;
 
 // The max party-spread default lives in DcSettingsRegistry ("PartyMaxSpread");
 // the trigger, the advance gate, and the status publisher all read it through

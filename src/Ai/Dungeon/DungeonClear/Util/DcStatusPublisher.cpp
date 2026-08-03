@@ -56,6 +56,7 @@
 #include "Ai/Dungeon/DungeonClear/DcApproachState.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
 #include "Ai/Dungeon/DungeonClear/Util/ChunkedPathfinder.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcCombatFlag.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcRezRecovery.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcSmartRest.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonEventExecutor.h"
@@ -258,7 +259,17 @@ std::string DcStatusPublisher::BuildStatusPayload(PlayerbotAI* botAI)
     }
     else if (enabled && bot)
     {
-        if (bot->IsInCombat())
+        // The floors the between-pulls gate is actually holding for (0/0 under
+        // Smart Rest or a phantom flag) — read once, used by the rest arm below.
+        DcPartyState::RestGate const rest = DcPartyState::GetRestGate(bot, context);
+
+        // "In combat" alone is not a fight. Under a phantom flag (a 45yd hostile
+        // area aura, nothing aggroed) this arm reported "fighting_trash —
+        // Clearing trash from the path" for the twelve minutes a frozen party
+        // stood in the Arcatraz Eredar room's aura doing nothing at all
+        // (tr-20260801-194932-20), hiding the real state — which is the rest /
+        // spread wait further down. Require an actual engagement to claim a fight.
+        if (bot->IsInCombat() && !DcCombatFlag::IsPhantomFlag(bot, context))
         {
             Unit* currentTarget = context->GetValue<Unit*>(DcKey::Stock::CurrentTarget)->Get();
             if (currentTarget && next.has_value() && currentTarget->GetEntry() == next->entry)
@@ -323,15 +334,11 @@ std::string DcStatusPublisher::BuildStatusPayload(PlayerbotAI* botAI)
         // recovery), leaving this arm the spread-only "out of range" waits —
         // exactly mirroring the between-pulls gate.
         else if (DcPartyState::SpreadGate const gate = DcPartyState::GetSpreadGate(bot, context);
-                 !DcPartyState::IsPartyReady(bot,
-                     DcSmartRest::Enabled(bot) ? 0.0f : DcPartyState::RestMinHpPct(bot),
-                     DcSmartRest::Enabled(bot) ? 0.0f : DcPartyState::RestMinMpPct(bot),
+                 !DcPartyState::IsPartyReady(bot, rest.minHp, rest.minMp,
                      gate.maxSpread, gate.anchor, gate.maxTankGap))
         {
             stateStr = "resting";
-            float const minHp = DcSmartRest::Enabled(bot) ? 0.0f : DcPartyState::RestMinHpPct(bot);
-            float const minMp = DcSmartRest::Enabled(bot) ? 0.0f : DcPartyState::RestMinMpPct(bot);
-            std::string const who = DcPartyState::DescribePartyNotReady(bot, minHp, minMp,
+            std::string const who = DcPartyState::DescribePartyNotReady(bot, rest.minHp, rest.minMp,
                                                                             gate.maxSpread, gate.anchor,
                                                                             gate.maxTankGap);
             detail = who.empty() ? "Waiting for the party to recover." : (who + ".");

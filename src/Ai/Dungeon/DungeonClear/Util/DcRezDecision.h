@@ -31,9 +31,12 @@
 //           first).
 //
 // The recovery clock is OWNED BY THE GLUE (DcRezRecovery stamps/clears
-// DcRunState::rezPendingSinceMs); the kernel only compares. partyInCombat
-// freezes the timeout so combat time never burns the recovery budget (a
-// mid-recovery add pull must not expire the clock).
+// DcRunState::rezPendingSinceMs); the kernel only compares. partyEngaged
+// freezes the timeout so fighting time never burns the recovery budget (a
+// mid-recovery add pull must not expire the clock). It is engagement, not the
+// combat flag: a rez cannot be cast while flagged, so under a phantom flag
+// (DcCombatFlag) the flag would freeze the very timeout meant to bound a
+// recovery that can never complete.
 //
 // Extracted engine-free so it is unit-testable in isolation, mirroring
 // DcSmartRestDecision / DecidePull. Header-only; nothing here touches a
@@ -58,7 +61,7 @@ namespace DcRezDecision
         std::uint32_t nowMs = 0;
         std::uint32_t pendingSinceMs = 0;     // recovery clock; 0 = not running
         std::uint32_t timeoutMs = 90000;      // PostCombatRezTimeoutSecs * 1000
-        bool          partyInCombat = false;  // freezes the timeout
+        bool          partyEngaged = false;  // freezes the timeout
     };
 
     enum class Outcome
@@ -169,11 +172,10 @@ namespace DcRezDecision
         r.targetIdx = PickTarget(members);
         r.rezzerIdx = botRezzer >= 0 ? botRezzer : humanAny;
 
-        // Timeout: only while the glue's out-of-combat clock is running.
-        // Combat freezes it (the glue additionally clears the stamp, so a
-        // fight resets the budget rather than expiring it early — the safe
-        // direction).
-        if (!in.partyInCombat && in.pendingSinceMs != 0 && in.timeoutMs != 0 &&
+        // Timeout: only while the glue's no-fight clock is running. A fight
+        // freezes it (the glue additionally clears the stamp, so a fight resets
+        // the budget rather than expiring it early — the safe direction).
+        if (!in.partyEngaged && in.pendingSinceMs != 0 && in.timeoutMs != 0 &&
             in.nowMs - in.pendingSinceMs >= in.timeoutMs)
         {
             r.outcome = Outcome::Disable;

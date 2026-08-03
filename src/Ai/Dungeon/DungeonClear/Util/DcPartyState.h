@@ -80,6 +80,29 @@ public:
     };
     static SpreadGate GetSpreadGate(Player* bot, AiObjectContext* context);
 
+    // The HP/mana floors the between-pulls gate is ACTUALLY enforcing for `bot`
+    // right now. ONE body shared by the gate and every "waiting on…" line, the
+    // same way GetSpreadGate is shared, so the panel can never name a wait the
+    // gate is not holding for.
+    //
+    // Both floors drop to 0 (spread-only readiness) in two cases:
+    //   * Smart Rest is on — its party latch owns recovery, not these floors.
+    //   * The party is PHANTOM-FLAGGED (DcCombatFlag::IsPhantomFlag): flagged in
+    //     combat with nothing fighting it. Eating and drinking both require being
+    //     out of combat, so HP and mana cannot come back and the floors can never
+    //     be met — the gate would hold the party exactly where it stands, forever.
+    //     Inside a DAMAGE aura that is not a stall but a death sentence: Arcatraz
+    //     heroic, run tr-20260801-194932-20, the tank parked in an Eredar
+    //     Deathbringer's 45yd Unholy Aura waiting on mana that could never come
+    //     back, taking 750 every 2s the whole time. Waiving the floors lets
+    //     Advance move the party OUT, which is the only thing that ends the flag.
+    struct RestGate
+    {
+        float minHp = 0.0f;
+        float minMp = 0.0f;
+    };
+    static RestGate GetRestGate(Player* bot, AiObjectContext* context);
+
     // Between-pulls gate: party HP/MP recovered (RestMinHpPct/RestMinMpPct) and
     // spread within DungeonClear.PartyMaxSpread — measured per GetSpreadGate
     // (waived mid-maneuver, camp-anchored in pull mode, tank-anchored otherwise).

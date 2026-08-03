@@ -76,6 +76,16 @@ namespace
     // bounced back) must not ambush the GM with a camera minutes later.
     constexpr uint32 PENDING_FOLLOW_TIMEOUT_MS = 60 * 1000;
 
+    // Lift the free camera off its seat bot's feet so it opens at roughly head
+    // height instead of inside the floor.
+    constexpr float CAMERA_SEAT_LIFT_Z = 2.0f;
+
+    // Object scale for the camera dummy. A GM is shown the trigger's VISIBLE
+    // model no matter what display id we pin (see the block in Start), and
+    // OBJECT_FIELD_SCALE_X is the one appearance field the core does not
+    // rewrite per-viewer — so shrink the thing to a speck.
+    constexpr float CAMERA_SCALE = 0.01f;
+
     // How often a live Follow camera re-resolves its target. Slow on purpose:
     // it only has to notice a leader re-election or a death, and every swap
     // costs a visibility rebuild around the new seer.
@@ -119,8 +129,11 @@ namespace
         return false;
     }
 
-    // Shared entry validation for both modes.
-    bool CommonStartChecks(Player* player, std::string* whyNot)
+    // Shared entry validation for both modes. `ownFollowCamera` says the caller
+    // is switching out of a Follow camera we installed: its farsight is still
+    // latched at this point on purpose (Start uses it to reach the seat), so the
+    // "already viewing through something" gate would refuse our own camera.
+    bool CommonStartChecks(Player* player, std::string* whyNot, bool ownFollowCamera = false)
     {
         // Admin gate: some servers treat detaching the player from their body as
         // a cheat. Server-only conf flag, so a player can't override it. Only the
@@ -136,7 +149,7 @@ namespace
             return Refuse(whyNot, "Cannot spectate while on a flight path.");
         if (player->GetCharmGUID())
             return Refuse(whyNot, "Cannot spectate while controlling another unit.");
-        if (player->GetViewpoint())
+        if (player->GetViewpoint() && !ownFollowCamera)
             return Refuse(whyNot, "Cannot spectate while viewing through something else.");
         return true;
     }
@@ -186,6 +199,21 @@ namespace DcSpectator
         std::lock_guard<std::mutex> lock(g_mutex);
         auto it = g_spectators.find(player->GetGUID());
         return it != g_spectators.end() && it->second.mode == Mode::Follow;
+    }
+
+    bool HiddenByWatch(Player* player)
+    {
+        if (!player)
+            return false;
+        std::lock_guard<std::mutex> lock(g_mutex);
+        // Either half can hold the flag: a live camera carries it in its state,
+        // a watch whose loading screen hasn't finished still has it parked on
+        // the pending request.
+        auto it = g_spectators.find(player->GetGUID());
+        if (it != g_spectators.end() && it->second.gmModeApplied)
+            return true;
+        auto pending = g_pending.find(player->GetGUID());
+        return pending != g_pending.end() && pending->second.gmModeApplied;
     }
 
     ObjectGuid WatchedGuid(Player* player)
@@ -421,9 +449,19 @@ namespace DcSpectator
     {
         if (!player)
             return Refuse(whyNot, "No player.");
-        if (IsActive(player))
+
+        // Follow -> Free is a legitimate one-step switch, and it is the ONLY
+        // way a `.dc test watch` GM gets a flyable camera: their body is parked
+        // at the instance entrance and the watching is done with farsight, so
+        // going through Stop first would land them back in that body a dungeon
+        // away from the run. Any OTHER live camera is still a refusal.
+        SpectatorState prior;
+        bool const hadCamera = LookupState(player, prior);
+        bool const fromFollow = hadCamera && prior.mode == Mode::Follow;
+        if (hadCamera && !fromFollow)
             return Refuse(whyNot, "Already spectating.");
-        if (!CommonStartChecks(player, whyNot))
+
+        if (!CommonStartChecks(player, whyNot, fromFollow))
             return false;
         // Free-fly is a dungeon-clear feature: the camera flies around bots
         // running an instance. Outside a dungeon there is nothing to spectate,
@@ -434,10 +472,27 @@ namespace DcSpectator
         if (!map || !map->IsDungeon())
             return Refuse(whyNot, "Free-fly spectator mode is only available inside a dungeon.");
 
+        // Open the camera ON THE PARTY, not on the body. `.dc test watch` drops
+        // the GM's body at the instance ENTRANCE by design and does the actual
+        // watching with farsight, so a camera that spawned at the body started a
+        // dungeon's length behind the run and had to fly the whole way in.
+        // Prefer the bot the follow camera is already riding, then the default
+        // watch seat; with neither (no bots here) fall back to the body.
+        Player* seat = fromFollow ? ObjectAccessor::FindConnectedPlayer(prior.watched) : nullptr;
+        if (!IsWatchable(player, seat))
+            seat = ResolveWatchTarget(player);
+
+        Position spawn = player->GetPosition();
+        if (seat)
+        {
+            spawn = seat->GetPosition();
+            spawn.m_positionZ += CAMERA_SEAT_LIFT_Z;
+        }
+
         // Core-defined invisible utility template — no creature_template SQL
         // row needed, runtime hardening below covers the rest.
         TempSummon* dummy = player->SummonCreature(WORLD_TRIGGER,
-            player->GetPosition(), TEMPSUMMON_MANUAL_DESPAWN);
+            spawn, TEMPSUMMON_MANUAL_DESPAWN);
         if (!dummy)
             return Refuse(whyNot, "Failed to summon the camera.");
 
@@ -446,31 +501,64 @@ namespace DcSpectator
         dummy->SetUnitFlag(UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE);
         dummy->SetReactState(REACT_PASSIVE);
 
-        // Pin the invisible model instead of trusting the template's roll.
-        // WORLD_TRIGGER (12999) ships TWO models — 17519 and 11686 — and which
-        // one a summon gets runs through ObjectMgr::ChooseDisplayId ->
-        // GetFirstInvisibleModel, which returns the first model whose DBC-derived
-        // modelInfo->is_trigger is set and otherwise falls back to
-        // DefaultInvisibleModel. That detection reads CreatureModelData out of
-        // the client DBCs against a hardcoded 14-entry table, so on data where
-        // neither model resolves as a trigger the camera can end up wearing a
-        // model that RENDERS.
+        // Two separate things hide the camera, because the pilot defeats the
+        // first one.
         //
-        // It matters here more than for an ordinary trigger because the one
-        // person guaranteed to be looking is a GM, and GM mode is exactly what
-        // strips every other layer of hiding: CanSeeOrDetect short-circuits to
-        // "return true" for any viewer with GM detect (Object.cpp, "Stop
-        // checking other things for GMs"), skipping the invisibility and stealth
-        // checks entirely. The MODEL is therefore the only thing still hiding
-        // the camera from its own pilot — so state it outright rather than
-        // inferring it. Never use Unit::SetVisible(false) for this: that sets
+        // The MODEL, for everyone else: pin the invisible one instead of
+        // trusting the template's roll. WORLD_TRIGGER (12999) ships TWO models —
+        // 17519 and 11686 — and which one a summon gets runs through
+        // ObjectMgr::ChooseDisplayId -> GetFirstInvisibleModel, which returns
+        // the first model whose DBC-derived modelInfo->is_trigger is set and
+        // otherwise falls back to DefaultInvisibleModel. That detection reads
+        // CreatureModelData out of the client DBCs against a hardcoded 14-entry
+        // table, so on data where neither model resolves as a trigger the camera
+        // can end up wearing a model that RENDERS.
+        //
+        // The SCALE, for the GM: pinning the display id does nothing for the one
+        // person guaranteed to be looking. WORLD_TRIGGER carries
+        // CREATURE_FLAG_EXTRA_TRIGGER, and Unit::BuildValuesUpdate ("Use
+        // modelid_a if not gm, _h if gm for CREATURE_FLAG_EXTRA_TRIGGER
+        // creatures", Unit.cpp) OVERWRITES UNIT_FIELD_DISPLAYID on the wire with
+        // cinfo->GetFirstVisibleModel() for any GM-account viewer in GM mode —
+        // deliberately, so GMs can see triggers. Whatever we write to the field
+        // never reaches them, which is why the camera has been visible to its
+        // own pilot. OBJECT_FIELD_SCALE_X gets no such per-viewer rewrite, so
+        // shrink the dummy instead: the GM's forced-visible model still arrives,
+        // at 1% size. Never use Unit::SetVisible(false) for this: that sets
         // server-side GM visibility, i.e. hides it from players and shows it to
         // GMs, which is precisely backwards.
-        dummy->SetDisplayId(CreatureModel::DefaultInvisibleModel.CreatureDisplayID);
+        dummy->SetDisplayId(CreatureModel::DefaultInvisibleModel.CreatureDisplayID, CAMERA_SCALE);
+
+        // Get the camera onto the client BEFORE handing it control, because the
+        // seat is far outside the parked body's sight range and a client can
+        // only take control of an object it already has. Farsight is the lever
+        // that moves a client's sight ORIGIN — CanSeeOrDetect takes its distance
+        // check from Player::GetSightPosition(), i.e. m_seer (Object.cpp) — so
+        // ride the seat bot for exactly as long as it takes to push the camera
+        // out, then hand PLAYER_FARSIGHT over to the possession below (the field
+        // holds one viewpoint; possession needs it free).
+        //
+        // Releasing that farsight here deliberately does NOT rebuild visibility
+        // the way Stop's Follow branch does: a rebuild centred on the body would
+        // destroy the just-sent camera client-side a line before we possess it.
+        // Once possessed, Unit::IsAlwaysVisibleFor keeps a charmed unit visible
+        // to its charmer at any distance, so nothing has to be re-pushed.
+        if (fromFollow)
+            ClearViewpoint(player, prior.watched);
+        if (seat)
+        {
+            player->SetViewpoint(seat, true);
+            player->UpdateVisibilityOf(dummy);
+            player->SetViewpoint(seat, false);
+        }
 
         if (!dummy->SetCharmedBy(player, CHARM_TYPE_POSSESS))
         {
             dummy->DespawnOrUnsummon();
+            // The follow camera's farsight is already gone; don't leave the
+            // watcher rooted and bookkept against a camera that never existed.
+            if (fromFollow)
+                Stop(player);
             return Refuse(whyNot, "Possession failed.");
         }
 
@@ -479,6 +567,12 @@ namespace DcSpectator
         // MoveSplinePath (MotionMaster.cpp:506) refuse — the bot AI could no
         // longer move the body. Clear it so the body keeps clearing.
         player->RemoveUnitFlag(UNIT_FLAG_DISABLE_MOVE);
+
+        // Follow mode roots the body so blind movement keys can't walk it off.
+        // That root belongs to the camera we just replaced — drop it here,
+        // because the Stop that normally does so was skipped on purpose.
+        if (fromFollow)
+            player->SetControlled(false, UNIT_STATE_ROOT);
 
         // AFTER possession the dummy is client-controlled, so SetCanFly routes
         // SMSG_MOVE_SET_CAN_FLY to the controlling session with the proper
@@ -490,12 +584,22 @@ namespace DcSpectator
 
         {
             std::lock_guard<std::mutex> lock(g_mutex);
+            // Reuse the Follow entry rather than erase-and-insert: gmModeApplied
+            // has to survive the switch or a `.dc test watch` GM is left hidden
+            // for good once the free camera stops.
             SpectatorState& state = g_spectators[player->GetGUID()];
             state.mode = Mode::Free;
             state.dummy = dummy->GetGUID();
+            state.watched = ObjectGuid::Empty;
+            state.retargetAccumMs = 0;
         }
-        g_activeCount.fetch_add(1, std::memory_order_release);
-        Announce(player, "Spectator camera on — your character stays under bot control. Toggle again to return.");
+        if (!fromFollow)
+            g_activeCount.fetch_add(1, std::memory_order_release);
+
+        Announce(player, seat
+            ? "Spectator camera on at " + seat->GetName() +
+                  " — your character stays under bot control. Toggle again to return."
+            : "Spectator camera on — your character stays under bot control. Toggle again to return.");
         return true;
     }
 
@@ -666,7 +770,13 @@ namespace DcSpectator
 
     bool Toggle(Player* player, std::string* whyNot)
     {
-        if (IsActive(player))
+        // Follow -> Free -> off, in that order. A watch camera is how a GM gets
+        // into the instance at all, so the toggle moves them INTO the free
+        // camera at the seat they were watching instead of dropping them back
+        // in a body parked at the entrance; press it again to stop. Ending a
+        // follow camera in ONE step is still `.dc spectate follow` (or
+        // `.dc test watch off`, which also un-hides the GM).
+        if (IsActive(player) && !IsFollowing(player))
         {
             Stop(player);
             return true;

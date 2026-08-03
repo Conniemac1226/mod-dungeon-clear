@@ -1,3 +1,44 @@
+# MSVC: force _USE_MATH_DEFINES onto the compiler command line.
+#
+# MSVC's <math.h> only defines M_PI (and the rest of the M_* family) when
+# _USE_MATH_DEFINES is defined BEFORE math.h is first included; it is #pragma
+# once, so setting the macro later has no effect. AzerothCore sets it in
+# src/common/Define.h, which works for core translation units because they reach
+# Define.h before any standard math header — but a module TU that includes
+# <cmath> (directly, or via <algorithm>/<vector>/G3D) before the first core
+# header does not, and then every M_PI in that TU is undeclared. That breaks the
+# CORE's own headers, not just ours: Position.h::NormalizeOrientation calls
+#   std::fmod(o, 2.0f * static_cast<float>(M_PI))
+# so the reported "error C2065: 'M_PI': undeclared identifier" is immediately
+# followed by the cascade "error C2661: 'fmod': no overloaded function takes 1
+# arguments" (the second argument failed to compile, so the call is seen with
+# one). Nothing we can do inside our own sources fixes a core header — a
+# command-line define is the only ordering-proof place for it.
+#
+# This file is included from modules/CMakeLists.txt AFTER the targets are
+# created, so both linkage modes can be handled here. PRIVATE: it changes how
+# these sources compile, nothing downstream. Our own sources additionally avoid
+# M_PI entirely (DC_PI in Util/DungeonClearTuning.h), so this is only needed for
+# the core headers we include.
+# Spelled as a raw /D option rather than target_compile_definitions, and with a
+# trailing '=', for one reason: src/common/Define.h line 38 ALSO does
+#   #define _USE_MATH_DEFINES
+# with an empty replacement list. A bare -D gives the macro the value 1, which is
+# a NON-identical redefinition, and MSVC then emits
+#   warning C4005: '_USE_MATH_DEFINES': macro redefinition
+# once per translation unit — hundreds of lines of noise that bury real
+# diagnostics. '/D_USE_MATH_DEFINES=' defines it EMPTY, identical to Define.h's,
+# so the redefinition is legal and silent. target_compile_definitions cannot
+# express this: CMake escapes "NAME=" into -DNAME="" (verified), which is a value
+# of "" and warns just the same.
+if (MSVC)
+    foreach (DC_MATH_TARGET modules mod_mod-dungeon-clear)
+        if (TARGET ${DC_MATH_TARGET})
+            target_compile_options(${DC_MATH_TARGET} PRIVATE /D_USE_MATH_DEFINES=)
+        endif()
+    endforeach()
+endif()
+
 if (BUILD_TESTING)
     function(define_dungeon_clear_tests)
         set(MOD_PATH "${CMAKE_SOURCE_DIR}/modules/mod-dungeon-clear")
@@ -39,6 +80,7 @@ if (BUILD_TESTING)
             "${MOD_PATH}/t/TestTestGearTiers.cpp"
             "${MOD_PATH}/t/TestTestRunRecord.cpp"
             "${MOD_PATH}/t/TestTestRunSelect.cpp"
+            "${MOD_PATH}/t/TestWatchHop.cpp"
             "${MOD_PATH}/t/TestTestRoster.cpp"
             "${MOD_PATH}/t/TestTestRunLiveJson.cpp"
             "${MOD_PATH}/t/TestWipeContext.cpp"
@@ -63,6 +105,13 @@ if (BUILD_TESTING)
             DC_FIXTURE_DIR="${MOD_PATH}/t/fixtures"
             DC_MAPDATA_DIR="${MOD_PATH}/t/fixtures/mapdata"
         )
+
+        # Same MSVC math-macro ordering trap as the module sources above — the
+        # test TUs include the core's Position.h too. Same empty-value spelling,
+        # same reason (see the C4005 note above).
+        if (MSVC)
+            target_compile_options(dungeon_clear_tests PRIVATE /D_USE_MATH_DEFINES=)
+        endif()
 
         # Link the necessary targets
         target_link_libraries(dungeon_clear_tests

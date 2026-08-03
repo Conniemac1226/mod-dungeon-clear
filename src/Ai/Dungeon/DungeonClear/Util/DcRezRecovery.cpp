@@ -6,6 +6,7 @@
 #include "DcRezRecovery.h"
 
 #include "Ai/Dungeon/DungeonClear/Settings/DcSettings.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcCombatFlag.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcLeaderSignal.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcRun.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcStatusPublisher.h"
@@ -110,10 +111,18 @@ namespace
     // a bare read is safe HERE because a false flicker merely clears and
     // re-stamps the clock — which RESETS the timeout budget, the forgiving
     // direction — it can never expire recovery early.
-    bool AnyMemberInCombat(std::vector<Player*> const& players)
+    //
+    // ENGAGEMENT, not the combat flag: a resurrection cast is refused while
+    // flagged ("rez party: cast 'resurrection' -> not possible yet"), so under a
+    // phantom flag — a 45yd hostile area aura with nothing aggroed — the recovery
+    // can never complete AND the flag froze this very clock, so the timeout that
+    // is supposed to bound it never arrived. The run then held over the corpse
+    // forever, inside the aura (Arcatraz heroic, tr-20260801-194932-20: hand-
+    // rezzed by the player to unstick it). A real fight still freezes the clock.
+    bool AnyMemberEngaged(std::vector<Player*> const& players)
     {
         for (Player* p : players)
-            if (p && p->IsAlive() && p->IsInCombat())
+            if (DcCombatFlag::IsEngaged(p))
                 return true;
         return false;
     }
@@ -175,12 +184,12 @@ namespace
             return plan;
         }
 
-        // The recovery clock: runs only OUT of combat (combat clears it, so a
-        // mid-recovery add pull resets the budget instead of burning it).
-        bool const partyInCombat = AnyMemberInCombat(players);
+        // The recovery clock: runs only while nobody is FIGHTING (a fight clears
+        // it, so a mid-recovery add pull resets the budget instead of burning it).
+        bool const partyEngaged = AnyMemberEngaged(players);
         if (mutate)
         {
-            if (partyInCombat)
+            if (partyEngaged)
                 run.rezPendingSinceMs = 0;
             else if (run.rezPendingSinceMs == 0)
                 run.rezPendingSinceMs = now ? now : 1;
@@ -191,7 +200,7 @@ namespace
         in.nowMs = now;
         in.pendingSinceMs = run.rezPendingSinceMs;
         in.timeoutMs = DcSettings::GetUInt(bot, "PostCombatRezTimeoutSecs") * 1000;
-        in.partyInCombat = partyInCombat;
+        in.partyEngaged = partyEngaged;
 
         plan.verdict = DcRezDecision::Decide(in, members);
 

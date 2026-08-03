@@ -111,6 +111,22 @@ struct DcApproachState
     // stop/launch ping-pong: the sphere that caused the last interrupt is
     // skipped, so the tank interrupts only for something NEW.
     uint32 glideHazardProbeMs  = 0;  // last probe timestamp (getMSTime)
+
+    // Flagged-in-combat driving gate. getMSTime the "flagged in combat but nobody
+    // is actually fighting" state began; 0 = not streaking. Shared by every driver
+    // trigger (they all ask the same question about the same bot), and cleared the
+    // instant a real engagement reappears. See DungeonClearMath::MayDriveWhileFlagged
+    // and DC_FLAGGED_NO_ENGAGE_GRACE_MS.
+    uint32 flaggedNoEngageSinceMs = 0;
+
+    // The rest gates' twin of the latch above (DcCombatFlag::IsPhantomFlag). Same
+    // grace, same kernel, but its `flagged` input is the WHOLE party's flag rather
+    // than this bot's own: the between-pulls gate waits for every member to be
+    // topped up, so one member held in combat by an aura is enough to make the
+    // wait unsatisfiable. It needs its own streak because a different input means
+    // a different streak — folding it into flaggedNoEngageSinceMs would make the
+    // driving ladder wait out a grace it never used to.
+    uint32 partyFlaggedNoEngageSinceMs = 0;
     ObjectGuid glideHazardIgnore;    // sphere behind the last interrupt
 
     // --- blocking-door interaction ----------------------------------------

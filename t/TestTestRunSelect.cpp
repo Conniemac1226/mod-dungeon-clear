@@ -7,7 +7,9 @@
 
 #include "TestRun/DcTestRunSelect.h"
 
+using DcTestRunSelect::kNone;
 using DcTestRunSelect::Kind;
+using DcTestRunSelect::NextWatchIndex;
 using DcTestRunSelect::Resolve;
 using DcTestRunSelect::Result;
 using DcTestRunSelect::RunRef;
@@ -120,4 +122,60 @@ TEST(DcTestRunSelectTest, UnknownSelectorNotFound)
     Result const r = Resolve("nope", Three());
     EXPECT_EQ(r.kind, Kind::NotFound);
     EXPECT_TRUE(r.indices.empty());
+}
+
+// ---- `.dc test watch next` cycle --------------------------------------------------
+
+TEST(DcTestRunSelectTest, NextWatchNoRunsGoesNowhere)
+{
+    EXPECT_EQ(NextWatchIndex(0, kNone), kNone);
+    EXPECT_EQ(NextWatchIndex(0, 0), kNone);
+}
+
+TEST(DcTestRunSelectTest, NextWatchOneRunNotWatchingTakesTheSeat)
+{
+    EXPECT_EQ(NextWatchIndex(1, kNone), 0u);
+}
+
+TEST(DcTestRunSelectTest, NextWatchOneRunAlreadyOnItStaysPut)
+{
+    // The whole point of the refusal: hopping to the run you are already
+    // watching is a loading screen that ends where it began.
+    EXPECT_EQ(NextWatchIndex(1, 0), kNone);
+}
+
+TEST(DcTestRunSelectTest, NextWatchAdvancesOne)
+{
+    EXPECT_EQ(NextWatchIndex(3, 0), 1u);
+    EXPECT_EQ(NextWatchIndex(3, 1), 2u);
+}
+
+TEST(DcTestRunSelectTest, NextWatchWrapsAtTheEnd)
+{
+    EXPECT_EQ(NextWatchIndex(3, 2), 0u);
+}
+
+TEST(DcTestRunSelectTest, NextWatchFromNowhereStartsAtTheFirst)
+{
+    EXPECT_EQ(NextWatchIndex(3, kNone), 0u);
+}
+
+TEST(DcTestRunSelectTest, NextWatchStaleIndexRestartsTheTour)
+{
+    // The run the watcher sat on finished and left the set: an index past the
+    // end must not wrap arithmetically onto a random seat.
+    EXPECT_EQ(NextWatchIndex(2, 7), 0u);
+}
+
+TEST(DcTestRunSelectTest, NextWatchTourVisitsEveryRunInOrder)
+{
+    std::vector<std::size_t> visited;
+    std::size_t at = kNone;
+    for (int i = 0; i < 4; ++i)
+    {
+        at = NextWatchIndex(4, at);
+        visited.push_back(at);
+    }
+    EXPECT_EQ(visited, (std::vector<std::size_t>{0u, 1u, 2u, 3u}));
+    EXPECT_EQ(NextWatchIndex(4, at), 0u);  // and back to the start
 }

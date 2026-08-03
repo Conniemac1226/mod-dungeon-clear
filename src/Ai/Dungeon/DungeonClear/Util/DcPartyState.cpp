@@ -54,6 +54,7 @@
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
 #include "Ai/Dungeon/DungeonClear/DcPullContext.h"
 #include "Ai/Dungeon/DungeonClear/Util/ChunkedPathfinder.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcCombatFlag.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcLeaderSignal.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcRezRecovery.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcSmartRest.h"
@@ -177,6 +178,23 @@ DcPartyState::SpreadGate DcPartyState::GetSpreadGate(Player* bot, AiObjectContex
     }
     return gate;
 }
+DcPartyState::RestGate DcPartyState::GetRestGate(Player* bot, AiObjectContext* context)
+{
+    RestGate gate;  // 0/0 — spread-only readiness
+    if (!bot)
+        return gate;
+    // Smart Rest's latch owns recovery; the floors stay 0 there (unchanged
+    // behaviour, just centralised so the panel and the gate read one body).
+    if (DcSmartRest::Enabled(bot))
+        return gate;
+    // Flagged with no fight behind it: nobody can eat or drink, so waiting on
+    // HP/mana is a deadlock. See the header.
+    if (DcCombatFlag::IsPhantomFlag(bot, context))
+        return gate;
+    gate.minHp = RestMinHpPct(bot);
+    gate.minMp = RestMinMpPct(bot);
+    return gate;
+}
 bool DcPartyState::IsBetweenPullsReady(Player* bot, AiObjectContext* context, bool requireNoLoot)
 {
     if (!bot || !context)
@@ -207,7 +225,8 @@ bool DcPartyState::IsBetweenPullsReady(Player* bot, AiObjectContext* context, bo
     if (requireNoLoot && context->GetValue<bool>(DcKey::Stock::HasAvailableLoot)->Get())
         return false;
     SpreadGate const gate = GetSpreadGate(bot, context);
-    return IsPartyReady(bot, RestMinHpPct(bot), RestMinMpPct(bot), gate.maxSpread, gate.anchor,
+    RestGate const rest = GetRestGate(bot, context);
+    return IsPartyReady(bot, rest.minHp, rest.minMp, gate.maxSpread, gate.anchor,
                         gate.maxTankGap);
 }
 bool DcPartyState::IsAnyPartyMemberLooting(Player* bot)

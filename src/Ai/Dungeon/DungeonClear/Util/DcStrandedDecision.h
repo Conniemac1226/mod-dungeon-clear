@@ -24,8 +24,12 @@
 //   1. The run must have shown NO sign of progress for noProgressTimeoutMs. The
 //      GLUE (DcStrandedRecovery) owns that clock on DcRunState::progressMs,
 //      re-stamping it on any sign of life (a boss/objective completed, the tank
-//      closing on the next anchor); combat re-arms it too, so a legitimately slow
-//      pull or a long fight never trips the failsafe. The kernel only compares.
+//      closing on the next anchor); a FIGHT re-arms it too, so a legitimately
+//      slow pull or a long fight never trips the failsafe. The kernel only
+//      compares. "Fight" is engagement (a victim / attackers), never the bare
+//      combat flag — a hostile area aura sets that flag with nothing aggroed, and
+//      keying on it made this failsafe permanently inert exactly when the run
+//      needed it (see DcCombatFlag).
 //   2. At least one BOT member must be stranded beyond maxSpread of the tank
 //      (PartyMaxSpread — the module's canonical "out of range"). A human is never
 //      relocated (player agency); dead members are the rez recovery's job.
@@ -52,7 +56,7 @@ namespace DcStrandedDecision
         std::uint32_t nowMs = 0;
         std::uint32_t lastProgressMs = 0;         // clock; 0 = unarmed (no verdict yet)
         std::uint32_t noProgressTimeoutMs = 60000;   // StrandedRecoveryNoProgressSecs * 1000
-        bool          partyInCombat = false;      // recovery never fires mid-fight
+        bool          partyEngaged = false;      // a real fight (not the bare flag)
         float         maxSpread = 25.0f;          // PartyMaxSpread: the out-of-range threshold
     };
 
@@ -69,7 +73,7 @@ namespace DcStrandedDecision
     {
         Result r;
 
-        if (!in.enabled || in.partyInCombat)
+        if (!in.enabled || in.partyEngaged)
             return r;
 
         // Clock must be armed (a run underway) and the timeout enabled.

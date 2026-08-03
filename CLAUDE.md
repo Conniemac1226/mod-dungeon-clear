@@ -55,3 +55,30 @@ The user always builds and deploys — do not build or inspect the binary.
 Run the gtest suite from this module root: `sudo bash t/run_tests.sh`.
 Plan / design / review docs live in `deployment-files/docs/`, never committed
 to this repo.
+
+## Investigating a test run — always start here
+When a task begins with a test-run id (`tr-20260801-174432-3`, or a plan id
+`tp-…`, or a whole batch prefix `tr-20260801-174432`), run:
+
+```
+python3 tools/dc_test_run.py <id>
+```
+
+That is the first command, before any grepping. It gathers, in one pass, what is
+otherwise scattered across five files: the run record from `dc_testruns.jsonl`
+(comp, result, fail reason, boss/status/pull timelines, deaths, pauses, watchdog
+budgets), the teardown **DcDiag snapshot** (target, route, pull FSM, per-member
+party state, objective roster — usually where the answer is), the plan and its
+sibling runs, live state for a run still in flight, and every `*.log` line that
+belongs to that run. Log lines carry no run id, so it correlates on the run's own
+bot names inside the run's time window, then reports a SIGNALS section counting
+the known diagnostic shapes (stalls, resnaps, stranded recovery, pull release,
+door blocks, wipes).
+
+Drill down with `--grep RE`, `--logs pull`, `--level info`, `--dump DIR` (writes
+the per-run slice to a file), `--json`. `--list` shows recent run ids.
+
+Do not hand-grep `DungeonClear.log` for a run id — it only appears on the START
+line. And note the appenders open with mode `w`: a worldserver restart wipes the
+logs, so for an older run the record plus the diag snapshot are all that survive.
+The tool says so explicitly when that has happened.

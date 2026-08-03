@@ -144,9 +144,10 @@ DungeonClear.IgnoreChests = 1
 #        closed door (clicking it, or holding beside it) before it gives up and
 #        auto-pauses the run, the same as for a door it knows it can't open.
 #        This catches doors the lock-template check gets wrong — event gates
-#        that look like plain clickable doors (e.g. Shadowfang Keep's Arugal's
-#        Lair, which only opens when Wolf Master Nandos dies) — and wide gates
-#        whose clickable origin sits out of reach of where the path ends. The
+#        that look like plain clickable doors (Shadowfang Keep's three gates are
+#        the known ones and are now denylisted by entry, but the next dungeon's
+#        will not be) — and wide gates whose clickable origin sits out of reach
+#        of where the path ends. The
 #        pause remembers the door, so the run auto-resumes the moment the door
 #        actually opens (its event completes, or a player opens it).
 #

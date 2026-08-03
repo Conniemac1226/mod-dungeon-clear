@@ -329,7 +329,7 @@ std::vector<DcEngageGeometry::AvoidSphere> DcEngageGeometry::BystanderSpheres(
     {
         if (!c || !c->IsAlive() || c == exclude)
             continue;
-        if (!bot->IsHostileTo(c) || c->IsCritter() || c->IsTotem())
+        if (!bot->IsHostileTo(c) || c->IsCritter() || c->IsTotem() || IsDisplayedDead(c))
             continue;
         // Already fighting us: its aggro is spent, and treating it as an obstacle
         // would make the tank orbit the pack it is currently tanking.
@@ -585,7 +585,7 @@ bool DcEngageGeometry::TargetInsideBystanderPack(Player* bot, Unit* target)
     {
         if (!c || !c->IsAlive() || c == target)
             continue;
-        if (!bot->IsHostileTo(c) || c->IsCritter() || c->IsTotem())
+        if (!bot->IsHostileTo(c) || c->IsCritter() || c->IsTotem() || IsDisplayedDead(c))
             continue;
         // Already fighting us: its aggro is spent — it is not a pack we can wake.
         if (c->IsInCombat())
@@ -1048,6 +1048,11 @@ bool DcEngageGeometry::TankReachedRoomByPath(Player* bot, AiObjectContext* ctx,
     return gen.getPathLength() <= window;
 }
 
+bool DcEngageGeometry::IsDisplayedDead(Unit const* u)
+{
+    return u && u->HasDynamicFlag(UNIT_DYNFLAG_DEAD);
+}
+
 bool DcEngageGeometry::IsRangedAttacker(Player* bot, Unit* u)
 {
     Creature const* c = u ? u->ToCreature() : nullptr;
@@ -1270,6 +1275,7 @@ float DcEngageGeometry::DistAlongPathToClosedDoor(
     float const bandSq = DC_DOOR_BAND * DC_DOOR_BAND;
     float const botX = bot->GetPositionX();
     float const botY = bot->GetPositionY();
+    float const botZ = bot->GetPositionZ();
 
     float const zBand = DC_DOOR_Z_BAND;
     float prevX = 0.0f, prevY = 0.0f, prevZ = 0.0f;
@@ -1300,9 +1306,18 @@ float DcEngageGeometry::DistAlongPathToClosedDoor(
             float const dy = py - prevY;
             accumulated += std::sqrt(dx * dx + dy * dy);
         }
+        // The bot's progress cursor, picked in 3D — same rule (and same reason)
+        // as DungeonClearMath::PathProgressCursor. A 2D pick took the vertex on
+        // whichever storey happened to lie closest from above: in Shadowfang
+        // Keep's tower the landing 10yd up the staircase beat the tank's own
+        // floor, cursorAccum jumped most of the way up the stairs, and this
+        // returned "8.0yd" for Arugal's Lair 27yd overhead — inside
+        // DC_DOOR_STOP_DISTANCE, so the tank parked at the foot of the stairs and
+        // the run auto-paused on a door it never approached.
         float const bdx = px - botX;
         float const bdy = py - botY;
-        float const bd2 = bdx * bdx + bdy * bdy;
+        float const bdz = pz - botZ;
+        float const bd2 = bdx * bdx + bdy * bdy + bdz * bdz;
         if (bd2 < bestBotDistSq)
         {
             bestBotDistSq = bd2;

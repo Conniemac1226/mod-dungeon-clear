@@ -28,6 +28,8 @@
 #include <cmath>
 #include <cstdlib>
 #include <sstream>
+#include <unordered_map>
+#include <vector>
 
 #include "PlayerbotAIConfig.h"
 
@@ -39,6 +41,7 @@
 #include "TestRun/DcTestPlanManager.h"
 #include "TestRun/DcTestRunManager.h"
 #include "Util/DcSpectator.h"
+#include "Util/DcWatchHop.h"
 #include "Ai/Dungeon/DungeonClear/Settings/DcSettings.h"
 #include "Ai/Dungeon/DungeonClear/Settings/DcSettingsRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearUtil.h"
@@ -136,7 +139,10 @@ namespace
     // belongs to their session alone. See Util/DcSpectator.h.
     //
     // Bare `.dc spectate` is the free-flying camera; `.dc spectate follow
-    // [name]` rides a bot instead. Neither needs a group — that gate lives only
+    // [name]` rides a bot instead. From a live follow camera (which is what
+    // `.dc test watch` leaves you in) bare `.dc spectate` steps INTO the free
+    // camera at the bot you were watching rather than ending the camera — press
+    // it again to stop. Neither needs a group — that gate lives only
     // in the addon's party-channel transport, which is why a GM watching from
     // outside the party has to type the command.
     bool HandleSpectate(ChatHandler* handler, Optional<std::string> param)
@@ -213,6 +219,49 @@ namespace
         if (!DcSpectator::Toggle(issuer, &whyNot))
             handler->SendSysMessage(whyNot);
         return true;
+    }
+
+    // --- `.dc test watch` instance-bind bookkeeping --------------------------
+    //
+    // Entering a run's instance binds the watcher to it (see HandleTestWatch),
+    // and that bind outlives the run. Remember the ones WE made so the next
+    // watch — and `watch off` — can release exactly those and never a lockout
+    // the human earned themselves.
+    //
+    // World thread only: every writer is a chat command handler. Entries are
+    // keyed by GUID and released on the next watch, so a watcher who logs out
+    // mid-run leaves at most one stale row, which the next hop clears (an
+    // unbind of a bind that no longer exists is a no-op).
+    std::unordered_map<ObjectGuid, std::vector<DcWatchHop::Bind>> g_watchBinds;
+
+    std::vector<DcWatchHop::Bind> HeldWatchBinds(Player* gm)
+    {
+        auto it = g_watchBinds.find(gm->GetGUID());
+        return it == g_watchBinds.end() ? std::vector<DcWatchHop::Bind>() : it->second;
+    }
+
+    void ReleaseWatchBinds(Player* gm, std::vector<DcWatchHop::Bind> const& binds)
+    {
+        if (binds.empty())
+            return;
+
+        auto& held = g_watchBinds[gm->GetGUID()];
+        for (DcWatchHop::Bind const& b : binds)
+        {
+            sInstanceSaveMgr->PlayerUnbindInstance(gm->GetGUID(), b.mapId,
+                                                   Difficulty(b.difficulty), true, gm);
+            held.erase(std::remove_if(held.begin(), held.end(),
+                                      [&b](DcWatchHop::Bind const& h)
+                                      {
+                                          return h.mapId == b.mapId &&
+                                                 h.difficulty == b.difficulty &&
+                                                 h.instanceId == b.instanceId;
+                                      }),
+                       held.end());
+        }
+
+        if (held.empty())
+            g_watchBinds.erase(gm->GetGUID());
     }
 }
 
@@ -424,6 +473,17 @@ public:
     // teleport teardown hook deliberately stops any live camera on the way out,
     // so the camera cannot be started here. `.dc test watch off` ends it and
     // puts the GM's own visibility back.
+    //
+    // Watching a SECOND run is the same command again, with no manual cleanup
+    // in between: DcWatchHop works out which binds have to be released and
+    // whether the teleport must be forced far, because the bind made for the
+    // previous run would otherwise decide where this teleport lands. See
+    // Util/DcWatchHop.h for why each of those is load-bearing.
+    //
+    // `.dc test watch next` hops to the run after the one being watched and
+    // wraps, so a plan's worth of concurrent runs can be toured on one command
+    // without reading runIds off `.dc test status`. It refuses (and stays put)
+    // when there is nowhere to go — see DcTestRunManager::NextWatchTarget.
     static bool HandleTestWatch(ChatHandler* handler, Tail selectorArg)
     {
         Player* gm = handler->GetSession() ? handler->GetSession()->GetPlayer() : nullptr;
@@ -443,13 +503,45 @@ public:
             DcSpectator::Stop(gm);
             if (!wasActive)
                 handler->SendSysMessage("No spectator camera running (any pending watch request is cancelled).");
+
+            // Leave the instance system the way we found it. A watcher parked
+            // inside a finished test copy holds it open and stays saved to it —
+            // on a heroic map, that is the map's daily lockout spent on a run
+            // that is already over. Body back out first (the recall position
+            // was taken on the way in), then drop the binds we made.
+            std::vector<DcWatchHop::Bind> const held = HeldWatchBinds(gm);
+            if (!held.empty())
+            {
+                bool const insideAWatchedCopy =
+                    gm->IsInWorld() &&
+                    std::any_of(held.begin(), held.end(),
+                                [gm](DcWatchHop::Bind const& b)
+                                {
+                                    return b.mapId == gm->GetMapId() &&
+                                           b.instanceId == gm->GetInstanceId();
+                                });
+                if (insideAWatchedCopy && !gm->IsBeingTeleported())
+                {
+                    gm->TeleportTo(gm->m_recallMap, gm->m_recallX, gm->m_recallY,
+                                   gm->m_recallZ, gm->m_recallO);
+                    handler->SendSysMessage("Returned to where you were before watching.");
+                }
+                ReleaseWatchBinds(gm, held);
+            }
             return true;
         }
 
         ObjectGuid tankGuid;
         std::string msg;
         std::string dungeonToken;
-        if (!DcTestRunManager::Instance().WatchTarget(selector, &tankGuid, &msg, &dungeonToken))
+        // "next" tours the live runs instead of naming one: the run after the
+        // instance the watcher is standing in, wrapping. It resolves to a
+        // target like any other selector, so the hop below is unchanged.
+        bool const resolved =
+            selector == "next"
+                ? DcTestRunManager::Instance().NextWatchTarget(gm, &tankGuid, &msg, &dungeonToken)
+                : DcTestRunManager::Instance().WatchTarget(selector, &tankGuid, &msg, &dungeonToken);
+        if (!resolved)
         {
             handler->SendSysMessage(msg);
             return true;
@@ -464,9 +556,36 @@ public:
 
         handler->PSendSysMessage("Watching {}", msg);
 
-        // Already standing in the run's instance: nothing to teleport, just
-        // take the seat.
-        if (gm->IsInWorld() && gm->GetMap() == tank->GetMap())
+        Map* tankMap = tank->GetMap();
+        Difficulty const tankDiff = tank->GetDifficulty(tankMap->IsRaid());
+        InstanceSave* targetSave = sInstanceSaveMgr->GetInstanceSave(tank->GetInstanceId());
+
+        // Key binds the way InstanceSaveMgr stores them: by the SAVE's
+        // difficulty, which is already normalised for shared-difficulty maps.
+        // PlayerUnbindInstance does NOT re-normalise its argument, so a release
+        // keyed off the tank's raw difficulty could miss the row it must drop.
+        DcWatchHop::Bind const target{
+            tank->GetMapId(),
+            static_cast<uint8>(targetSave ? targetSave->GetDifficulty() : tankDiff),
+            tank->GetInstanceId()};
+
+        // What the core thinks this watcher is saved to on the run's map right
+        // now. It may name a copy we never bound them to (their own lockout),
+        // and either way it is what PlayerGetDestinationInstanceId will hand
+        // the teleport unless we clear it.
+        uint32 boundInstanceId = 0;
+        if (InstancePlayerBind* bind = sInstanceSaveMgr->PlayerGetBoundInstance(
+                gm->GetGUID(), target.mapId, Difficulty(target.difficulty)))
+            if (bind->save)
+                boundInstanceId = bind->save->GetInstanceId();
+
+        std::vector<DcWatchHop::Bind> const held = HeldWatchBinds(gm);
+        DcWatchHop::Plan const plan = DcWatchHop::Decide(
+            {gm->GetMapId(), gm->GetInstanceId()}, target, boundInstanceId, held);
+
+        // Already standing in the run's copy: nothing to teleport, just take
+        // the seat.
+        if (plan.alreadyThere && gm->IsInWorld())
         {
             std::string whyNot;
             if (!DcSpectator::StartFollow(gm, tank, &whyNot))
@@ -474,27 +593,38 @@ public:
             return true;
         }
 
+        // Hopping straight from one run to the next: end the old camera HERE,
+        // not inside TeleportTo's teardown hook. Stop undoes a GM-mode flip we
+        // made, so letting it fire mid-flight would un-hide the watcher in the
+        // middle of the next run AND lose the flag that records the flip. Ask
+        // first, stop second, re-apply third.
+        bool gmModeApplied = DcSpectator::HiddenByWatch(gm);
+        DcSpectator::Stop(gm);
+
         // Hide the watcher before they land. A visible, targetable GM in the
         // instance pulls aggro and invalidates the very run being observed.
         // DcSpectator::Stop restores this exactly when we were the ones to
-        // change it.
-        bool const gmModeApplied = !gm->IsGameMaster();
-        if (gmModeApplied)
+        // change it — and only then, so a GM who was already in GM mode of
+        // their own accord stays that way.
+        if (!gm->IsGameMaster())
         {
             gm->SetGameMaster(true);
-            handler->SendSysMessage("GM mode enabled so the run doesn't see you (restored when you stop).");
+            if (!gmModeApplied)
+                handler->SendSysMessage("GM mode enabled so the run doesn't see you (restored when you stop).");
+            gmModeApplied = true;
         }
 
-        // Instance bind + difficulty, mirroring the core's `.appear` path
-        // (cs_misc.cpp): without the bind the teleport drops the GM into a
-        // fresh instance of the map instead of the run's.
-        Map* tankMap = tank->GetMap();
-        InstancePlayerBind* bind = sInstanceSaveMgr->PlayerGetBoundInstance(
-            gm->GetGUID(), tank->GetMapId(), tank->GetDifficulty(tankMap->IsRaid()));
-        if (!bind)
+        // Release before binding, never bind over the top. PlayerBindToInstance
+        // overwrites the row in place without calling RemovePlayer on the save
+        // it drops (leaking the watcher onto a finished copy's player list),
+        // and its `!bind.perm || permanent` ASSERT would take the server down
+        // outright if a heroic lockout ever sat where a normal bind is going.
+        ReleaseWatchBinds(gm, plan.release);
+        if (plan.bindToTarget && targetSave)
         {
-            if (InstanceSave* save = sInstanceSaveMgr->GetInstanceSave(tank->GetInstanceId()))
-                sInstanceSaveMgr->PlayerBindToInstance(gm->GetGUID(), save, !save->CanReset(), gm);
+            sInstanceSaveMgr->PlayerBindToInstance(gm->GetGUID(), targetSave,
+                                                   !targetSave->CanReset(), gm);
+            g_watchBinds[gm->GetGUID()].push_back(target);
         }
 
         if (tankMap->IsRaid())
@@ -502,7 +632,20 @@ public:
         else
             gm->SetDungeonDifficulty(tank->GetDungeonDifficulty());
 
-        gm->SaveRecallPosition();   // `.recall` gets the GM back out
+        // `.recall` (and `watch off`) get the GM back out — but only snapshot
+        // the way IN from the outside world. Hopping run-to-run must not
+        // overwrite it with a spot inside the instance being left, or there is
+        // no longer anywhere to go back to.
+        bool const hoppingBetweenRuns =
+            gm->IsInWorld() &&
+            std::any_of(held.begin(), held.end(),
+                        [gm](DcWatchHop::Bind const& b)
+                        {
+                            return b.mapId == gm->GetMapId() &&
+                                   b.instanceId == gm->GetInstanceId();
+                        });
+        if (!hoppingBetweenRuns)
+            gm->SaveRecallPosition();
 
         // Land at the instance ENTRANCE, not on the tank. Farsight renders from
         // the seer's position, so the camera looks the same either way — but
@@ -538,10 +681,19 @@ public:
         // fires PLAYERHOOK_ON_BEFORE_TELEPORT synchronously, and that hook
         // calls DcSpectator::Stop — which disarms pending requests. Arming
         // first would have the teleport immediately cancel its own camera.
-        if (!gm->TeleportTo(tank->GetMapId(), tx, ty, tz, to))
+        //
+        // forceNewInstance is what makes run-to-run hopping work on the SAME
+        // map: TeleportTo's near-teleport branch triggers on the map id alone,
+        // so without it the GM would just slide around inside the copy they
+        // are trying to leave.
+        if (!gm->TeleportTo(tank->GetMapId(), tx, ty, tz, to, 0, nullptr,
+                            plan.forceNewInstance))
         {
             if (gmModeApplied)
                 gm->SetGameMaster(false);
+            // Don't leave a lockout behind for a copy the GM never reached.
+            if (plan.bindToTarget && targetSave)
+                ReleaseWatchBinds(gm, {target});
             handler->SendSysMessage("Teleport into the run's instance was refused.");
             return true;
         }

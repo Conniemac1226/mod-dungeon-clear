@@ -486,15 +486,6 @@ namespace
         return true;
     }
 
-
-    // Breadcrumb recorder hoisted to Util/DcBreadcrumb.h (DcRecordBreadcrumb) so
-    // the item-on-GO objective drive can share it. Thin alias keeps the local
-    // call sites (and their intent) unchanged.
-    inline void RecordBreadcrumb(AiObjectContext* ctx, Player* bot)
-    {
-        DcRecordBreadcrumb(ctx, bot);
-    }
-
 }
 
 DungeonClearAdvanceAction::Step DungeonClearAdvanceAction::TryEngageHold(AdvanceState const& st)
@@ -660,8 +651,9 @@ DungeonClearAdvanceAction::Step DungeonClearAdvanceAction::TryBetweenPullsRest(A
     // this line says whether it was spread, HP/mana, or the rest latch instead of
     // leaving all three indistinguishable behind "party not ready / resting".
     DcPartyState::SpreadGate const gate = DcPartyState::GetSpreadGate(bot, context);
+    DcPartyState::RestGate const rest = DcPartyState::GetRestGate(bot, context);
     std::string const why = DcPartyState::DescribePartyNotReady(
-        bot, DcPartyState::RestMinHpPct(bot), DcPartyState::RestMinMpPct(bot),
+        bot, rest.minHp, rest.minMp,
         gate.maxSpread, gate.anchor, gate.maxTankGap);
     LOG_DEBUG("playerbots.dungeonclear",
               "[DC:{}] advance yielding after {} ticks: party not ready / resting{}",
@@ -1545,86 +1537,11 @@ bool DungeonClearAdvanceAction::Execute(Event /*event*/)
     if (DcRun::Of(context).paused)
         return false;
 
-    // Lay down the breadcrumb trail the advanced pull places its camp from. Only
-    // while out of combat (forward route progress) so the trail stays the cleared
-    // path, not a combat-chase scribble.
-    if (!bot->IsInCombat())
-        RecordBreadcrumb(context, bot);
-
-    // In pull mode the party holds at a camp and leapfrogs camp-to-camp while the
-    // tank scouts ahead alone. Make sure a camp always exists for them to hold at:
-    // seed it at our current spot whenever it's unset (pull mode just toggled on,
-    // or a reset cleared it). Real pulls overwrite it with the computed safe camp.
-    if (AI_VALUE(bool, DcKey::PullModeCurrent))
-    {
-        DcPullContext& pull = context->GetValue<DcPullContext&>(DcKey::PullContext)->Get();
-        Position& camp = pull.camp;
-        // Capture the unset state BEFORE seeding: the trail block below adopts the
-        // trailing point unconditionally on the first tick a camp was just seeded.
-        bool const campUnset = !pull.HasCamp();
-        if (campUnset)
-        {
-            // Seed from the trail (setback behind the tank along walked ground)
-            // rather than at the tank's feet, for the same monotone-party-motion
-            // reason as the dynamic-upgrade seed in UpdateDynamicPullMode: a
-            // feet-seed has the party walk forward TO the tank instead of holding
-            // behind it. ComputeTrailCamp falls back to the tank position itself
-            // when no trail exists yet (mode just toggled on, tank hasn't moved).
-            float const setback = DcSettings::GetFloat(bot, "PullSetback");
-            float const maxDrag = DcSettings::GetFloat(bot, "PullMaxDrag");
-            std::optional<Position> const seed =
-                DcPullPlanner::ComputeTrailCamp(botAI, setback, maxDrag);
-            camp = seed ? *seed
-                        : Position(bot->GetPositionX(), bot->GetPositionY(),
-                                   bot->GetPositionZ());
-        }
-
-        // TRAIL the camp forward while merely scouting (phase Idle, out of combat).
-        // Without this the camp stays frozen at the LAST fight's spot until a new
-        // pull commits, so after every camp fight the tank glides ahead to the next
-        // pack while the party runs all the way BACK to the stale camp — the huge
-        // tank/party gap the player reported. By creeping the camp to a point
-        // PullSetback behind the moving tank each tick, hold-at-camp re-issues the
-        // followers toward it so they walk ALONG behind the tank and pause at its
-        // trailing position, exactly as a real party would.
-        //
-        // Ownership is by TIMESTAMP, not by "is a pack in pull-scan range": the
-        // pull action stamps campPublishedMs on every camp write, and this trail
-        // defers only while that stamp is fresh (DC_CAMP_PUBLISH_FRESH_MS). The
-        // old GetPullTarget probe was a weaker condition than the gates the pull
-        // TRIGGER actually needs to fire (no tank loot, abort-target pack, party
-        // ready) — any tick the two disagreed NOBODY moved the camp, and with the
-        // spread gate anchored at that frozen camp (right where the party stood,
-        // post-fight) the tank kept gliding away unchecked: the scout-runaway gap.
-        // Forward-only: adopt the new trailing point only when it sits closer to
-        // the tank than the current camp (i.e. more forward), with a few yards of
-        // hysteresis, so tick jitter never churns it or drags the party backward.
-        DcPullContext const& pullForTrail =
-            context->GetValue<DcPullContext&>(DcKey::PullContext)->Get();
-        bool const pullOwnsCamp =
-            getMSTimeDiff(pullForTrail.campPublishedMs, getMSTime()) < DC_CAMP_PUBLISH_FRESH_MS;
-        if (!bot->IsInCombat() &&
-            pullForTrail.phase == DcPullPhase::Idle && !pullOwnsCamp)
-        {
-            float const setback = DcSettings::GetFloat(bot, "PullSetback");
-            float const maxDrag = DcSettings::GetFloat(bot, "PullMaxDrag");
-            if (std::optional<Position> trail =
-                    DcPullPlanner::ComputeTrailCamp(botAI, setback, maxDrag))
-            {
-                Position const tankPos(bot->GetPositionX(), bot->GetPositionY(),
-                                       bot->GetPositionZ());
-                if (campUnset ||
-                    trail->GetExactDist2d(&tankPos) + 3.0f < camp.GetExactDist2d(&tankPos))
-                {
-                    camp = *trail;
-                    DC_PULL_TRACE("[DC:{}] scout: trailing camp -> ({:.1f},{:.1f},{:.1f}) "
-                                  "{:.1f}yd behind tank", bot->GetName(),
-                                  camp.GetPositionX(), camp.GetPositionY(),
-                                  camp.GetPositionZ(), tankPos.GetExactDist2d(&camp));
-                }
-            }
-        }
-    }
+    // Breadcrumb trail + camp upkeep (seed when unset, trail it forward while
+    // scouting). Body lives in DcPullPlanner::MaintainScoutCamp so every rung that
+    // drives the leader can keep the camp with the tank — see the header comment
+    // there for why leaving it here alone deadlocked the objective drive.
+    DcPullPlanner::MaintainScoutCamp(botAI, context);
 
     std::optional<DungeonBossInfo> next = AI_VALUE(std::optional<DungeonBossInfo>, DcKey::NextDungeonBoss);
     if (!next.has_value())

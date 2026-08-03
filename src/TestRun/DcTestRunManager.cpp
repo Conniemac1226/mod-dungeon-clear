@@ -276,6 +276,58 @@ bool DcTestRunManager::WatchTarget(std::string const& selector, ObjectGuid* tank
     return true;
 }
 
+bool DcTestRunManager::NextWatchTarget(Player* watcher, ObjectGuid* tankOut,
+                                       std::string* msg, std::string* tokenOut) const
+{
+    if (!watcher)
+    {
+        if (msg)
+            *msg = "no watcher";
+        return false;
+    }
+
+    // Watchable = the tank is in world and can be sat on right now. A run that
+    // is still logging its party in is simply not in the tour yet.
+    std::vector<DcTestRunJob const*> watchable;
+    std::size_t current = DcTestRunSelect::kNone;
+    watchable.reserve(_runs.size());
+    for (auto const& job : _runs)
+    {
+        Player* tank = ObjectAccessor::FindConnectedPlayer(job->TankGuid());
+        if (!tank || !tank->IsInWorld())
+            continue;
+
+        // Same map copy = this is the run the watcher is on. Compared by
+        // Map*, which is per-instance, so two runs of the same dungeon are
+        // never confused for each other.
+        if (watcher->IsInWorld() && tank->GetMap() == watcher->GetMap())
+            current = watchable.size();
+        watchable.push_back(job.get());
+    }
+
+    std::size_t const next = DcTestRunSelect::NextWatchIndex(watchable.size(), current);
+    if (next == DcTestRunSelect::kNone)
+    {
+        if (msg)
+            *msg = watchable.empty()
+                       ? (_runs.empty() ? "no test run active"
+                                        : "no test run has a tank in world yet — try again in a moment")
+                       : "only one test run is live and you are already watching it";
+        return false;
+    }
+
+    DcTestRunJob const* job = watchable[next];
+    if (tankOut)
+        *tankOut = job->TankGuid();
+    if (tokenOut)
+        *tokenOut = job->DungeonToken();
+    if (msg)
+        *msg = job->RunId() + " (" + job->DungeonToken() + ")" +
+               " — run " + std::to_string(next + 1) + " of " +
+               std::to_string(watchable.size());
+    return true;
+}
+
 bool DcTestRunManager::Stop(std::string const& selector, std::string* msg)
 {
     std::vector<DcTestRunSelect::RunRef> refs;

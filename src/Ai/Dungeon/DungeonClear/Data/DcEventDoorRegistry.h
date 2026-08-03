@@ -30,6 +30,32 @@ namespace DcEventDoorRegistry
         switch (goEntry)
         {
             case 18895:  // Shadowfang Keep — Courtyard Door (freed-prisoner event)
+            // Shadowfang Keep's other two gates, both empty-lock-85 like the
+            // Courtyard Door and both driven purely by SmartAI:
+            //
+            //   18972 Sorcerer's Gate (guid 33785) — the Fenrus room's east exit
+            //     toward Nandos. It opens on 'Arugal's Voidwalker (4627) - On Just
+            //     Died - Set GO State'. The intended sequence is: Fenrus (4274)
+            //     dies -> his SmartAI sets data on Archmage Arugal (4275) -> that
+            //     runs timed actionlist 427500, which summons the four voidwalkers
+            //     6s later -> killing one opens the gate. Force-opening the gate
+            //     skipped that whole mechanic: the party walked out ~6s before the
+            //     adds existed, then the voidwalkers spawned BEHIND it at the room's
+            //     west end and the run wedged between advancing to Nandos and
+            //     turning back for them (live report 2026-08-01). The gate has
+            //     door.autoCloseTime 0, so a bot click opened it permanently.
+            //     The "Arugal's Voidwalkers" event (map 33 id 3) now drives the
+            //     real sequence.
+            //
+            //   18971 Arugal's Lair (guid 33241) — opens on 'Wolf Master Nandos
+            //     (3927) - On Just Died - Set GO State'. Nandos stands 2.6yd in
+            //     FRONT of it, so the ordinary run kills him and the door opens
+            //     itself; a bot that force-opened it could instead walk straight
+            //     past him to Archmage Arugal and skip an encounter. The
+            //     door-blocked watchdog in DcEngageActions already named this door
+            //     as the reason it exists — this is the entry that fixes it.
+            case 18971:  // Shadowfang Keep — Arugal's Lair (opens on Nandos' death)
+            case 18972:  // Shadowfang Keep — Sorcerer's Gate (voidwalker event)
                 return true;
             default:
                 return false;

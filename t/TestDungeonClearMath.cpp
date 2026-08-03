@@ -456,6 +456,61 @@ TEST(DungeonClearPullStandDownTest, PullModeStandDownHoldsForABystanderMidManeuv
 }
 
 // ---------------------------------------------------------------------------
+// ShouldReleaseStandingPull — the orphaned-pull release gate.
+// ---------------------------------------------------------------------------
+using DungeonClearMath::ShouldReleaseStandingPull;
+
+// The live freeze: the effective mode is off (a persistent anchored event drives
+// the tank), the tank is out of combat, and a pull is still standing at Engage
+// with a marked camp. Nothing else can clean that up — release it.
+TEST(DungeonClearPullReleaseTest, ReleasesAPullLeftStandingWhenTheModeIsForcedOff)
+{
+    EXPECT_TRUE(ShouldReleaseStandingPull(/*effectiveOn*/ false, /*standing*/ true,
+                                          /*inCombat*/ false, /*holdingPhase*/ false,
+                                          /*bossPullback*/ false));
+}
+
+// Pull mode on: the pull's own FSM owns its lifecycle, and a camp mid-run is
+// exactly what the party is meant to be holding at.
+TEST(DungeonClearPullReleaseTest, NeverReleasesWhileThePullModeIsOn)
+{
+    EXPECT_FALSE(ShouldReleaseStandingPull(/*effectiveOn*/ true, /*standing*/ true,
+                                           /*inCombat*/ false, /*holdingPhase*/ false,
+                                           /*bossPullback*/ false));
+}
+
+// Nothing standing (phase Idle, no camp) — the common case every tick with pull
+// mode off. Must not churn.
+TEST(DungeonClearPullReleaseTest, NoOpWhenNothingIsStanding)
+{
+    EXPECT_FALSE(ShouldReleaseStandingPull(/*effectiveOn*/ false, /*standing*/ false,
+                                           /*inCombat*/ false, /*holdingPhase*/ false,
+                                           /*bossPullback*/ false));
+}
+
+// A maneuver in flight — in combat, or a holding phase (Forming/Advancing/
+// Returning) — must finish: clearing its camp mid-drag would dump the party out
+// of the hold and into the inbound pack.
+TEST(DungeonClearPullReleaseTest, NeverReleasesAManeuverInFlight)
+{
+    EXPECT_FALSE(ShouldReleaseStandingPull(/*effectiveOn*/ false, /*standing*/ true,
+                                           /*inCombat*/ true, /*holdingPhase*/ false,
+                                           /*bossPullback*/ false));
+    EXPECT_FALSE(ShouldReleaseStandingPull(/*effectiveOn*/ false, /*standing*/ true,
+                                           /*inCombat*/ false, /*holdingPhase*/ true,
+                                           /*bossPullback*/ false));
+}
+
+// A pull-back drag (Ghaz'an out of the Underbog lake) runs with pull mode off BY
+// DESIGN — its camp is the hand-authored anchor and must survive.
+TEST(DungeonClearPullReleaseTest, NeverReleasesABossPullback)
+{
+    EXPECT_FALSE(ShouldReleaseStandingPull(/*effectiveOn*/ false, /*standing*/ true,
+                                           /*inCombat*/ false, /*holdingPhase*/ false,
+                                           /*bossPullback*/ true));
+}
+
+// ---------------------------------------------------------------------------
 // ShouldDropPullVerdict — the no-target verdict-drop grace gate.
 // ---------------------------------------------------------------------------
 using DungeonClearMath::ShouldDropPullVerdict;
@@ -1291,6 +1346,116 @@ TEST(DungeonClearStuckCombatTest, ArmingAtTimeZeroAvoidsTheSentinel)
     EXPECT_EQ(since, 1u);
 }
 
+// ===== Flagged-in-combat driving gate (MayDriveWhileFlagged) =====
+//
+// The DC driving ladder used to stand down on the raw core combat FLAG. A hostile
+// area aura sets that flag with no fight behind it (Arcatraz Entropic Aura, 45yd vs
+// a ~20yd aggro radius), and because playerbots never enters the combat engine on
+// the flag alone, BOTH ladders went inert and the run froze permanently. S1356.
+
+TEST(DcFlaggedCombatGateTest, NotFlaggedAlwaysDrives)
+{
+    std::uint32_t since = 12345;
+    EXPECT_TRUE(DungeonClearMath::MayDriveWhileFlagged(false, false, 1000, 5000, since));
+    EXPECT_EQ(since, 0u);   // streak cleared so a later flag starts clean
+}
+
+TEST(DcFlaggedCombatGateTest, RealFightAlwaysStandsDown)
+{
+    std::uint32_t since = 0;
+    EXPECT_FALSE(DungeonClearMath::MayDriveWhileFlagged(true, true, 1000, 5000, since));
+    EXPECT_EQ(since, 0u);
+    // ...and no amount of elapsed time changes that while the fight is live.
+    EXPECT_FALSE(DungeonClearMath::MayDriveWhileFlagged(true, true, 999000, 5000, since));
+}
+
+TEST(DcFlaggedCombatGateTest, FlaggedWithNoFightResumesOnlyAfterTheGrace)
+{
+    std::uint32_t since = 0;
+    constexpr std::uint32_t grace = 5000;
+
+    EXPECT_FALSE(DungeonClearMath::MayDriveWhileFlagged(true, false, 1000, grace, since));
+    EXPECT_EQ(since, 1000u);
+    EXPECT_FALSE(DungeonClearMath::MayDriveWhileFlagged(true, false, 1000 + grace - 1, grace, since));
+    EXPECT_TRUE(DungeonClearMath::MayDriveWhileFlagged(true, false, 1000 + grace, grace, since));
+}
+
+TEST(DcFlaggedCombatGateTest, ARetargetHoleInARealFightNeverResumesDriving)
+{
+    // THE REGRESSION THAT MATTERS. A target dies, nothing has re-acquired for a
+    // tick or two, then the fight continues. Without the streak reset those holes
+    // would accumulate and the tank would walk out of a live fight.
+    std::uint32_t since = 0;
+    constexpr std::uint32_t grace = 5000;
+
+    EXPECT_FALSE(DungeonClearMath::MayDriveWhileFlagged(true, false, 1000, grace, since));
+    EXPECT_FALSE(DungeonClearMath::MayDriveWhileFlagged(true, false, 3000, grace, since));
+    // something re-acquires -> streak broken
+    EXPECT_FALSE(DungeonClearMath::MayDriveWhileFlagged(true, true, 3200, grace, since));
+    EXPECT_EQ(since, 0u);
+    // wedged again: the clock restarts, the old 2000ms is NOT credited
+    EXPECT_FALSE(DungeonClearMath::MayDriveWhileFlagged(true, false, 3400, grace, since));
+    EXPECT_EQ(since, 3400u);
+    EXPECT_FALSE(DungeonClearMath::MayDriveWhileFlagged(true, false, 3400 + grace - 1, grace, since));
+    EXPECT_TRUE(DungeonClearMath::MayDriveWhileFlagged(true, false, 3400 + grace, grace, since));
+}
+
+TEST(DcFlaggedCombatGateTest, ZeroGraceResumesImmediately)
+{
+    std::uint32_t since = 0;
+    EXPECT_TRUE(DungeonClearMath::MayDriveWhileFlagged(true, false, 1000, 0, since));
+}
+
+TEST(DcFlaggedCombatGateTest, ArmingAtTimeZeroAvoidsTheSentinel)
+{
+    std::uint32_t since = 0;
+    EXPECT_FALSE(DungeonClearMath::MayDriveWhileFlagged(true, false, 0, 5000, since));
+    EXPECT_EQ(since, 1u);
+}
+
+// The rest gates ask the same kernel a DIFFERENT question — "is the PARTY
+// flagged with nothing fighting?" (DcCombatFlag::IsPhantomFlag) — so they feed it
+// a different `flagged` input and must therefore keep their own streak. These two
+// pin the reason the latches are separate (DcApproachState::flaggedNoEngageSinceMs
+// vs partyFlaggedNoEngageSinceMs).
+
+TEST(DcFlaggedCombatGateTest, TwoQuestionsKeepTwoStreaks)
+{
+    // The tank drops combat while a follower is still flagged: the driving latch
+    // clears (its input went false) while the party latch keeps streaking.
+    std::uint32_t driving = 0;
+    std::uint32_t party = 0;
+    constexpr std::uint32_t grace = 5000;
+
+    EXPECT_FALSE(DungeonClearMath::MayDriveWhileFlagged(true, false, 1000, grace, driving));
+    EXPECT_FALSE(DungeonClearMath::MayDriveWhileFlagged(true, false, 1000, grace, party));
+
+    // Tank unflags at t=2000; the party (a follower still in the aura) does not.
+    EXPECT_TRUE(DungeonClearMath::MayDriveWhileFlagged(false, false, 2000, grace, driving));
+    EXPECT_EQ(driving, 0u);   // driving streak reset...
+    EXPECT_FALSE(DungeonClearMath::MayDriveWhileFlagged(true, false, 2000, grace, party));
+    EXPECT_EQ(party, 1000u);  // ...party streak untouched, still counting from 1000
+
+    // The party waiver lands on ITS OWN schedule, not the tank's.
+    EXPECT_TRUE(DungeonClearMath::MayDriveWhileFlagged(true, false, 1000 + grace, grace, party));
+}
+
+TEST(DcFlaggedCombatGateTest, TheRestWaiverDoesNotFireInThePostFightWindow)
+{
+    // THE REGRESSION THAT MATTERS for the rest gate: every fight ends with a few
+    // seconds of "still flagged, nothing engaged yet". Waiving the HP/mana floors
+    // there would send the tank off to the next pull instead of drinking. The
+    // grace is what makes the waiver mean "this flag is never going to clear".
+    std::uint32_t party = 0;
+    constexpr std::uint32_t grace = 5000;
+
+    EXPECT_FALSE(DungeonClearMath::MayDriveWhileFlagged(true, false, 1000, grace, party));
+    EXPECT_FALSE(DungeonClearMath::MayDriveWhileFlagged(true, false, 1000 + grace - 1, grace, party));
+    // Combat drops for real -> streak cleared, ordinary floors apply again.
+    EXPECT_TRUE(DungeonClearMath::MayDriveWhileFlagged(false, false, 1000 + grace, grace, party));
+    EXPECT_EQ(party, 0u);
+}
+
 // ===== Bystander-detour borrow watchdog (ShouldKeepAvoidDetour) =====
 //
 // The pull borrows the approach tick from Advance to walk around another pack's
@@ -1563,4 +1728,66 @@ TEST(DungeonClearChaseLeashTest, ABackwardClockStepCannotFakeAnExpiry)
     EXPECT_EQ(Chase(20.0f, 30.0f, 44.0f, false, 15.0f, /*now*/ 100u, 6000u, hold),
               ChaseVerdict::Hold);
     EXPECT_EQ(hold, 5000u);
+}
+
+// ---------------------------------------------------------------------------
+// PathProgressCursor — where along a route the bot has walked up to.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+    // Shadowfang Keep's tower, taken from the navmesh: the staircase from the
+    // Fenrus room (Z 129) up to Wolf Master Nandos (Z 156) climbs almost
+    // directly overhead, so a route vertex on the landing 10yd UP sits CLOSER in
+    // 2D than the vertex on the floor the tank is actually standing on.
+    std::vector<G3D::Vector3> SfkStaircaseRoute()
+    {
+        return {
+            G3D::Vector3(-130.67f, 2169.07f, 129.16f),  // the tank's own floor
+            G3D::Vector3(-129.33f, 2168.00f, 138.76f),  // landing, one storey up
+            G3D::Vector3(-128.00f, 2174.93f, 155.83f),  // top of the stairs
+            G3D::Vector3(-120.70f, 2162.00f, 155.80f),  // Nandos, at the gate
+        };
+    }
+}
+
+TEST(DungeonClearPathCursorTest, PicksTheVertexOnTheBotsOwnFloor)
+{
+    // The tank is at the foot of the stairs. Vertex 1 is 1.81yd away in 2D and
+    // vertex 0 is 1.98yd away, so a 2D pick lands a storey up; in 3D vertex 1 is
+    // 9.9yd away and vertex 0 wins.
+    EXPECT_EQ(DungeonClearMath::PathProgressCursor(SfkStaircaseRoute(),
+                                                   -130.9f, 2167.1f, 129.0f),
+              0u);
+}
+
+TEST(DungeonClearPathCursorTest, FollowsTheBotUpTheStairs)
+{
+    // Standing on the landing, the cursor moves with it — the floor vertex below
+    // is now the far one.
+    EXPECT_EQ(DungeonClearMath::PathProgressCursor(SfkStaircaseRoute(),
+                                                   -129.5f, 2168.2f, 138.8f),
+              1u);
+    // And at the top, the tank's progress is the last leg, not the stairwell it
+    // is standing directly above.
+    EXPECT_EQ(DungeonClearMath::PathProgressCursor(SfkStaircaseRoute(),
+                                                   -121.0f, 2162.5f, 155.8f),
+              3u);
+}
+
+TEST(DungeonClearPathCursorTest, EmptyRouteReturnsZero)
+{
+    EXPECT_EQ(DungeonClearMath::PathProgressCursor({}, 0.0f, 0.0f, 0.0f), 0u);
+}
+
+TEST(DungeonClearPathCursorTest, FlatRouteIsUnaffectedByTheZTerm)
+{
+    // The ordinary single-storey case must behave exactly as the old 2D pick did.
+    std::vector<G3D::Vector3> const flat{
+        G3D::Vector3(0.0f, 0.0f, 100.0f),
+        G3D::Vector3(10.0f, 0.0f, 100.0f),
+        G3D::Vector3(20.0f, 0.0f, 100.0f),
+    };
+    EXPECT_EQ(DungeonClearMath::PathProgressCursor(flat, 11.0f, 2.0f, 100.0f), 1u);
+    EXPECT_EQ(DungeonClearMath::PathProgressCursor(flat, 19.0f, -3.0f, 100.5f), 2u);
 }
