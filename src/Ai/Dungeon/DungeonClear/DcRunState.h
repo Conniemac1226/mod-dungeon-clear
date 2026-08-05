@@ -78,6 +78,14 @@ struct DcRunState
     // See DcWaitAtBossDecision.h for the whole design.
     ObjectGuid  waitedBossGuid;
 
+    // getMSTime() at which the SEALED-ENCOUNTER muster began holding the boss engage
+    // (0 = not mustering). See SealedEncounterRegistry: for a boss whose room locks
+    // on encounter start, the engage waits until no member is still outside the room,
+    // and this is the clock that bounds that wait so a member who cannot path in
+    // can't hold the run open. Re-armed to 0 whenever the tank leaves the boss's
+    // approach range, so each attempt gets a fresh budget.
+    uint32      sealedMusterSince = 0;
+
     // === cross-bot leader-fight signals (were the g_* file-static maps) ============
     // Both are keyed, in the old design, by the LEADER's GUID and only ever read/
     // written for the resolved leader — i.e. they are facets of the leader's run.

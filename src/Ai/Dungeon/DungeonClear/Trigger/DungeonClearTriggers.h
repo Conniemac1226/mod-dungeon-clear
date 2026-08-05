@@ -296,6 +296,13 @@ public:
 // in to grab aggro, and (on the combat engine) drags the pack back. Sits above
 // engage-trash so the pull preempts the normal walk-in; trash-only — never
 // preempts the at-boss engage.
+//
+// Two things widen the "mode is on" gate, both because the decision to pull was not
+// the mode's to make: a BossPullbackRegistry drag (`bossPullback`), and a
+// ScriptedPullRegistry stage already IN FLIGHT. The second is a cleanup guarantee,
+// not a licence — a stage's mode is forced on only while its row is still DUE, so it
+// can drop the moment the pack dies, taking the Engage cleanup that unlatches the
+// stage down with it. Scoped to phase != Idle so it can never open the start path.
 class DungeonClearPullTrigger : public Trigger
 {
 public:
@@ -399,7 +406,7 @@ public:
     bool IsActive() override;
 };
 
-// ANY DC party member (leader OR follower), COMBAT engine. Phantom-combat escape
+// ANY DC party member (leader OR follower), BOTH engines. Phantom-combat escape
 // hatch. A member can be left FLAGGED in combat by a mob that spawned far across the
 // map or behind a gate (a proximity/gate event spawn) and tagged it: the core combat
 // reference never drops because the holder is unreachable, and DC's own gates that
@@ -419,6 +426,15 @@ public:
 // combat drop could reset a boss for the whole raid (the deadlock this recovers is a
 // 5-man problem). Verdict is the pure DungeonClearMath::IsPhantomCombat +
 // ShouldBreakStuckCombat kernels.
+//
+// Registered in BOTH engines, and the NON-combat registration is the load-bearing
+// one. Engine transitions are action-driven, not derived from IsInCombat: stock
+// `drop target` (relevance 99) moves a bot to BOT_STATE_NON_COMBAT without clearing
+// the core flag, and nothing moves it back while a DC run suppresses the stock
+// attack/pull actions that call ChangeEngine(BOT_STATE_COMBAT). A bot in that state
+// is flagged with every non-combat rung bailing on IsInCombat() and every combat rung
+// out of reach — which, while this hatch was combat-only, included the hatch itself.
+// See DungeonClearStrategy for the live case.
 class DungeonClearBreakStuckCombatTrigger : public Trigger
 {
 public:

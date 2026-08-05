@@ -198,3 +198,198 @@ TEST(DcDiagSnapshotTest, SummarizeHandlesInvalidSnapshot)
     Snapshot snap;
     EXPECT_NE(DcDiag::Summarize(snap).find("unresolvable"), std::string::npos);
 }
+
+// ---- combat blame ----------------------------------------------------------
+//
+// The freeze these fields exist for: two members flagged in combat with no
+// victim, no attackers and full health for minutes, while nothing in the record
+// named the unit responsible. Capture() reads the live CombatManager and is
+// exercised in-game; what is pinned here is that every input the phantom-combat
+// hatch weighs survives into the record, and that the two ways a flagged member
+// can look "unheld" never collapse into one another.
+
+namespace
+{
+    using DcDiag::CombatHolderSnapshot;
+
+    CombatHolderSnapshot LegitimateHolder()
+    {
+        CombatHolderSnapshot h;
+        h.name = "Selin Fireheart";
+        h.entry = 24723;
+        h.isCreature = true;
+        h.alive = true;
+        h.sameMap = true;
+        h.reachable = true;
+        h.reachChecked = true;
+        h.legitimate = true;
+        h.dist = 71.2f;
+        h.healthPct = 100;
+        return h;
+    }
+}
+
+TEST(DcDiagSnapshotTest, CombatHoldersAreSerializedForFlaggedMembersOnly)
+{
+    Snapshot snap = Sample();
+
+    MemberSnapshot held;
+    held.name = "Xomja";
+    held.online = true;
+    held.alive = true;
+    held.inCombat = true;
+    held.holderRefCount = 1;
+    held.combatHolders.push_back(LegitimateHolder());
+    snap.members.push_back(held);
+
+    // Out of combat: no blame block at all. An empty holder list here would be
+    // indistinguishable from "flagged and held by nothing", which is the single
+    // most misleading thing this record could say.
+    MemberSnapshot clean;
+    clean.name = "Yidama";
+    clean.online = true;
+    clean.alive = true;
+    snap.members.push_back(clean);
+
+    std::string const json = Json(snap);
+
+    EXPECT_NE(json.find("\"name\":\"Selin Fireheart\""), std::string::npos);
+    EXPECT_NE(json.find("\"entry\":24723"), std::string::npos);
+    EXPECT_NE(json.find("\"legitimate\":true"), std::string::npos);
+    EXPECT_NE(json.find("\"holderRefs\":1"), std::string::npos);
+    // Exactly one member carries the block — the flagged one.
+    EXPECT_EQ(json.find("\"combatHolders\":"),
+              json.rfind("\"combatHolders\":"));
+}
+
+// A holder excluded by a cheap guard never gets a pathfind, so `reachable`
+// false must not read as "the navmesh could not reach it" — that points a
+// reader at the geometry when the answer is the leash.
+TEST(DcDiagSnapshotTest, UntestedReachabilityIsDistinctFromUnreachable)
+{
+    Snapshot snap = Sample();
+
+    MemberSnapshot held;
+    held.name = "Xomja";
+    held.online = true;
+    held.inCombat = true;
+    held.holderRefCount = 1;
+
+    CombatHolderSnapshot evading = LegitimateHolder();
+    evading.name = "Wretched Husk";
+    evading.entry = 24690;
+    evading.evading = true;
+    evading.reachable = false;
+    evading.reachChecked = false;
+    evading.legitimate = false;
+    held.combatHolders.push_back(evading);
+    snap.members.push_back(held);
+
+    std::string const json = Json(snap);
+    EXPECT_NE(json.find("\"reachable\":false"), std::string::npos);
+    EXPECT_NE(json.find("\"reachChecked\":false"), std::string::npos);
+
+    std::string const line = DcDiag::SummarizeCombat(snap);
+    EXPECT_NE(line.find("path-not-tested"), std::string::npos);
+    EXPECT_EQ(line.find("UNREACHABLE"), std::string::npos);
+}
+
+// The summary has to say WHICH guard saved a holder, because "held by a real
+// fight" and "held by something that can never touch us" look identical from
+// every other field.
+TEST(DcDiagSnapshotTest, SummarizeCombatNamesHoldersAndTheirVerdicts)
+{
+    Snapshot snap = Sample();
+    snap.inCombatCount = 1;
+
+    MemberSnapshot held;
+    held.name = "Xomja";
+    held.online = true;
+    held.inCombat = true;
+    held.botState = "noncombat";
+    held.holderRefCount = 1;
+    // tr-20260803-211838-7, verbatim: Selin holds three members from 60-75yd, alive
+    // and perfectly path-reachable, while his own CanAIAttack (`X > 216`) forbids him
+    // touching a party camped at X=165. Reachability calls that a real fight; the
+    // holder's own script calls it impossible. It is PHANTOM, and the run sat wedged
+    // for 334s because the verdict used to say otherwise.
+    CombatHolderSnapshot boss = LegitimateHolder();
+    boss.canAttackMe = false;
+    boss.legitimate = false;
+    held.combatHolders.push_back(boss);
+    snap.members.push_back(held);
+
+    std::string const line = DcDiag::SummarizeCombat(snap);
+
+    EXPECT_NE(line.find("Xomja"), std::string::npos);
+    EXPECT_NE(line.find("engine=noncombat"), std::string::npos);
+    EXPECT_NE(line.find("Selin Fireheart(24723)"), std::string::npos);
+    EXPECT_NE(line.find("reachable"), std::string::npos);
+    EXPECT_NE(line.find("CANNOT-ATTACK-ME"), std::string::npos);
+    EXPECT_NE(line.find("-> phantom"), std::string::npos);
+    EXPECT_EQ(line.find("-> LEGITIMATE"), std::string::npos);
+}
+
+// Zero refs is the hatch's "opaque/forced combat" branch, not a phantom — and
+// it must not read as "we found nothing", which is the same words for a very
+// different state.
+TEST(DcDiagSnapshotTest, SummarizeCombatDistinguishesNoRefsFromNoFight)
+{
+    Snapshot snap = Sample();
+    snap.inCombatCount = 1;
+
+    MemberSnapshot held;
+    held.name = "Zeeron";
+    held.online = true;
+    held.inCombat = true;
+    held.botState = "noncombat";
+    held.holderRefCount = 0;
+    snap.members.push_back(held);
+
+    EXPECT_NE(DcDiag::SummarizeCombat(snap).find("NOTHING (no combat refs)"),
+              std::string::npos);
+
+    Snapshot idle = Sample();
+    idle.inCombatCount = 0;
+    EXPECT_NE(DcDiag::SummarizeCombat(idle).find("nobody in the party is flagged"),
+              std::string::npos);
+}
+
+// The one-line wedge summary has to surface the two states that explain a
+// stuck-in-combat freeze, or nobody grepping the log will ever open the JSON.
+TEST(DcDiagSnapshotTest, SummarizeFlagsPhantomAndOffEngineMembers)
+{
+    Snapshot snap = Sample();
+
+    MemberSnapshot phantom;
+    phantom.name = "Xomja";
+    phantom.online = true;
+    phantom.inCombat = true;
+    phantom.botState = "noncombat";
+    phantom.phantomCombat = true;
+    snap.members.push_back(phantom);
+
+    // Flagged, but genuinely fighting on the combat engine: neither token.
+    MemberSnapshot fighting;
+    fighting.name = "Zeeron";
+    fighting.online = true;
+    fighting.inCombat = true;
+    fighting.botState = "combat";
+    snap.members.push_back(fighting);
+
+    std::string const line = DcDiag::Summarize(snap);
+    EXPECT_NE(line.find("PHANTOM-COMBAT=1"), std::string::npos);
+    EXPECT_NE(line.find("FLAGGED-OFF-COMBAT-ENGINE=1"), std::string::npos);
+}
+
+TEST(DcDiagSnapshotTest, PhantomVerdictUsesPveRefsOnly)
+{
+    EXPECT_FALSE(DcDiag::IsLegitimatePvECombatHolder(true, true));
+    EXPECT_TRUE(DcDiag::IsLegitimatePvECombatHolder(false, true));
+
+    // A legitimate PvP ref must not rescue phantom PvE refs. With no PvE refs,
+    // the trigger preserves its opaque-combat exception.
+    EXPECT_FALSE(DcDiag::HasLegitimatePvECombatHolder(true, false));
+    EXPECT_TRUE(DcDiag::HasLegitimatePvECombatHolder(false, false));
+    EXPECT_TRUE(DcDiag::HasLegitimatePvECombatHolder(true, true));
+}

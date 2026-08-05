@@ -5,11 +5,14 @@
 
 #include "TestRun/DcDiagSnapshot.h"
 
+#include <algorithm>
 #include <optional>
 #include <unordered_set>
 #include <vector>
 
+#include "CombatManager.h"
 #include "Creature.h"
+#include "CreatureAI.h"
 #include "Group.h"
 #include "InstanceScript.h"
 #include "Player.h"
@@ -25,9 +28,11 @@
 #include "Ai/Dungeon/DungeonClear/DcRunState.h"
 #include "Ai/Dungeon/DungeonClear/DcValueKeys.h"
 #include "Ai/Dungeon/DungeonClear/Util/ChunkedPathfinder.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcEngageGeometry.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcRun.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcStatusPublisher.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTargeting.h"
+#include "Ai/Dungeon/DungeonClear/Util/DungeonClearMath.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonPathFollower.h"
 #include "TestRun/DcTestRunRecord.h"
 
@@ -63,6 +68,113 @@ namespace
         return static_cast<std::uint32_t>((static_cast<std::uint64_t>(p->GetPower(power)) * 100) / maxPower);
     }
 
+    // At most this many holders are described per member. A bot held by a whole
+    // pack does not need every row to explain itself, and each row costs a
+    // pathfind (IsReachable); the untruncated total is reported separately as
+    // holderRefCount so a cap can never read as "that was all of them".
+    constexpr std::size_t kMaxHoldersPerMember = 8;
+
+    // Name every unit holding `member` in combat, and record — per holder — each
+    // input the phantom-combat hatch weighs. Deliberately a MIRROR of
+    // DungeonClearTriggers.cpp's HasLegitimateCombatHolder rather than a call
+    // into it: that function answers one bool for the whole member and discards
+    // the reasoning, and the reasoning is the entire point of this record. If
+    // the guards there change, change them here too — a divergence shows up as
+    // a snapshot that says "phantom" about a member the hatch never fires on,
+    // which is the most misleading thing this file could print.
+    //
+    // Both ref maps are walked. A PvE-empty / PvP-held bot is exactly the
+    // "opaque combat" case the hatch treats as legitimate-by-default, and
+    // without the PvP rows the record would show a flagged member with no
+    // holders at all — indistinguishable from a genuine flag/ref desync.
+    void CaptureCombatHolders(Player* member, DcDiag::MemberSnapshot& m)
+    {
+        Map* const map = member->GetMap();
+        m.attackerCount = static_cast<std::uint32_t>(member->getAttackers().size());
+
+        bool anyLegitimatePvEHolder = false;
+        auto describe = [&](Unit* other, bool suppressed, bool pvp)
+        {
+            if (!other)
+                return;
+            ++m.holderRefCount;
+
+            // The verdict is computed for EVERY ref, cap or no cap — otherwise a
+            // truncated list could report "no legitimate holder" about a member
+            // the hatch is correctly leaving alone.
+            bool const alive = other->IsAlive();
+            bool const sameMap = other->GetMap() == map;
+            bool const evading = other->GetCombatManager().IsInEvadeMode();
+            bool const reachChecked = alive && sameMap && !evading;
+            bool const reachable =
+                reachChecked &&
+                DcEngageGeometry::IsReachable(member, other->GetPositionX(),
+                                              other->GetPositionY(),
+                                              other->GetPositionZ());
+            // A holder whose own AI forbids it attacking this member can never
+            // resolve the reference, however reachable it is — see the matching
+            // guard in HasLegitimateCombatHolder.
+            Creature* const asCreature = other->ToCreature();
+            bool const canAttackMe =
+                !asCreature || !asCreature->AI() || asCreature->AI()->CanAIAttack(member);
+            bool const legitimate = reachable && canAttackMe;
+            if (DcDiag::IsLegitimatePvECombatHolder(pvp, legitimate))
+                anyLegitimatePvEHolder = true;
+
+            if (m.combatHolders.size() >= kMaxHoldersPerMember)
+                return;
+
+            DcDiag::CombatHolderSnapshot h;
+            h.name = other->GetName();
+            h.entry = other->GetEntry();
+            h.guid = other->GetGUID().GetRawValue();
+            h.isCreature = other->IsCreature();
+            h.pvp = pvp;
+            h.alive = alive;
+            h.sameMap = sameMap;
+            h.evading = evading;
+            h.suppressed = suppressed;
+            h.reachable = reachable;
+            h.reachChecked = reachChecked;
+            h.dist = sameMap ? member->GetDistance(other) : -1.f;
+            h.healthPct = static_cast<std::uint32_t>(other->GetHealthPct());
+            h.x = other->GetPositionX();
+            h.y = other->GetPositionY();
+            h.z = other->GetPositionZ();
+            if (Unit* hv = other->GetVictim())
+                h.victim = hv->GetName();
+            // One of the hatch's guards since S1476, and the reason it became one:
+            // a boss whose CanAIAttack gates on geometry (Selin Fireheart's is
+            // `X > 216`) reads as alive, non-evading and path-reachable while being
+            // permanently unable to touch a party camped outside that plane — a real
+            // ref behind a fight that physically cannot happen. This field spent that
+            // whole time printing the answer next to a LEGITIMATE verdict
+            // (tr-20260803-211838-7, 334s wedged) before it was wired into one.
+            h.canAttackMe = canAttackMe;
+            h.legitimate = legitimate;
+            m.combatHolders.push_back(std::move(h));
+        };
+
+        CombatManager const& cm = member->GetCombatManager();
+        for (auto const& kv : cm.GetPvECombatRefs())
+            if (CombatReference* const ref = kv.second)
+                describe(ref->GetOther(member), ref->IsSuppressedFor(member), /*pvp*/ false);
+        for (auto const& kv : cm.GetPvPCombatRefs())
+            if (CombatReference* const ref = kv.second)
+                describe(ref->GetOther(member), ref->IsSuppressedFor(member), /*pvp*/ true);
+
+        // No refs at all is the hatch's "opaque/forced combat, leave it alone"
+        // branch — legitimate by default, so it must NOT read as phantom here.
+        bool const hasLegitimateHolder = DcDiag::HasLegitimatePvECombatHolder(
+            !cm.GetPvECombatRefs().empty(), anyLegitimatePvEHolder);
+        // The verdict itself goes through the SAME kernel the trigger uses, so
+        // the snapshot cannot drift from the hatch on the one field a reader
+        // will trust it on. Only the per-holder legitimacy above is mirrored by
+        // hand, and only because the trigger throws that detail away.
+        m.phantomCombat = DungeonClearMath::IsPhantomCombat(
+            /*inCombat*/ true, m.attackerCount > 0, !m.victim.empty(), hasLegitimateHolder);
+    }
+
     // Wrap-safe "how long ago", clamped: a zero stamp means "never", not "forever".
     std::uint32_t SinceMs(std::uint32_t stampMs)
     {
@@ -91,6 +203,16 @@ namespace
 
 namespace DcDiag
 {
+    bool IsLegitimatePvECombatHolder(bool isPvp, bool holderIsLegitimate)
+    {
+        return !isPvp && holderIsLegitimate;
+    }
+
+    bool HasLegitimatePvECombatHolder(bool hasPvERefs, bool anyLegitimatePvEHolder)
+    {
+        return !hasPvERefs || anyLegitimatePvEHolder;
+    }
+
     Snapshot Capture(Player* tank, char const* capturedAt)
     {
         Snapshot snap;
@@ -260,7 +382,13 @@ namespace DcDiag
                 {
                     m.dcStrategy = memberAI->HasStrategy(kDcNonCombatStrategy, BOT_STATE_NON_COMBAT);
                     m.dcCombatStrategy = memberAI->HasStrategy(kDcCombatStrategy, BOT_STATE_COMBAT);
+                    m.botState = memberAI->GetState() == BOT_STATE_COMBAT ? "combat" : "noncombat";
                 }
+
+                // Only for members actually flagged: each holder row costs a
+                // pathfind, and a member out of combat has nothing to blame.
+                if (m.inCombat)
+                    CaptureCombatHolders(member, m);
 
                 if (m.alive)
                     ++snap.aliveCount;
@@ -464,7 +592,46 @@ namespace DcDiag
             AppendEscaped(s, m.victim);
             s << ",\"dcStrategy\":" << (m.dcStrategy ? "true" : "false")
               << ",\"dcCombatStrategy\":" << (m.dcCombatStrategy ? "true" : "false")
-              << '}';
+              << ",\"botState\":";
+            AppendEscaped(s, m.botState);
+            // Emitted only for a flagged member, so an absent block means "was
+            // not in combat" rather than "nothing was holding it" — the two
+            // read identically if every member carries an empty array.
+            if (m.inCombat)
+            {
+                s << ",\"attackers\":" << m.attackerCount
+                  << ",\"holderRefs\":" << m.holderRefCount;
+                AppendBool(s, "phantomCombat", m.phantomCombat);
+                s << ",\"combatHolders\":[";
+                for (std::size_t h = 0; h < m.combatHolders.size(); ++h)
+                {
+                    CombatHolderSnapshot const& c = m.combatHolders[h];
+                    if (h)
+                        s << ',';
+                    s << "{\"name\":";
+                    AppendEscaped(s, c.name);
+                    s << ",\"entry\":" << c.entry
+                      << ",\"guid\":" << c.guid
+                      << ",\"dist\":" << c.dist
+                      << ",\"hp\":" << c.healthPct
+                      << ",\"x\":" << c.x << ",\"y\":" << c.y << ",\"z\":" << c.z;
+                    AppendBool(s, "creature", c.isCreature);
+                    AppendBool(s, "pvp", c.pvp);
+                    AppendBool(s, "alive", c.alive);
+                    AppendBool(s, "sameMap", c.sameMap);
+                    AppendBool(s, "evading", c.evading);
+                    AppendBool(s, "suppressed", c.suppressed);
+                    AppendBool(s, "reachable", c.reachable);
+                    AppendBool(s, "reachChecked", c.reachChecked);
+                    AppendBool(s, "canAttackMe", c.canAttackMe);
+                    AppendBool(s, "legitimate", c.legitimate);
+                    s << ",\"victim\":";
+                    AppendEscaped(s, c.victim);
+                    s << '}';
+                }
+                s << ']';
+            }
+            s << '}';
         }
         s << "]}";
 
@@ -525,6 +692,86 @@ namespace DcDiag
             s << " pathFail=\"" << snap.pathFailureReason << "\"";
         if (!snap.stallReason.empty())
             s << " stall=\"" << snap.stallReason << "\"";
+        // Only when it is load-bearing. A member flagged with nothing on it, or
+        // flagged while sitting on the non-combat engine, is the shape of every
+        // stuck-in-combat freeze this harness has recorded — worth a token on
+        // the one line people actually grep, not just in the JSON.
+        std::uint32_t phantom = 0, offEngine = 0;
+        for (MemberSnapshot const& m : snap.members)
+        {
+            if (!m.inCombat)
+                continue;
+            if (m.phantomCombat)
+                ++phantom;
+            if (m.botState == "noncombat")
+                ++offEngine;
+        }
+        if (phantom)
+            s << " PHANTOM-COMBAT=" << phantom;
+        if (offEngine)
+            s << " FLAGGED-OFF-COMBAT-ENGINE=" << offEngine;
+        return s.str();
+    }
+
+    std::string SummarizeCombat(Snapshot const& snap)
+    {
+        if (!snap.valid)
+            return "combat blame: tank unresolvable at capture time";
+        // Derived from the member rows, NOT from inCombatCount. The counter is a
+        // separate field, and if the two ever disagree this function would
+        // report "nobody is flagged" while printing nothing about members that
+        // plainly are — a confident denial is worse than no line at all.
+        bool const anyFlagged =
+            std::any_of(snap.members.begin(), snap.members.end(),
+                        [](MemberSnapshot const& m) { return m.inCombat; });
+        if (!anyFlagged)
+            return "combat blame: nobody in the party is flagged in combat";
+
+        std::ostringstream s;
+        s.precision(1);
+        s << std::fixed;
+        bool first = true;
+        for (MemberSnapshot const& m : snap.members)
+        {
+            if (!m.inCombat)
+                continue;
+            if (!first)
+                s << " | ";
+            first = false;
+            s << m.name << " [engine=" << (m.botState.empty() ? "?" : m.botState)
+              << " attackers=" << m.attackerCount
+              << " victim=" << (m.victim.empty() ? "-" : m.victim)
+              << (m.phantomCombat ? " PHANTOM" : "") << "] held by ";
+            if (m.combatHolders.empty())
+            {
+                // Distinguish the two ways a flagged member can have nothing to
+                // show: no refs at all (the hatch's opaque case) from refs that
+                // exist but were all past the cap (impossible today, but the
+                // reader should never have to assume which).
+                s << (m.holderRefCount ? "(all rows truncated)" : "NOTHING (no combat refs)");
+                continue;
+            }
+            for (std::size_t i = 0; i < m.combatHolders.size(); ++i)
+            {
+                CombatHolderSnapshot const& c = m.combatHolders[i];
+                if (i)
+                    s << ", ";
+                s << c.name << "(" << c.entry << ")"
+                  << " " << c.dist << "yd " << c.healthPct << "%"
+                  << (c.alive ? "" : " DEAD")
+                  << (c.sameMap ? "" : " OTHER-MAP")
+                  << (c.evading ? " EVADING" : "")
+                  << (c.suppressed ? " SUPPRESSED" : "")
+                  << (!c.reachChecked ? " path-not-tested"
+                                      : (c.reachable ? " reachable" : " UNREACHABLE"))
+                  << (c.canAttackMe ? "" : " CANNOT-ATTACK-ME")
+                  << (c.legitimate ? " -> LEGITIMATE" : " -> phantom");
+                if (!c.victim.empty())
+                    s << " fighting=" << c.victim;
+            }
+            if (m.holderRefCount > m.combatHolders.size())
+                s << " (+" << (m.holderRefCount - m.combatHolders.size()) << " more refs)";
+        }
         return s.str();
     }
 }

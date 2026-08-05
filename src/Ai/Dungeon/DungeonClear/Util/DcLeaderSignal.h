@@ -121,6 +121,24 @@ public:
     // the leader, outside pull mode, or when the leader isn't mid camp-fight.
     static bool IsLeaderCampFightActive(Player* bot);
 
+    // True while `bot`'s leader is fighting a SCRIPTED PULL's camp fight
+    // (ScriptedPullRegistry stage in flight, phase Engage). The follower half of
+    // the tank's camp leash: an ordinary camp fight releases the party to stock
+    // combat, which is right when the pack is already on the tank — and wrong for
+    // a scripted pull, where the tag is taken at range so the pack arrives late
+    // and the rest of it is still standing in a room the party must not enter.
+    // Followers stay ANCHORED (not passive — they fight what comes to them) for
+    // the duration. Drives DungeonClearHoldAtCampCombatTrigger and the camp-hold
+    // action's leash radius / movement priority.
+    static bool IsLeaderScriptedCampFight(Player* bot);
+
+    // True while `bot`'s leader has ANY scripted-pull stage in flight — the tag leg
+    // and the drag as well as the camp fight. Wider than IsLeaderScriptedCampFight
+    // on purpose: the party must be kept out of the room for the WHOLE maneuver,
+    // not only once the fight lands, and the earlier phases are exactly when the
+    // room is still full of the pack that has not been pulled.
+    static bool IsLeaderScriptedPullActive(Player* bot);
+
     // The GENERAL "tank is fighting -> the party assists" gate: true when `bot`'s
     // elected leader tank is in combat on an active (enabled, unpaused) run and
     // the party is expected to pile in RIGHT NOW. Includes the advanced-pull camp

@@ -52,6 +52,7 @@
 #include "Timer.h"
 #include "World.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
+#include "Ai/Dungeon/DungeonClear/Data/SealedEncounterRegistry.h"
 #include "Ai/Dungeon/DungeonClear/DcPullContext.h"
 #include "Ai/Dungeon/DungeonClear/Util/ChunkedPathfinder.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcCombatFlag.h"
@@ -158,6 +159,56 @@ DcPartyState::SpreadGate DcPartyState::GetSpreadGate(Player* bot, AiObjectContex
         gate.maxSpread = 100000.0f;
         return gate;
     }
+    // SEALED ENCOUNTER, final approach: a tighter, TANK-anchored clump that
+    // overrides both the setting and the camp anchor below.
+    //
+    // The boss's room locks the instant the encounter starts (an InstanceScript
+    // DOOR_TYPE_ROOM door — see SealedEncounterRegistry), so the party has to cross
+    // the threshold WITH the tank, not 25yd behind it. And the camp anchor is
+    // actively wrong here: with the tank at the doorway it is still only ~45yd from
+    // Selin's camp, inside the 60yd tank-gap backstop, so a party legitimately "set"
+    // at a camp 70yd back passes every generic tolerance while being nowhere near
+    // able to follow the tank in.
+    //
+    // Scoped to approachRadius of the boss so nothing else about the run changes, and
+    // sized to what follow-tank actually delivers (it trails at min(followDistance,
+    // 6yd)), so in the healthy case this costs nothing and only a real straggler
+    // holds the tank. The hard "nobody outside the room" guarantee is the muster in
+    // DungeonClearAtBossTrigger; this is what makes it satisfiable quickly instead of
+    // being a long wait parked inside the boss's aggro radius.
+    //
+    // NOT while a SCRIPTED STAGE is in flight, and this is load-bearing rather than
+    // tidy: a stage ORDERS the followers to hold at its camp, and Selin's camp is
+    // 71.6yd from him — so a tank-anchored 10yd gate asks the party to be somewhere it
+    // has been forbidden to go, and can never pass. Live (tr-20260803-133734-1): a
+    // stage that failed to retire left the party camp-held while the tank sat inside
+    // the approach radius, and the log filled with "advance yielding: party not ready
+    // — waiting on Emandy, Toogo, Jecini (out of range)" for two and a half minutes.
+    // Exactly the circular gate the camp anchor below exists to avoid, reintroduced
+    // one branch earlier. The stage's own camp hold owns the party until it retires;
+    // only then does the approach clump have any business tightening anything.
+    if (std::optional<DungeonBossInfo> const next =
+            pull.scriptedStage >= 0
+                ? std::nullopt
+                : context->GetValue<std::optional<DungeonBossInfo>>(DcKey::NextDungeonBoss)->Get())
+    {
+        if (next->kind == DungeonAnchorKind::Boss)
+        {
+            if (SealedEncounterRow const* const sealed =
+                    SealedEncounterRegistry::Find(bot->GetMapId(), next->entry))
+            {
+                if (SealedEncounterRegistry::InApproachRange(
+                        *sealed, bot->GetPositionX(), bot->GetPositionY(),
+                        bot->GetPositionZ(), next->x, next->y, next->z))
+                {
+                    gate.maxSpread = sealed->musterSpread;
+                    gate.anchor = nullptr;   // the TANK, never the camp
+                    return gate;
+                }
+            }
+        }
+    }
+
     // Pull mode between maneuvers (Idle): hold-at-camp still pins the party at
     // the camp, so "caught up" must be measured against the camp, not the tank —
     // otherwise a camp standoff at/over PartyMaxSpread deadlocks the run (see
@@ -178,6 +229,20 @@ DcPartyState::SpreadGate DcPartyState::GetSpreadGate(Player* bot, AiObjectContex
     }
     return gate;
 }
+float DcPartyState::LeaderEffectiveMaxSpread(Player* bot)
+{
+    if (!bot)
+        return 0.0f;
+    float const own = DcSettings::GetFloat(bot, "PartyMaxSpread");
+    Player* leader = DcLeaderSignal::FindLeaderTank(bot);
+    if (!leader)
+        return own;
+    PlayerbotAI* leaderAI = GET_PLAYERBOT_AI(leader);
+    if (!leaderAI)
+        return own;   // a real-player leader runs no DC gate to be inside of
+    return GetSpreadGate(leader, leaderAI->GetAiObjectContext()).maxSpread;
+}
+
 DcPartyState::RestGate DcPartyState::GetRestGate(Player* bot, AiObjectContext* context)
 {
     RestGate gate;  // 0/0 — spread-only readiness

@@ -180,6 +180,51 @@ namespace DcActionShared
 
     // Turn the bot to face `unit` if it is not already roughly facing it.
     void DcFaceIfNeeded(Player* bot, Unit* unit);
+
+    // A PULL MANEUVER OWNS THE TANK — the ACTION-side half of the stand-down the
+    // route triggers (DungeonClearIdleTrigger / DungeonClearAtBossTrigger) already
+    // perform. Call it at the top of any rung whose destination is the ROUTE (the
+    // next boss), before it issues movement; it returns true when that rung must
+    // stand down, and logs why.
+    //
+    // It has to be re-asked here because a trigger cannot un-queue an action. The
+    // engine's queue is a member and survives ticks: a basket is pushed when its
+    // trigger fires and is consumed only when its action is finally popped —
+    // which, while a pull maneuver runs, it is not. The pull rung (relevance 35)
+    // executes and BREAKS the action loop every tick, so a route basket pushed on
+    // the tick the pull committed just sits there, outliving the trigger that
+    // pushed it.
+    //
+    // It gets its turn on the first tick BOTH pull rungs go dark, and there is
+    // exactly one such tick per pull: the one right after a RANGED tag. Combat has
+    // started, so DungeonClearPullTrigger (non-combat) returns !IsInCombat() ==
+    // false; the bot has not been flipped onto the combat engine yet (engine
+    // transitions are action-driven, not derived from the combat flag), so
+    // DungeonClearPullManeuverTrigger cannot run either. The stale route basket is
+    // then the top live rung, and what it does with the tick is drive the tank at
+    // the boss — forward into the room the pull is dragging out of.
+    //
+    // Live (tr-20260803-194800-14, Magisters' Terrace, Selin's east guard pack):
+    //   19:52:08 advanced-pull: ranged tag spell 16857 at 28.8yd
+    //   19:52:08 advance window: leg 0 violates bystander sphere ... (r=28.1)
+    //            -> too close to honour, gliding 10 -> 10 pts
+    //   19:52:08 spline issued: 10 pts, 37.3yd, delay=5000ms,
+    //            from=(210.9,9.1,-2.8) to=(242.7,19.7,-0.8)
+    //   19:52:09 advanced-pull: aggro confirmed at 44.7yd from camp -> dragging
+    //   19:52:15 scripted-pull: drag lost ground to camp (26.2yd vs best 22.6)
+    //            — something else is driving the tank
+    // The window it glided through was KNOWN to cross a bystander's aggro sphere
+    // and was honoured anyway ("too close to honour") — which is what wakes the
+    // packs the plan exists to leave alone, and is the reported "runs forward into
+    // the room aggroing everything". Exactly ONE advance execution, on exactly the
+    // tick both pull rungs were dark: the signature of a queued basket, not of a
+    // trigger passing. S1448 closed the trigger and the same spline came back,
+    // because the trigger was never the way in.
+    //
+    // Mirrors BOTH of the triggers' gates, not just the scripted one: the tag ->
+    // drag handoff window is identical for an ordinary advanced pull and for a
+    // pull-back, and so is the damage a boss-bound glide does inside it.
+    bool PullOwnsTheTank(Player* bot, AiObjectContext* ctx, char const* rung);
 }  // namespace DcActionShared
 
 #endif

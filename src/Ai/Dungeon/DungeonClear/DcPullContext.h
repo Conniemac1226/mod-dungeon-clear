@@ -83,6 +83,95 @@ struct DcPullContext
                                                  // whole point is reaching the anchor,
                                                  // so planting early would drop the
                                                  // fight back in the water.
+    int32       scriptedStage = -1;              // ORDER of the ScriptedPullRegistry
+                                                 // stage this pull is executing, or
+                                                 // -1 for an ordinary pull. Set at
+                                                 // commit, cleared at the Engage
+                                                 // cleanup (per-PULL, like
+                                                 // bossPullback — leaving it set
+                                                 // would keep the whole pipeline
+                                                 // force-enabled and pinned to a
+                                                 // finished stage for the rest of
+                                                 // the run). Four things key on it:
+                                                 // the camp and the tag's stand spot
+                                                 // come from the row instead of
+                                                 // being computed, the tag/return
+                                                 // legs get a distance-sized
+                                                 // watchdog (the authored lane is
+                                                 // far longer than a corridor pull's
+                                                 // few yards), and BOTH the chase
+                                                 // leash and turn-and-plant are
+                                                 // suppressed — the plan says where
+                                                 // the fight happens, so neither is
+                                                 // free to move it.
+    float       scriptedReturnBest = 0.0f;       // closest the tank has been to the
+                                                 // camp on the CURRENT scripted
+                                                 // drag-back. A ratchet: the drag
+                                                 // is only allowed to close, so
+                                                 // losing ground against it is
+                                                 // proof something else owns the
+                                                 // tank's movement and the leg must
+                                                 // be re-issued from scratch. 0 =
+                                                 // no scripted leg in progress.
+    float       campHoldBest = 0.0f;             // FOLLOWER-owned (like
+                                                 // campSafetySince): closest this
+                                                 // bot has been to its camp slot on
+                                                 // the current recall. The same
+                                                 // losing-ground ratchet the tank's
+                                                 // drag-back uses — a recall that
+                                                 // re-issues one unchanged
+                                                 // destination is deduped into a
+                                                 // no-op, so only distance can tell
+                                                 // us another generator has the
+                                                 // bot. 0 = parked / no recall.
+    bool        scriptedRecall = false;          // the scripted camp LEASH is
+                                                 // currently walking the tank back
+                                                 // (see DC_SCRIPTED_PULL_LEASH).
+                                                 // A latch, not a per-tick test, so
+                                                 // the recall runs to the camp
+                                                 // instead of stopping the instant
+                                                 // the tank re-enters the leash
+                                                 // radius and being re-tripped by
+                                                 // the next chase step — the
+                                                 // in-out oscillation a bare
+                                                 // threshold produces.
+    float       scriptedRecallBest = 0.0f;       // closest the tank has been to the
+                                                 // camp on the CURRENT leash recall.
+                                                 // The third site of the same
+                                                 // ratchet as scriptedReturnBest and
+                                                 // campHoldBest, and the last one to
+                                                 // get it: a recall re-issuing one
+                                                 // unchanged destination is deduped
+                                                 // into a no-op, so while a chase
+                                                 // generator owns the tank the
+                                                 // recall is silent AND the
+                                                 // standing-still backstop is blind
+                                                 // (the bot is moving — outward).
+                                                 // Only distance can see it.
+    float       scriptedEngageHp = -1.0f;        // summed health % of this stage's
+                                                 // pack members still on the party's
+                                                 // attacker lists — the camp fight's
+                                                 // PROGRESS SIGNATURE, and the only
+                                                 // clock the Engage phase has. -1 is
+                                                 // "not sampled yet".
+    uint32      scriptedEngageSince = 0;         // ms the signature above last
+                                                 // CHANGED. A camp fight is bounded
+                                                 // by progress rather than by a wall
+                                                 // clock: a long legitimate fight
+                                                 // moves health every few seconds and
+                                                 // can never trip, while a fight that
+                                                 // has stopped happening trips on
+                                                 // schedule however long the run has
+                                                 // otherwise been going.
+                                                 // 0 = no recall in flight.
+    bool        scriptedForced = false;          // the scripted stage RAISED the
+                                                 // pull-mode bool (a plan runs at
+                                                 // any pull setting, exactly like a
+                                                 // pull-back). Remembered so the
+                                                 // bool and the leader's daze
+                                                 // immunity are handed back to the
+                                                 // player's setting when the plan
+                                                 // ends, and only then.
     bool        losPull    = false;              // this pull targets a RANGED pack
                                                  // and the camp was placed to break
                                                  // line of sight to it (rangers must

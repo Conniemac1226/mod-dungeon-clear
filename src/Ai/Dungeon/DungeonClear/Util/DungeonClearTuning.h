@@ -136,6 +136,24 @@ constexpr float DC_CORRIDOR_WIDTH = 18.0f;
 // trigger and the pull action must agree on when a pull starts.
 constexpr float DC_PULL_START_RANGE = 26.0f;
 
+// How long the route-driving rungs (idle/advance and at-boss) stand down for a
+// pull maneuver that has left phase Idle.
+//
+// The stand-down itself closes a real hole: relevance keeps advance (15) below
+// pull (35) during a healthy maneuver, but BOTH pull rungs go quiet in the window
+// between a ranged tag landing and the pack arriving — the non-combat pull trigger
+// returns !IsInCombat() for any non-Idle phase, and the drag-back trigger lives on
+// the combat engine the bot has not been flipped onto yet. Advance is then the top
+// live rung and routes the tank at the next BOSS, mid-pull. (Magisters' Terrace,
+// tr-20260802-215715-3: a 69.8yd escort spline to Selin issued on the tag tick,
+// which the drag-back then fought for five seconds.)
+//
+// The bound is what keeps the cure from being worse than the disease. Every leg
+// carries its own watchdog and the Engage phase is cleaned up out of combat, so a
+// healthy maneuver never comes near this; it exists only so a wedged phase cannot
+// silence the run's driver forever.
+constexpr uint32 DC_PULL_ADVANCE_STANDDOWN_MAX_MS = 30000;
+
 // How long a camp write by the pull machinery (prospective publish, commit,
 // dynamic seed, unplanned-aggro fresh camp) counts as "fresh". While fresh, the
 // pull action owns the camp and Advance's scout camp-trailing stands down; once

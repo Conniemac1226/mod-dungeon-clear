@@ -307,3 +307,32 @@ AC_ADD_CONFIG_FILE("${CMAKE_CURRENT_LIST_DIR}/conf/mod_dungeon_clear.conf.dist")
 #    the post-combat rez clock. MayDrive / IsPhantomFlag / AnyPartyEngagement,
 #    all over DungeonClearMath::MayDriveWhileFlagged's grace.)
 # (this comment bumps mtime to force CMake re-glob on next build)
+# Util/DcTankForm.{h,cpp}
+#   (pre-pull shapeshift gate — the mirror of DcFormGate. A feral druid is only
+#    ever shifted by BearDruidStrategy's "bear form" trigger, which is
+#    combat-engine only, while every DC pull is opened on the NON-combat engine;
+#    so the druid tank tagged in caster form, ate the pack's opener at caster
+#    armour, and shifted a beat late. EnsureBearForm is called fire-and-forget
+#    from DungeonClearPullAction (whenever a pull is live) and from EngageDirect
+#    (inside DC_PULL_START_RANGE), so nothing can wait on a form that won't go
+#    up.)
+# Data/ScriptedPullRegistry.{h,cpp}
+#   (hand-authored "peel this pack out of that room, in this order, from this
+#    exact spot" plans — the third member of the positional-override family, and
+#    the middle ground between FightInPlaceRegistry, which FORBIDS a pull, and
+#    BossPullbackRegistry, which MANDATES one for a boss. A row names the party
+#    camp, the tank's stand spot (the one place with line of sight to exactly one
+#    pack), the pack's cylinder + entry filter, and its position in the pull
+#    sequence. Selin Fireheart's room is the case it exists for: every pack in it
+#    shares sight-lines with the boss, so the safe spots are facts about the
+#    room's walls that no aggro-radius or navmesh probe can derive.)
+# Data/SealedEncounterRegistry.{h,cpp}
+#    (SEALED ENCOUNTERS: bosses whose room LOCKS on encounter start, via an
+#    InstanceScript DOOR_TYPE_ROOM door held `open &= (state != IN_PROGRESS)`.
+#    Magisters' Terrace registers one for Selin Fireheart — the Assembly Chamber
+#    Door 188065 at (215.1, 0.4) — so engaging him shuts the only way in and any
+#    follower still in the corridor spends the whole fight at a closed door. A row
+#    names the sealed VOLUME, because the tank crosses the threshold before it
+#    engages and so a radius around the tank cannot express "will be locked out";
+#    plus a tank-anchored clump radius for the final approach, which is what makes
+#    the muster satisfiable without a long wait inside the boss's aggro range.)

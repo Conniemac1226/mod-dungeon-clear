@@ -91,6 +91,15 @@ namespace DcRel
     // legitimately fires; it never contends with real content because the trigger is
     // inert whenever anything is actually fightable. See
     // DungeonClearBreakStuckCombatTrigger / DungeonClearMath::ShouldBreakStuckCombat.
+    //
+    // Registered in BOTH engines (like HazardVacate), and listed here rather than in
+    // the non-combat block only because the flag it clears is a combat one. The
+    // non-combat half is the load-bearing one: `drop target` (stock, relevance 99)
+    // can move a still-flagged bot onto the NON-combat engine, where every DC rung
+    // bails on IsInCombat() and every combat rung — including this hatch, while it
+    // was combat-only — is out of reach. 65 also tops the non-combat ladder
+    // (HealReposition 41, HazardVacate 55), which is what it needs: the recovery
+    // must beat the driving rungs it is unblocking. See DungeonClearStrategy.
     inline constexpr float BreakStuckCombat       = 65.0f; // phantom-combat force-clear
     inline constexpr float HakkarSuppressorCombat = 64.0f; // ST Hakkar combat side
     inline constexpr float HakkarFlameCombat      = 63.0f;

@@ -28,12 +28,17 @@
 #include "MotionMaster.h"
 #include "MoveSplineInitArgs.h"
 #include "ObjectAccessor.h"
+#include "ObjectMgr.h"
 #include "PathGenerator.h"
+#include "Item.h"
+#include "ItemTemplate.h"
 #include "Player.h"
 #include "PlayerbotAIConfig.h"
 #include "Position.h"
 #include "ServerFacade.h"
 #include "SharedDefines.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "Ai/Dungeon/DungeonClear/DcApproachState.h"
 #include "Ai/Dungeon/DungeonClear/Data/DcEventDoorRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
@@ -98,26 +103,156 @@ namespace DcActionShared
     }
 
 
-    // Resolve PickPullSpell to a usable spell id, but ONLY if the tank itself
-    // trained it. botAI->CastSpell(name) is NOT a sufficient gate on its own:
-    // the "spell id" value falls back to the bot's PET spellbook when the bot
-    // doesn't know the spell, and CastSpell then builds the spell on the bot
-    // regardless of knowledge — i.e. the server quietly FORCES the tank to "cast"
-    // a pull it never learned. Resolving the id here and requiring
-    // bot->HasSpell(id) (player-only; never the pet) means an untrained tank
-    // returns nullopt and just walks in to body-tag instead.
+    // The EQUIPPED RANGED WEAPON as an opener, when the class ability isn't
+    // available. Mirrors playerbots' own CastShootAction: read the ranged slot and
+    // use the auto-shot for what is in it — 3018 "Shoot" for a bow/gun/crossbow,
+    // 2764 "Throw" for a thrown weapon.
+    //
+    // This is not a nicety. A warrior's class opener is HEROIC THROW, which is
+    // learned at level 71 — so at the level dungeons are run, EVERY warrior tank
+    // falls through the class table and body-tags. That is tolerable in a corridor
+    // and not tolerable at all for a plan whose entire premise is tagging from a
+    // measured spot without moving off it. A thrown/ranged auto-shot covers exactly
+    // that gap, at real range, for any class whose ability is missing or untrained.
+    std::optional<ResolvedPullSpell> ResolveRangedWeaponPull(PlayerbotAI* botAI, Player* bot)
+    {
+        if (!botAI || !bot)
+            return std::nullopt;
+        Item const* const ranged =
+            bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED);
+        if (!ranged || !ranged->GetTemplate())
+            return std::nullopt;
+
+        uint32 shootId = 0;
+        uint32 ammoSubClass = 0;
+        bool needsAmmo = false;
+        switch (ranged->GetTemplate()->SubClass)
+        {
+            case ITEM_SUBCLASS_WEAPON_GUN:
+                shootId = 3018;
+                needsAmmo = true;
+                ammoSubClass = ITEM_SUBCLASS_BULLET;
+                break;
+            case ITEM_SUBCLASS_WEAPON_BOW:
+            case ITEM_SUBCLASS_WEAPON_CROSSBOW:
+                shootId = 3018;
+                needsAmmo = true;
+                ammoSubClass = ITEM_SUBCLASS_ARROW;
+                break;
+            case ITEM_SUBCLASS_WEAPON_THROWN:
+                shootId = 2764;
+                break;
+            default: return std::nullopt;   // wand/relic/idol — not a pull
+        }
+
+        // DELIBERATELY NO HasSpell GATE HERE, unlike the class opener above.
+        //
+        // "Shoot" (3018) and "Throw" (2764) are not learned spells in 3.3.5 — they
+        // come with the equipped weapon, and nothing puts them in a spellbook. So
+        // HasSpell is false for them on EVERY character: a query across this realm's
+        // whole `character_spell` table returns zero rows for 3018, 2764, 75 and
+        // 5019. This function carried that gate from the day it was written, which
+        // made the entire ranged fallback dead code — it could never once have fired,
+        // and the level-70 warrior it exists for went on body-tagging (live: prot
+        // warrior Ushkuk, tr-20260803-124151-3, with The Boomstick equipped and 1000
+        // rounds in the bag).
+        //
+        // The gate is right for the class opener and wrong here, and the difference
+        // is the name lookup. There, the id comes from the "spell id" VALUE resolved
+        // from a name, which falls through to the bot's PET spellbook when the bot
+        // doesn't know it — so without HasSpell the server is asked to force a pull
+        // the tank never learned. Here the id is a literal, there is no name and no
+        // pet to confuse it with, and the real precondition is the WEAPON. Which is
+        // exactly how playerbots' own CastShootAction does it: shootSpellId straight
+        // to CanCastSpell/CastSpell, no HasSpell anywhere.
+        //
+        // What DOES have to be checked is ammunition. A gun, bow or crossbow with an
+        // empty ammo slot cannot fire, and the failure would land on the caller as a
+        // silently-failed cast — which for a scripted pull means a body-tag walk into
+        // the room the plan exists to stay out of. A thrown weapon needs none.
+        //
+        // AND IT HAS TO BE THE RIGHT AMMUNITION. "Is the slot non-empty" was the
+        // obvious reading and it is not the condition the server checks: a gun takes
+        // BULLETS and a bow or crossbow takes ARROWS, and loading one into the other
+        // is not a partial success but an outright SPELL_FAILED_NO_AMMO. Because the
+        // slot is occupied, every "do I have ammo" test upstream passes and the only
+        // symptom is a cast that quietly returns false.
+        //
+        // Live (tr-20260803-154419-13 and -17): both prot warriors carried Rifle of
+        // the Stoic Guardian — a gun — with Timeless Arrows loaded, so the whole
+        // ranged fallback resolved happily and then failed at the cast every tick. A
+        // warrior has no class opener at 70 either (Heroic Throw is 71), so the tank
+        // had nothing at all: it stood on Selin's east stand spot for the full 47s leg
+        // budget without pulling and then walked into the room. Every druid and
+        // paladin tank in the same plan pulled normally, which is exactly why it read
+        // as random rather than as a gear bug.
+        //
+        // Rejecting the mismatch here is what turns that into an honest fall-through:
+        // no pull spell resolves, so the caller stops waiting on a tag that can never
+        // land. (The provisioning side of the same bug — InitAmmo re-run only for
+        // hunters after the spec re-gear swapped the weapon — is fixed in
+        // DcTestRunJob; this is the guard for a real player's mismatched slot.)
+        if (needsAmmo)
+        {
+            uint32 const ammoId = bot->GetUInt32Value(PLAYER_AMMO_ID);
+            if (!ammoId)
+                return std::nullopt;
+            ItemTemplate const* const ammo = sObjectMgr->GetItemTemplate(ammoId);
+            if (!ammo || ammo->Class != ITEM_CLASS_PROJECTILE ||
+                ammo->SubClass != ammoSubClass)
+                return std::nullopt;
+        }
+
+        // THE SPELL'S OWN RANGE, from the spell store — the second reason this
+        // fallback never worked.
+        //
+        // It used to ask botAI->GetRange("shoot"), described here as the "real weapon
+        // range". It is nothing of the sort: PlayerbotAI::GetRange maps "shoot"
+        // straight to sPlayerbotAIConfig.shootDistance, a config knob for how close a
+        // bot likes to stand when shooting, which defaults to 5.0 and is not set in
+        // this deployment. So the pick came back as min 8 / max 5 — an empty interval.
+        // Even with the HasSpell gate gone, the caller's `d >= minRange && d <=
+        // maxRange` could never be satisfied at any distance.
+        //
+        // The number that governs is the one the server will check, and Spell::Check
+        // Range uses GetSpellMaxRangeForTarget — the spell's range, full stop.
+        // ItemTemplate::RangedModRange is loaded but only ever sent to the client, so
+        // the weapon does not scale it. Both auto-shots are 0-30yd, which is why the
+        // 8yd floor from the class table carries over unchanged: every entry there is
+        // 8/30 too, and this is the same reach by a different route.
+        SpellInfo const* const info = sSpellMgr->GetSpellInfo(shootId);
+        if (!info)
+            return std::nullopt;
+        float const maxRange = info->GetMaxRange(/*positive*/ false);
+        if (maxRange <= 0.0f)
+            return std::nullopt;
+        return ResolvedPullSpell{shootId, 8.0f, maxRange};
+    }
+
+    // Resolve the opener to a usable spell id, but ONLY one the tank itself
+    // trained — a rule that applies to the CLASS OPENER and not to the ranged-weapon
+    // fallback below it; see ResolveRangedWeaponPull for why the distinction matters
+    // and what it cost to conflate them.
+    // botAI->CastSpell(name) is NOT a sufficient gate on its own: the
+    // "spell id" value falls back to the bot's PET spellbook when the bot doesn't
+    // know the spell, and CastSpell then builds the spell on the bot regardless of
+    // knowledge — i.e. the server quietly FORCES the tank to "cast" a pull it never
+    // learned. Requiring bot->HasSpell(id) (player-only; never the pet) means an
+    // untrained tank falls through to the ranged weapon, and only then walks in.
     std::optional<ResolvedPullSpell> ResolvePullSpell(PlayerbotAI* botAI, Player* bot)
     {
         if (!botAI || !bot)
             return std::nullopt;
-        auto pick = PickPullSpell(bot);
-        if (!pick)
-            return std::nullopt;
-        uint32 const spellId =
-            botAI->GetAiObjectContext()->GetValue<uint32>(DcKey::Stock::SpellId, pick->name)->Get();
-        if (!spellId || !bot->HasSpell(spellId))
-            return std::nullopt;
-        return ResolvedPullSpell{spellId, pick->minRange, pick->maxRange};
+        if (auto pick = PickPullSpell(bot))
+        {
+            uint32 const spellId =
+                botAI->GetAiObjectContext()->GetValue<uint32>(DcKey::Stock::SpellId, pick->name)->Get();
+            if (spellId && bot->HasSpell(spellId))
+                return ResolvedPullSpell{spellId, pick->minRange, pick->maxRange};
+        }
+        // No class opener, or the tank never trained it (the level-70 warrior case).
+        // Fall back to whatever is in the ranged slot before giving up and walking in.
+        return ResolveRangedWeaponPull(botAI, bot);
     }
 
 
@@ -508,6 +643,41 @@ namespace DcActionShared
         if (!bot || !unit || unit == bot || bot->HasInArc(CAST_ANGLE_IN_FRONT, unit))
             return;
         ServerFacade::instance().SetFacingTo(bot, unit);
+    }
+
+    // See the header for why a rung whose destination is the ROUTE has to re-ask
+    // this after its own trigger already answered it.
+    bool PullOwnsTheTank(Player* bot, AiObjectContext* ctx, char const* rung)
+    {
+        if (!bot || !ctx)
+            return false;
+
+        DcPullContext const& pull = ctx->GetValue<DcPullContext&>(DcKey::PullContext)->Get();
+
+        // A latched scripted row owns the tank outright, with no timing window:
+        // the plan decides where it stands, walks and drags, and its destination
+        // is never the boss. Unbounded is safe because the maneuver retires the
+        // row as soon as its pack is off the party, whatever the combat flag says.
+        bool const scriptedLatched = pull.scriptedStage >= 0;
+        // Any other maneuver owns it for the bounded valve — long enough to cover
+        // the legs, short enough that a wedged phase can never silence the run's
+        // only driver forever.
+        bool const midManeuver =
+            pull.phase != DcPullPhase::Idle &&
+            getMSTimeDiff(pull.phaseSince, getMSTime()) < DC_PULL_ADVANCE_STANDDOWN_MAX_MS;
+
+        if (!scriptedLatched && !midManeuver)
+            return false;
+
+        // Logged because REACHING this line is itself the diagnosis: the trigger
+        // stood this rung down and the engine ran it anyway off a stale basket.
+        // If this line never appears again the race is closed; if it does, it names
+        // the rung that would have driven the tank.
+        DC_PULL_DEBUG("[DC:{}] {} stood down: a pull owns the tank (phase {}, "
+                      "scripted stage {}) — already-queued basket",
+                      bot->GetName(), rung ? rung : "route rung",
+                      static_cast<uint32>(pull.phase), pull.scriptedStage);
+        return true;
     }
 
 }  // namespace DcActionShared

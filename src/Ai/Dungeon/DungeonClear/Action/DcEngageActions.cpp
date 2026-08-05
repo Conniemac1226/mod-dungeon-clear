@@ -62,6 +62,7 @@
 #include "Ai/Dungeon/DungeonClear/Util/DcRezRecovery.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcStrandedRecovery.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcSmartRest.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcTankForm.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTargeting.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTickMemo.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcWaitAtBossDecision.h"
@@ -333,6 +334,21 @@ bool DungeonClearEngageActionBase::EngageDirect(Unit* target)
         ? (bot->GetCombatReach() + target->GetCombatReach() + 1.0f)
         : (botAI->GetRange("spell") - CONTACT_DISTANCE);
     float const distance = bot->GetExactDist(target);
+
+    // A druid tank engages as a BEAR. This walk-in is the OTHER way DC opens a
+    // fight (the Leeroy path, boss engages, room clears) and, like the advanced
+    // pull, it runs entirely on the non-combat engine — so the combat-only
+    // "bear form" trigger doesn't fire until the pack has already landed its
+    // opener on a caster-form tank. Shift on the way in; the form is instant and
+    // costs the approach nothing. See DcTankForm.
+    //
+    // Ranged-gated at the pull commit distance rather than fired the moment a
+    // target exists: past that the tank is still crossing open ground where the
+    // between-pulls machinery (Smart Rest drinking) needs caster form, and
+    // nothing can aggro it yet anyway. Inside it, the opener — the class pull
+    // spell below, or the committed run-in — is the very next thing to happen.
+    if (distance <= DC_PULL_START_RANGE)
+        DcTankForm::EnsureBearForm(botAI);
 
     if (distance > attackRange)
     {
@@ -760,6 +776,15 @@ bool DungeonClearEngageBossAction::Execute(Event event)
 {
     // Pause guard — same already-queued-action race as DungeonClearAdvanceAction.
     if (DcRun::Of(context).paused)
+        return false;
+
+    // Pull-ownership guard — the same race, and STRICTLY worse here: this rung
+    // outranks advance (30 vs 15), so wherever both baskets are stale this is the
+    // one that wins the post-tag tick, and its destination is the boss itself. A
+    // trash pull taken inside engage range would become the boss pull.
+    // DungeonClearAtBossTrigger already stands down for the maneuver; this is the
+    // action-side half it cannot enforce. See DcActionShared::PullOwnsTheTank.
+    if (PullOwnsTheTank(bot, context, "engage boss"))
         return false;
 
     std::optional<DungeonBossInfo> next = AI_VALUE(std::optional<DungeonBossInfo>, DcKey::NextDungeonBoss);

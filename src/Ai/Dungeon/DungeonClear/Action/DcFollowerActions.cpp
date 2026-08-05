@@ -49,8 +49,11 @@
 #include "Ai/Dungeon/DungeonClear/Util/ChunkedPathfinder.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcDoorPolicy.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcMovement.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcPartyState.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcPathWorker.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcRezRecovery.h"
+#include "Ai/Dungeon/DungeonClear/Data/FightInPlaceRegistry.h"
+#include "Ai/Dungeon/DungeonClear/Data/ScriptedPullRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTargeting.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTickMemo.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearTuning.h"
@@ -268,7 +271,16 @@ bool DungeonClearFollowTankAction::Execute(Event /*event*/)
         // lands strictly inside the gate. At the default 25yd spread / 15yd lag this
         // is a no-op (15 < 25 - 6).
         constexpr float kScoutLagSpreadMargin = kTrailArrival + 2.0f;
-        float const maxSpread = DcSettings::GetFloat(bot, "PartyMaxSpread");
+        // The spread the TANK IS ACTUALLY ENFORCING, not the PartyMaxSpread setting.
+        // GetSpreadGate overrides that setting — waived while a maneuver holds,
+        // tightened on a sealed-encounter final approach — so clamping against the raw
+        // value can order this follower to hold outside the gate the tank is waiting
+        // on, and neither side ever moves. That is precisely the deadlock this clamp
+        // exists to prevent, one indirection further out; see
+        // DcPartyState::LeaderEffectiveMaxSpread for the live case
+        // (tr-20260803-134213-2, 365+ "advance yielding: party not ready" against
+        // "scout-lag: holding at trail point (18.2yd behind tank, lag 15.0)").
+        float const maxSpread = DcPartyState::LeaderEffectiveMaxSpread(bot);
         float const lag =
             std::min(DcSettings::GetFloat(bot, "PullDynamicPartyLag"),
                      std::max(2.0f, maxSpread - kScoutLagSpreadMargin));
@@ -559,6 +571,22 @@ bool DungeonClearCampHoldActionBase::Execute(Event /*event*/)
     // engine can run the in-place heal cast.
     bool const isHealer = PlayerbotAI::IsHeal(bot);
 
+    // SCRIPTED PULL: nobody may be INSIDE THE ROOM, ever.
+    //
+    // A radius is the wrong shape for this on its own, and the live runs proved it:
+    // the leash let a follower drift the whole 12yd toward the room before anything
+    // reacted, and it spent that drift logging "parked" — i.e. YIELDING the tick to
+    // the very chase that was carrying it — because it was still inside the radius.
+    // What the plan forbids is a PLACE, and the fight-in-place row already names it
+    // exactly: the same box that keeps the pull pipeline out of Selin's room keeps
+    // the party out of it. An in-room follower is recalled regardless of how far
+    // camp happens to be; the radius below only handles ordinary drift on safe
+    // ground.
+    bool const scriptedCamp = DcLeaderSignal::IsLeaderScriptedPullActive(bot);
+    bool const inNoGoRoom =
+        scriptedCamp && FightInPlaceRegistry::IsNoPullZone(
+                            bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY());
+
     // Go passive (attack nothing) ONLY while the tank is actually tagging (a
     // holding phase). While merely holding at camp between pulls the party stays
     // ready to defend; the reaper strips any DC passive once we leave a holding
@@ -683,9 +711,40 @@ bool DungeonClearCampHoldActionBase::Execute(Event /*event*/)
     // the slot with a tight tolerance (the wide hold radius would let the bot stop
     // before the variance ever showed); fall back to the anchor when the slot
     // probe failed (slot == camp).
+    // SCRIPTED PULL camp FIGHT: anchored, but on a LEASH rather than the tight slot
+    // pin. A follower here is fighting — it needs room to close on whatever reached
+    // the camp, step out of a cleave, take a heal angle — and pinning it to a 2yd
+    // slot mid-fight would fight its own rotation every tick.
+    //
+    // DC_SCRIPTED_PULL_FOLLOWER_LEASH, not the tank's 12yd: the tank plants ON the
+    // camp and the pack piles onto it there, so a melee follower needs about 8yd
+    // of reach and no more. The tank's number was simply too generous
+    // borrowed here — a follower allowed 12yd of drift spends all 12 of them
+    // logging "parked" and yielding the tick to the chase that is carrying it, and
+    // arrives at the doorway before anything objects.
+    //
+    // BUT ONLY DURING THE FIGHT (!passive). While the tank is away tagging there is
+    // nothing to fight and nothing to leave room for, and a radius is not a place: a
+    // follower stops the instant it crosses the boundary, so it settles in a SHELL at
+    // the leash distance, on whichever side it walked in from. That is fine when the
+    // camp is a few yards behind the tank and invisible in the noise. It is not fine
+    // for an authored camp reached down a corridor — every follower stops short, on
+    // the corridor side, and the party stands the full leash away from the point the
+    // row names, in different cover, facing a different sight-line.
+    //
+    // Live (tr-20260803-121459-1): the row said (134.14, -14.36). Every passive tick
+    // logged "parked" at 6.0-7.9yd and never once inside, and the party actually
+    // stood at (139.79, -7.66) — 8.8yd out, up the corridor. The reported
+    // symptom was "the party camped nowhere near the coords I gave you", and it was
+    // exactly right: the TANK's camp was the authored point, the party's was not.
+    // While passive, therefore, they take the ordinary tight slot pin like any other
+    // held follower, which is what puts them on the coordinate.
     Position const slot = DcPullPlanner::ComputeCampSlot(bot, camp);
     float const toCamp = bot->GetExactDist(&slot);
-    if (toCamp <= DC_PULL_SLOT_RADIUS)
+    float const parkRadius = (scriptedCamp && !passive)
+                                 ? DC_SCRIPTED_PULL_FOLLOWER_LEASH
+                                 : DC_PULL_SLOT_RADIUS;
+    if (toCamp <= parkRadius && !inNoGoRoom)
     {
         DcMovement::StopBot(bot, DcMovement::Stop::Soft);
         // A waiting party watches their tank work: face the LEADER (not the
@@ -693,6 +752,8 @@ bool DungeonClearCampHoldActionBase::Execute(Event /*event*/)
         DcFaceIfNeeded(bot, DcLeaderSignal::FindLeaderTank(bot));
         DC_PULL_TRACE("[DC:{}] hold-at-camp: parked ({:.1f}yd, passive={})",
                       bot->GetName(), toCamp, passive);
+        // Settled: re-arm the losing-ground ratchet for the next recall.
+        context->GetValue<DcPullContext&>(DcKey::PullContext)->Get().campHoldBest = 0.0f;
         // During a holding phase (the tank is tagging) OWN the tick so nothing can
         // break the hold while the pull is live. While merely camped between pulls
         // (scout phase, passive==false) YIELD so the party can rest / loot at camp
@@ -713,14 +774,65 @@ bool DungeonClearCampHoldActionBase::Execute(Event /*event*/)
     // (the "party didn't run back, chaos" case). While merely scouting between pulls
     // (passive == false, usually out of combat) NORMAL is right: it must NOT stomp
     // the loot/rest pipeline the party runs at camp.
-    MovementPriority const prio = passive ? MovementPriority::MOVEMENT_COMBAT
-                                          : MovementPriority::MOVEMENT_NORMAL;
+    // A scripted camp fight needs COMBAT priority for the same reason `passive`
+    // does, and more urgently: the follower is IN combat with a stock MoveChase
+    // generator already installed and aimed at a mob still inside the room, so a
+    // MOVEMENT_NORMAL recall loses to it outright and the leash never bites.
+    MovementPriority const prio = (passive || scriptedCamp)
+                                      ? MovementPriority::MOVEMENT_COMBAT
+                                      : MovementPriority::MOVEMENT_NORMAL;
+    // LOSING GROUND. The recall re-issues the SAME destination every tick, and
+    // DcMoveTo dedupes on destination — so once another generator has the bot, the
+    // recall reports "already going there", issues nothing, and the follower sails
+    // away logging moved=false. The standing-still backstop below cannot see it
+    // either, because the bot is moving perfectly well; just outward.
+    //
+    // Live (tr-20260802-234400-1): a PASSIVE healer was carried from 1.7yd to 15yd
+    // with moved=false on every tick, and a rogue drifted 0 -> 11.9yd while its own
+    // action logged "parked" each step. Same ratchet the tank's drag-back uses:
+    // give up ground against the best-so-far and the leg is hard-cancelled so the
+    // next MoveTo genuinely re-issues.
+    DcPullContext& ownPull = context->GetValue<DcPullContext&>(DcKey::PullContext)->Get();
+    if (ScriptedPullLostGround(ownPull.campHoldBest, toCamp))
+    {
+        DcMovement::StopBot(bot, DcMovement::Stop::HardPin);
+        DcMovement::ClearMovementWait(bot);
+        DC_PULL_DEBUG("[DC:{}] hold-at-camp: losing ground ({:.1f}yd vs best {:.1f}) "
+                      "-> cancelled whatever is carrying us and re-issuing",
+                      bot->GetName(), toCamp, ownPull.campHoldBest);
+        ownPull.campHoldBest = toCamp;
+    }
+    else if (toCamp < ownPull.campHoldBest || ownPull.campHoldBest <= 0.0f)
+        ownPull.campHoldBest = toCamp;
+
     bool const moved =
         DcMoveTo(bot->GetMapId(), slot.GetPositionX(), slot.GetPositionY(), slot.GetPositionZ(),
                /*idle*/ false, /*react*/ false, /*normal_only*/ false,
                /*exact_waypoint*/ false, prio);
-    DC_PULL_TRACE("[DC:{}] hold-at-camp: walking to camp ({:.1f}yd, passive={}, moved={})",
-                  bot->GetName(), toCamp, passive, moved);
+    DC_PULL_TRACE("[DC:{}] hold-at-camp: walking to camp ({:.1f}yd, passive={}, moved={}, "
+                  "inRoom={})", bot->GetName(), toCamp, passive, moved, inNoGoRoom);
+
+    // BACKSTOP — the recall was refused, the bot is standing still, and a stale
+    // EQUAL-priority movement wait is what is holding it down. IsWaitingForLastMove
+    // only yields to a STRICTLY greater priority, so a combat mover that grabbed
+    // this follower a moment ago (the camp assist seeding a target and flipping it
+    // to the combat engine is the usual culprit) silently starves every recall tick
+    // for the rest of its budget — and the action returns true either way, so it
+    // looks perfectly healthy in the log while the follower drifts.
+    //
+    // Live (Magisters' Terrace, tr-20260802-233048-11): a hunter logged
+    // "walking to camp ... moved=false" from 13.6yd out to 21.1yd, interleaved with
+    // "move REFUSED and not moving -> IsWaitingForLastMove ... prio=3", and walked
+    // into the room. The tank's drag-back and camp recall both carry this backstop
+    // already; the follower hold never did.
+    if (!moved && !bot->isMoving() && IsWaitingForLastMove(prio))
+    {
+        DcMovement::StopBot(bot, DcMovement::Stop::HardPin);
+        DcMovement::ClearMovementWait(bot);
+        DC_PULL_DEBUG("[DC:{}] hold-at-camp: recall refused while standing at "
+                      "{:.1f}yd -> cleared the stale movement wait",
+                      bot->GetName(), toCamp);
+    }
 
     return true;
 }

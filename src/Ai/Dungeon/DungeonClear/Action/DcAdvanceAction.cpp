@@ -1537,6 +1537,15 @@ bool DungeonClearAdvanceAction::Execute(Event /*event*/)
     if (DcRun::Of(context).paused)
         return false;
 
+    // Hard PULL-OWNERSHIP guard, for the same already-queued-action reason as the
+    // pause guard above: DungeonClearIdleTrigger stands this rung down for the
+    // whole maneuver, but a trigger cannot un-queue an action, and the tick right
+    // after a ranged tag is exactly when a stale basket gets its turn. What it
+    // does with that tick is glide the tank at the BOSS — forward into the room
+    // the pull is dragging out of. See DcActionShared::PullOwnsTheTank.
+    if (PullOwnsTheTank(bot, context, "advance"))
+        return false;
+
     // Breadcrumb trail + camp upkeep (seed when unset, trail it forward while
     // scouting). Body lives in DcPullPlanner::MaintainScoutCamp so every rung that
     // drives the leader can keep the camp with the tank — see the header comment

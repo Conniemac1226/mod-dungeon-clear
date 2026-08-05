@@ -559,6 +559,77 @@ def render_pauses(rec):
     return [f"  {mmss(p.get('t')):>6}  {p.get('reason','?')}" for p in pauses]
 
 
+def render_combat_blame(members):
+    """Who is holding each flagged member in combat, and the verdict each holder earns.
+
+    Answers the question a stuck run used to leave open: is the phantom-combat
+    hatch armed, and if not, which of its guards is holding it back?  A holder
+    that is alive + non-evading + navmesh-reachable reads as LEGIT and the hatch
+    stands down on it forever, so a LEGIT row next to a member at full health
+    with no attackers is the finding, not the absence of one.
+    """
+    # `holderRefs` is the schema marker, not `combatHolders`: a genuinely
+    # unheld member emits an empty holder list, and a record written before
+    # this diagnostic existed emits neither.  Keying on the list would report
+    # every pre-schema-10 freeze as "no combat refs at all" — a confident,
+    # wrong finding about the exact runs this was built to explain.
+    flagged = [m for m in members if m.get("inCombat") and "holderRefs" in m]
+    if not flagged:
+        return []
+    out = ["  combat blame (who is holding each flagged member):"]
+    for m in flagged:
+        holders = m.get("combatHolders") or []
+        refs = m.get("holderRefs", len(holders))
+        tags = []
+        if m.get("phantomCombat"):
+            tags.append("PHANTOM")
+        if m.get("botState") == "noncombat":
+            # The flag says fight, the engine says otherwise — every DC rung
+            # bails on IsInCombat() here and every combat rung is out of reach.
+            tags.append("OFF THE COMBAT ENGINE")
+        out.append(f"    {m.get('name','?')}"
+                   f"  attackers={m.get('attackers',0)}"
+                   f"  victim={m.get('victim') or '-'}"
+                   f"  refs={refs}"
+                   + ("  ** " + ", ".join(tags) + " **" if tags else ""))
+        if not holders:
+            out.append("      (no combat refs at all — opaque/forced combat; the hatch "
+                       "treats this as legitimate by design)"
+                       if not refs else "      (all holder rows truncated)")
+            continue
+        rows = []
+        for c in holders:
+            flags = []
+            if not c.get("alive"):
+                flags.append("DEAD")
+            if not c.get("sameMap"):
+                flags.append("OTHER-MAP")
+            if c.get("evading"):
+                flags.append("EVADING")
+            if c.get("suppressed"):
+                flags.append("SUPPRESSED")
+            if not c.get("canAttackMe"):
+                flags.append("CANNOT-ATTACK-ME")
+            if c.get("pvp"):
+                flags.append("pvp-ref")
+            # "-" is not "unreachable": the pathfind is skipped for a holder
+            # already excluded by a cheaper guard (dead / other map / evading).
+            if not c.get("reachChecked", True):
+                path = "-"
+            else:
+                path = "reach" if c.get("reachable") else "UNREACH"
+            rows.append([c.get("name", ""), c.get("entry", ""),
+                         f"{c.get('dist',-1):.1f}yd", f"{c.get('hp',0)}%", path,
+                         "LEGIT" if c.get("legitimate") else "phantom",
+                         c.get("victim") or "-", " ".join(flags)])
+        out += ["    " + line
+                for line in table(rows, ["holder", "entry", "dist", "hp", "path",
+                                         "verdict", "fighting", "flags"])]
+        if refs > len(holders):
+            out.append(f"      (+{refs - len(holders)} more refs not shown)")
+    return out
+
+
 def render_diag(rec):
     d = rec.get("diag") or {}
     if not d.get("valid"):
@@ -622,8 +693,11 @@ def render_diag(rec):
                  "combat" if m.get("inCombat") else "",
                  m.get("victim", ""),
                  ("dc" if m.get("dcStrategy") else "-") + "/" + ("cbt" if m.get("dcCombatStrategy") else "-"),
+                 m.get("botState", ""),
                  "" if m.get("online") else "OFFLINE"] for m in members]
-        out += table(rows, ["name", "guid", "state", "hp", "mp", "distTank", "", "victim", "strat", ""])
+        out += table(rows, ["name", "guid", "state", "hp", "mp", "distTank", "", "victim",
+                            "strat", "engine", ""])
+        out += render_combat_blame(members)
 
     roster = d.get("roster") or []
     if roster:

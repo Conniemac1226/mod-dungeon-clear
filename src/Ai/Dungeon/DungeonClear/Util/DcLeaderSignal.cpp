@@ -52,6 +52,7 @@
 #include "Timer.h"
 #include "World.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
+#include "Ai/Dungeon/DungeonClear/Data/SealedEncounterRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Util/ChunkedPathfinder.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcEngageGeometry.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTargeting.h"
@@ -581,6 +582,39 @@ bool DcLeaderSignal::GetLeaderCampHold(Player* bot, Position& campOut, bool& pas
     if (!pull.HasCamp())
         return false;
 
+    // SEALED ENCOUNTER, final approach: stop holding at the camp and FOLLOW THE TANK
+    // IN. Only between maneuvers — a live maneuver still owns the party.
+    //
+    // In pull mode the camp survives between pulls by design, so after the last trash
+    // stage retires the followers are still pinned at it. For an ordinary boss that is
+    // harmless: they get released and run in when the fight starts. For a boss whose
+    // room LOCKS on engage (SealedEncounterRegistry) it is the whole bug — Selin's camp
+    // is 71.6yd behind his door, so the party is pinned outside a door that shuts the
+    // moment the tank engages, and spends the fight at it.
+    //
+    // Standing the hold down here is also what makes the approach clump satisfiable
+    // (DcPartyState::GetSpreadGate) and the muster reachable
+    // (DungeonClearAtBossTrigger) rather than a pair of gates asking the party to be
+    // somewhere it has been ordered not to go.
+    if (!IsPullPhaseHolding(static_cast<uint32>(pull.phase)) && pull.scriptedStage < 0)
+    {
+        if (std::optional<DungeonBossInfo> const next =
+                ctx->GetValue<std::optional<DungeonBossInfo>>(DcKey::NextDungeonBoss)->Get())
+        {
+            if (next->kind == DungeonAnchorKind::Boss)
+            {
+                if (SealedEncounterRow const* const sealed =
+                        SealedEncounterRegistry::Find(leader->GetMapId(), next->entry))
+                {
+                    if (SealedEncounterRegistry::InApproachRange(
+                            *sealed, leader->GetPositionX(), leader->GetPositionY(),
+                            leader->GetPositionZ(), next->x, next->y, next->z))
+                        return false;
+                }
+            }
+        }
+    }
+
     campOut = camp;
     // A standing camp-safety release keeps the maneuver (the tank is still
     // dragging) but frees the party: still camped, no longer passive — the same
@@ -608,6 +642,44 @@ bool DcLeaderSignal::IsLeaderCampFightActive(Player* bot)
     // while merely scouting (Idle) is handled by the drag-back maneuver, which
     // flips the phase out of Idle before any party member would assist.
     return phase == static_cast<uint32>(DcPullPhase::Engage) && leader->IsInCombat();
+}
+namespace
+{
+    // The leader's scripted-pull context, or nullptr when `bot` has no leader, is
+    // the leader, or the run isn't live. Shared by the two scripted-pull signals.
+    DcPullContext const* LeaderScriptedPull(Player* bot)
+    {
+        if (!bot || bot->isDead())
+            return nullptr;
+
+        Player* leader = DcLeaderSignal::FindLeaderTank(bot);
+        if (!leader || leader == bot)
+            return nullptr;  // the leader has its own leash inside the maneuver
+
+        PlayerbotAI* leaderAI = GET_PLAYERBOT_AI(leader);
+        if (!leaderAI)
+            return nullptr;
+
+        AiObjectContext* ctx = leaderAI->GetAiObjectContext();
+        if (!DcRun::Of(ctx).enabled)
+            return nullptr;
+
+        DcPullContext const& pull = ctx->GetValue<DcPullContext&>(DcKey::PullContext)->Get();
+        if (pull.scriptedStage < 0 || !pull.HasCamp())
+            return nullptr;
+        return &pull;
+    }
+}
+
+bool DcLeaderSignal::IsLeaderScriptedPullActive(Player* bot)
+{
+    return LeaderScriptedPull(bot) != nullptr;
+}
+
+bool DcLeaderSignal::IsLeaderScriptedCampFight(Player* bot)
+{
+    DcPullContext const* const pull = LeaderScriptedPull(bot);
+    return pull && pull->phase == DcPullPhase::Engage;
 }
 bool DcLeaderSignal::IsLeaderFightAssistWanted(Player* bot)
 {

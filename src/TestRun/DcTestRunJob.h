@@ -329,6 +329,15 @@ private:
     std::size_t _lastAnchors = 0;
     uint32 _sinceProgressMs = 0;
 
+    // One-shot live freeze dump, fired partway INTO the no-progress window
+    // rather than at teardown. Teardown is too late for the question it answers:
+    // by then the fight is over, and a holder that leashed home, despawned or
+    // evaded in the intervening minutes is a different unit (or no unit) from
+    // the one that actually wedged the run. This samples while the party is
+    // still standing in the freeze. Re-armed whenever the run makes progress, so
+    // a run that stalls twice reports both.
+    bool _frozenDumpLogged = false;
+
     // Closing-distance progress: the nearest the party has ever been to the
     // CURRENT target, and which target that was. Re-armed on target change, so
     // each anchor gets its own approach measured from scratch.

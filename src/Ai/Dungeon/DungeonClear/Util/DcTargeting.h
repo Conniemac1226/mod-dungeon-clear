@@ -229,10 +229,20 @@ public:
     // creature entries (EventStep::entryFilter) — for a volume that overlaps
     // ambient wildlife the clear must not chase (Black Morass's rift waves in
     // open swamp). Null/empty keeps the position-only behaviour.
+    // `rankFrom` chooses which candidate wins when several qualify: by default the
+    // one nearest the BOT, which is what a room clear wants (fight your way in).
+    // Pass a point to rank from there instead — for a plan that has to tag from a
+    // FIXED spot the bot is not standing on yet, "nearest to me right now" can
+    // easily be the far side of the pack and out of the pull spell's range once
+    // the bot arrives (see ScriptedPullRegistry).
+    // `exclude` drops one specific unit from the candidate set — for a caller that
+    // has already given up on it and wants the next best, not the same answer again.
     static Unit* NearestHostileNearPoint(Player* bot, AiObjectContext* ctx,
                                          float px, float py, float pz,
                                          float radius, float zBand = 20.0f,
-                                         std::vector<uint32> const* entryFilter = nullptr);
+                                         std::vector<uint32> const* entryFilter = nullptr,
+                                         Position const* rankFrom = nullptr,
+                                         ObjectGuid exclude = ObjectGuid::Empty);
 
 };
 

@@ -176,9 +176,9 @@ TEST(DcTestRunRecordTest, BossRosterSerializesInProgressionOrder)
               std::string::npos);
 }
 
-TEST(DcTestRunRecordTest, SchemaIsNine)
+TEST(DcTestRunRecordTest, SchemaIsTen)
 {
-    EXPECT_NE(ToJsonl(SampleRecord()).find("\"schema\":9"), std::string::npos);
+    EXPECT_NE(ToJsonl(SampleRecord()).find("\"schema\":10"), std::string::npos);
 }
 
 // The gear ceiling a run was rolled to. Two runs of the same dungeon are only

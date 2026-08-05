@@ -775,10 +775,33 @@ void DcTestRunJob::TickProvisioning(bool& provisionBudget)
             factory.ApplyEnchantAndGemsNew();
     }
     if (bot->getClass() == CLASS_HUNTER)
-    {
         factory.InitPet();
-        factory.InitAmmo();
-    }
+
+    // AMMO LAST, FOR EVERY CLASS — for the same reason the enchant pass above runs
+    // last, and it was the same oversight one line further down.
+    //
+    // Randomize() ends with its own InitAmmo(), which loads ammo for the ranged
+    // weapon IT rolled. The spec re-gear then replaces that weapon, and a gun and a
+    // bow do not take the same projectile — so a bot whose random roll gave it a bow
+    // and whose prot re-gear gave it a gun ends up holding a rifle loaded with
+    // arrows. Re-running InitAmmo() only for hunters left every other class stranded
+    // on whatever the pre-re-gear weapon needed.
+    //
+    // Not a cosmetic mismatch. PLAYER_AMMO_ID is set, so every "do I have ammo" test
+    // passes, and the failure only surfaces where it counts: the server rejects the
+    // Shoot cast itself, silently, and the bot has no ranged opener at all. A warrior
+    // has no class opener either (Heroic Throw is level 71), so the tank has nothing
+    // — which for a scripted pull means standing on the stand spot for the whole leg
+    // budget and then walking into the room. Live: Erinerice and Moge, both prot
+    // warriors, both holding Rifle of the Stoic Guardian with Timeless Arrows loaded,
+    // failed the Selin stage that way in tr-20260803-154419-13 and -17 while every
+    // druid and paladin tank in the same plan pulled normally on a class opener.
+    //
+    // InitAmmo() self-gates to hunter/rogue/warrior and re-derives the projectile
+    // class from the CURRENTLY equipped weapon, so calling it unconditionally is both
+    // safe and the whole fix.
+    factory.InitAmmo();
+
     botAI->ResetStrategies();
 
     DcTestRunRecord::CompEntry entry;
@@ -1669,9 +1692,42 @@ void DcTestRunJob::TickMonitoring(uint32 dt)
         }
 
         if (progressed)
+        {
             _sinceProgressMs = 0;
+            _frozenDumpLogged = false;
+        }
         else
             _sinceProgressMs += dt;
+
+        // THE FREEZE DUMP. Fired once, halfway into the no-progress window, on a
+        // run that is going to fail its watchdog unless something changes — and
+        // fired HERE rather than at teardown because the state that explains a
+        // stuck-in-combat freeze does not survive to teardown: the units holding
+        // the party evade, leash home or despawn in the minutes between, and the
+        // record ends up naming nothing. Halfway is the compromise: late enough
+        // that a slow pull or a long rez is not reported as a wedge, early enough
+        // that the holders are still standing where they wedged it.
+        //
+        // Read-only (DcDiag::Capture is). Deliberately NOT gated on the tank's
+        // own combat flag: in both MGT freezes this was written for, the members
+        // held in combat were the tank AND one follower, and a variant where the
+        // tank is clean while a follower is pinned wedges the run just as hard —
+        // gating on `inCombat` here would report nothing on exactly that case.
+        // The combat line is what stays conditional, so a run frozen on
+        // navigation does not carry a blame line with nothing to blame.
+        if (!_frozenDumpLogged && _limits.noProgressMs &&
+            _sinceProgressMs >= _limits.noProgressMs / 2)
+        {
+            _frozenDumpLogged = true;
+            DcDiag::Snapshot const frozen = DcDiag::Capture(tank, "frozen");
+            LOG_INFO("playerbots.dungeonclear",
+                     "TESTRUN FROZEN {} no progress for {}s (limit {}s) — {}",
+                     _record.runId, _sinceProgressMs / 1000,
+                     _limits.noProgressMs / 1000, DcDiag::Summarize(frozen));
+            if (frozen.inCombatCount)
+                LOG_INFO("playerbots.dungeonclear", "TESTRUN FROZEN {} combat blame: {}",
+                         _record.runId, DcDiag::SummarizeCombat(frozen));
+        }
 
         // Pause / stall trackers.
         if (rs.paused)
@@ -2000,8 +2056,18 @@ void DcTestRunJob::Teardown()
         _record.stallAtEnd = _record.diag.stallReason;
         _record.phaseAtEnd = _record.diag.phase;
         if (_record.diag.valid && _record.result != "success")
+        {
             LOG_INFO("playerbots.dungeonclear", "TESTRUN DIAG {} {}",
                      _record.runId, DcDiag::Summarize(_record.diag));
+            // Second line, only when it has something to say. The freeze dump
+            // above is the authoritative one (it sampled while the party was
+            // still wedged); this is the same question asked at teardown, and
+            // the pair together show whether the holders changed in between —
+            // which is itself the answer on a run that recovered and re-froze.
+            if (_record.diag.inCombatCount)
+                LOG_INFO("playerbots.dungeonclear", "TESTRUN DIAG {} combat blame: {}",
+                         _record.runId, DcDiag::SummarizeCombat(_record.diag));
+        }
 
         if (PlayerbotAI* tankAI = GET_PLAYERBOT_AI(tank))
             if (DcRun::Of(tankAI).enabled)

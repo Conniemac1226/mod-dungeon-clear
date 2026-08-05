@@ -54,6 +54,8 @@ if (BUILD_TESTING)
             "${MOD_PATH}/t/TestStrandedRecovery.cpp"
             "${MOD_PATH}/t/TestFightInPlace.cpp"
             "${MOD_PATH}/t/TestBossPullback.cpp"
+            "${MOD_PATH}/t/TestScriptedPull.cpp"
+            "${MOD_PATH}/t/TestSealedEncounter.cpp"
             "${MOD_PATH}/t/TestWaitAtBoss.cpp"
             "${MOD_PATH}/t/TestDungeonClearUtil.cpp"
             "${MOD_PATH}/t/TestDungeonClearApproach.cpp"

@@ -80,6 +80,28 @@ public:
     };
     static SpreadGate GetSpreadGate(Player* bot, AiObjectContext* context);
 
+    // The max spread the LEADER's advance gate is enforcing right now, for a
+    // FOLLOWER that needs to position itself inside it.
+    //
+    // Exists because "the spread the tank will accept" is NOT the PartyMaxSpread
+    // setting. GetSpreadGate overrides it — waived while a maneuver holds, and
+    // tightened on a sealed-encounter final approach — and a follower that clamps its
+    // own standoff against the raw setting can be ordered to stand outside the gate
+    // the tank is actually waiting on. That is a mutual deadlock: the tank will not
+    // advance until the party closes, and the party will not close because its own
+    // rule says the distance it is holding is fine.
+    //
+    // Live (tr-20260803-134213-2): both trash stages retired cleanly, then the run
+    // hung for three minutes on the walk to Selin. The tank logged "advance yielding:
+    // party not ready — waiting on Emandy, Toogo, Ushkuk (out of range)" 365+ times
+    // while the followers logged "scout-lag: holding at trail point (18.2yd behind
+    // tank, lag 15.0)" — the sealed clump had tightened the gate to 10yd, and the
+    // scout lag was still clamping against the 25yd setting. Neither side was wrong
+    // on its own terms.
+    //
+    // Falls back to the bot's own setting when there is no resolvable leader.
+    static float LeaderEffectiveMaxSpread(Player* bot);
+
     // The HP/mana floors the between-pulls gate is ACTUALLY enforcing for `bot`
     // right now. ONE body shared by the gate and every "waiting on…" line, the
     // same way GetSpreadGate is shared, so the panel can never name a wait the

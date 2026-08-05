@@ -120,7 +120,14 @@ namespace DcTestRunRecord
         // 8: added roster (hand-picked real characters) + per-member
         //    detectedRole/roleMismatch and origin position
         // 9: added the per-run gear ceiling (gearIlvl/gearQuality)
-        std::uint32_t schema = 9;
+        // 10: added combat blame — per-member botState (which ENGINE the bot is
+        //     on, which is not the same question as whether it is flagged) plus
+        //     attackers/holderRefs/phantomCombat/combatHolders, emitted only for
+        //     a flagged member. Readers must key on holderRefs, not on the
+        //     holder list: pre-10 records have neither, and treating an absent
+        //     list as an empty one reports "nothing was holding them" about the
+        //     freezes this was added to explain.
+        std::uint32_t schema = 10;
         std::string runId;
         std::string planId;       // owning `.dc test plan`, "" for ad-hoc runs
         std::string dungeon;      // registry token

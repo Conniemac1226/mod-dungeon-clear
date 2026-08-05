@@ -1023,7 +1023,9 @@ Unit* DcTargeting::NearestRoomTrash(Player* bot, AiObjectContext* ctx)
 Unit* DcTargeting::NearestHostileNearPoint(Player* bot, AiObjectContext* ctx,
                                            float px, float py, float pz,
                                            float radius, float zBand,
-                                           std::vector<uint32> const* entryFilter)
+                                           std::vector<uint32> const* entryFilter,
+                                           Position const* rankFrom,
+                                           ObjectGuid exclude)
 {
     if (!bot || !ctx || radius <= 0.0f)
         return nullptr;
@@ -1043,6 +1045,8 @@ Unit* DcTargeting::NearestHostileNearPoint(Player* bot, AiObjectContext* ctx,
     float bestDist = std::numeric_limits<float>::max();
     for (ObjectGuid const guid : candidates)
     {
+        if (!exclude.IsEmpty() && guid == exclude)
+            continue;
         Unit* u = ObjectAccessor::GetUnit(*bot, guid);
         if (!u || !u->IsAlive())
             continue;
@@ -1081,7 +1085,12 @@ Unit* DcTargeting::NearestHostileNearPoint(Player* bot, AiObjectContext* ctx,
                                                 u->GetPositionY(), u->GetPositionZ()))
             continue;
 
-        float const d = bot->GetExactDist2d(u);
+        // Rank from the caller's reference point when it gave one, else from the
+        // bot. Everything above this line — the filters — is unchanged either way;
+        // `rankFrom` only decides which of the qualifying candidates wins.
+        float const d = rankFrom
+            ? rankFrom->GetExactDist2d(u->GetPositionX(), u->GetPositionY())
+            : bot->GetExactDist2d(u);
         if (d < bestDist)
         {
             best = u;

@@ -219,6 +219,41 @@ void DungeonClearStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         "dungeon clear heal reposition",
         { NextAction("dungeon clear heal reposition", DcRel::HealReposition) }));
 
+    // Phantom-combat escape hatch, NON-COMBAT side — and this is the half that
+    // matters, because the state it recovers is one the bot can only be in HERE.
+    //
+    // Engine transitions are action-driven, not derived from IsInCombat: stock
+    // `drop target` (CombatStrategy, relevance 99 — above everything DC owns) fires
+    // on an invalid/dead/out-of-LOS target and runs ChangeEngine(BOT_STATE_NON_COMBAT)
+    // + AttackStop(), and it does NOT clear the core combat flag. Nothing puts the
+    // bot back: PlayerbotAI::DoNextAction only nulls `current target` when it finds a
+    // flagged bot on the non-combat engine, and the two ChangeEngine(BOT_STATE_COMBAT)
+    // call sites are AttackAction / PullActions — both zeroed by DungeonClearMultiplier
+    // for the whole duration of a run.
+    //
+    // So a flagged bot can sit on the non-combat engine forever, and DC's rungs are
+    // partitioned by the FLAG: the non-combat rungs bail on IsInCombat(), the combat
+    // rungs live on an engine it has left. Nothing is live on either side — including
+    // this hatch, which was registered in the combat strategy only and so was blind
+    // in exactly the state it exists for.
+    //
+    // Live (tr-20260803-154419-18): tank, healer and hunter dropped off the combat
+    // engine at Selin's camp fight and stood flagged with no attackers, no victims and
+    // full health for seven minutes; the two members that were never flagged kept
+    // running normally beside them. The signature (flagged, no victim, pull phase
+    // non-Idle >90s) is on 16 of 829 recorded runs across five dungeons, eight of
+    // which burned the full no-progress watchdog.
+    //
+    // Clearing the flag is enough to unwind all of it: IsInCombat() goes false and the
+    // ordinary non-combat rungs — including the pull FSM's own Engage cleanup — become
+    // reachable again on their existing gates. Same node as the combat side; all the
+    // guards (no attackers, no victim, no legitimate holder, sustained
+    // StuckCombatTimeout, never in a raid) live in the trigger, so registering it here
+    // only widens WHERE it can see, not WHEN it fires.
+    triggers.push_back(new TriggerNode(
+        "dungeon clear break stuck combat",
+        { NextAction("dungeon clear break stuck combat", DcRel::BreakStuckCombat) }));
+
     // Hazard vacate, NON-combat side — the essential half. After the party kills
     // an Arcatraz Sentinel, the Destroyed Sentinel (21761) summon pulses 15yd/1s
     // at the corpse and combat usually drops (it is NOT_SELECTABLE, so it does not
