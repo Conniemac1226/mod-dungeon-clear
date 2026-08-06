@@ -1444,13 +1444,23 @@ namespace
     // and the phantom state has to hold continuously for StuckCombatTimeout — so a
     // boss that merely gates attacks during an intro or a phase transition rearms the
     // clock instead of being cleared.
-    bool HasLegitimateCombatHolder(Player* bot)
+    // `nearestDist` reports the distance to the CLOSEST legitimate holder, so the
+    // caller can ask the second question this predicate deliberately does not: is that
+    // holder actually coming for us (DungeonClearMath::IsHolderProsecutingFight)? Left
+    // untouched when the verdict is false, and set to 0 for the opaque no-reference
+    // case — that one is script-forced and must stay legitimate unconditionally.
+    bool HasLegitimateCombatHolder(Player* bot, float& nearestDist)
     {
         auto const& refs = bot->GetCombatManager().GetPvECombatRefs();
         if (refs.empty())
+        {
+            nearestDist = 0.0f;
             return true;  // no unit to blame -> opaque/forced combat, leave it alone
+        }
 
         Map* const map = bot->GetMap();
+        bool found = false;
+        float best = 0.0f;
         for (auto const& kv : refs)
         {
             CombatReference* const ref = kv.second;
@@ -1467,9 +1477,18 @@ namespace
             if (Creature* const c = other->ToCreature())
                 if (c->AI() && !c->AI()->CanAIAttack(bot))
                     continue;  // its own script forbids it touching us -> phantom too
-            return true;   // a reachable, live, non-evading holder: a REAL fight
+            // A reachable, live, non-evading holder: a REAL fight. Keep scanning so
+            // `nearestDist` is the closest one — the closing test must track whichever
+            // holder is most nearly on top of us, not whichever the map happened to
+            // enumerate first.
+            float const dist = bot->GetExactDist(other);
+            if (!found || dist < best)
+                best = dist;
+            found = true;
         }
-        return false;
+        if (found)
+            nearestDist = best;
+        return found;
     }
 }
 
@@ -1480,6 +1499,7 @@ bool DungeonClearBreakStuckCombatTrigger::IsActive()
     if (!bot || bot->isDead() || !bot->IsInCombat())
     {
         stuckCombatSinceMs = 0;
+        holderCloseWatch.Reset();
         return false;
     }
 
@@ -1494,6 +1514,7 @@ bool DungeonClearBreakStuckCombatTrigger::IsActive()
     if (!map || map->IsRaid())
     {
         stuckCombatSinceMs = 0;
+        holderCloseWatch.Reset();
         return false;
     }
 
@@ -1504,19 +1525,47 @@ bool DungeonClearBreakStuckCombatTrigger::IsActive()
     if (!AI_VALUE(Player*, DcKey::PartyTank))
     {
         stuckCombatSinceMs = 0;
+        holderCloseWatch.Reset();
         return false;
     }
 
-    // Phantom signature: nothing meleeing us, no victim of our own, and every unit
-    // holding us in combat is unreachable/evading (or — the opaque case — there is
-    // none to blame, which HasLegitimateCombatHolder reports as legitimate). Short-
-    // circuit the path-querying holder scan behind the two cheap reads: a real fight
-    // almost always trips hasAttacker/hasVictim, and a fleeing/kiting party trips the
-    // reachable-holder test — either way we never run down the timer.
+    // Phantom signature: nothing meleeing us, no victim of our own, and no unit holding
+    // us in combat that is both LEGITIMATE (reachable, alive, non-evading, allowed by
+    // its own AI to attack us — or the opaque no-reference case) and PROSECUTING the
+    // fight (in engage range, or closing on us). Short-circuit the path-querying holder
+    // scan behind the two cheap reads: a real fight almost always trips
+    // hasAttacker/hasVictim, and a fleeing/kiting party trips the reachable-holder
+    // test — either way we never run down the timer.
     bool const hasAttacker = !bot->getAttackers().empty();
     bool const hasVictim   = bot->GetVictim() != nullptr;
+
+    // Second question, asked only once legitimacy passes: is that holder actually
+    // COMING? An instanced creature never leashes, so a mob that tagged us and then
+    // stopped holds the flag forever from where it stands while reading as a perfectly
+    // legitimate holder — and nothing in DC engages it, because the blocking-trash
+    // corridor scan only looks FORWARD along the route and the pull pipeline is idle.
+    // Track the nearest holder's closest-ever distance: a chaser (or a mob we are
+    // kiting) keeps improving it and stays legitimate; one that has stopped never does,
+    // so the streak clock below runs and the existing force-clear fires. See
+    // DungeonClearMath::IsHolderProsecutingFight.
+    float holderDist = 0.0f;
+    bool const legitimateHolder =
+        !hasAttacker && !hasVictim && HasLegitimateCombatHolder(bot, holderDist);
+
+    // The watchdog must only be re-armed when there is nothing left to measure — a
+    // real fight, or no legitimate holder at all. Re-arming it on every tick where the
+    // holder happens to be closing would make the FIRST sample (which always reads as
+    // progress) the only sample, and the stall could never be detected.
+    bool closing = false;
+    if (legitimateHolder)
+        closing = holderCloseWatch.TickClosing(holderDist, DC_STUCK_DISPLACEMENT, getMSTime());
+    else
+        holderCloseWatch.Reset();
+
     bool const hasHolder =
-        hasAttacker || hasVictim || HasLegitimateCombatHolder(bot);
+        hasAttacker || hasVictim ||
+        DungeonClearMath::IsHolderProsecutingFight(legitimateHolder, holderDist,
+                                                   DC_ENGAGE_RANGE, closing);
 
     bool const phantom =
         DungeonClearMath::IsPhantomCombat(/*inCombat*/ true, hasAttacker, hasVictim, hasHolder);

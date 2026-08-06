@@ -81,6 +81,7 @@
 #include "Ai/Dungeon/DungeonClear/DungeonClearTriggerContext.h"
 #include "Ai/Dungeon/DungeonClear/DungeonClearValueContext.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcPathWorker.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcPullBrake.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearUtil.h"
 #include "TestRun/DcTestDriver.h"
 #include "TestRun/DcTestDungeonRegistry.h"
@@ -290,6 +291,29 @@ public:
     void OnPlayerMapChanged(Player* player) override
     {
         DcStrategyGate::Reconcile(player);
+    }
+};
+
+// The pull walk-in's brake, wired to the combat flag itself.
+//
+// This is the one thing in the pull FSM that CANNOT be an AI action, because the
+// whole defect is that an AI action arrives too late: the bot is still on the
+// non-combat engine when its pack notices it, so a flip has to happen before the
+// drag-back can run, and the MotionMaster walks the tank further into the formation
+// for the whole of that gap. OnPlayerEnterCombat fires from
+// CombatManager::UpdateOwnerCombatState in the same statement that raises
+// UNIT_FLAG_IN_COMBAT — earlier than any tick, by construction. See DcPullBrake.h.
+class DungeonClearPullBrakeScript : public PlayerScript
+{
+public:
+    DungeonClearPullBrakeScript()
+        : PlayerScript("DungeonClearPullBrakeScript", {
+            PLAYERHOOK_ON_PLAYER_ENTER_COMBAT
+        }) {}
+
+    void OnPlayerEnterCombat(Player* player, Unit* /*enemy*/) override
+    {
+        DcPullBrake::OnEnterCombat(player);
     }
 };
 
@@ -565,6 +589,7 @@ void AddSC_dungeon_clear_module()
 {
     new DungeonClearRegistrarWorldScript();
     new DungeonClearLoginPlayerScript();
+    new DungeonClearPullBrakeScript();
     // Opening half only — the End script registers on the first world tick so
     // it sorts after playerbots' AI-update hook (see the ordering contract).
     new DungeonClearSpectatorMoverBeginScript();

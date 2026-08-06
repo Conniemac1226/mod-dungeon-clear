@@ -37,8 +37,15 @@ SRC_DIR = pathlib.Path(__file__).resolve().parent.parent / "src"
 ACCESSOR = "Settings/DcSettings.cpp"
 
 # Keys the numeric registry cannot hold, allowed to read raw — but still bound by
-# rule 2 (showLogs=false).
-ALLOWLIST = {"DungeonClear.TestRun.DriverCharacter"}
+# rule 2 (showLogs=false). DcType is {Bool, UInt, Int, Float} and DcSettingDef
+# stores a `double defVal`, so a string-valued key has no row to move to; listing
+# it here is the whole remedy, and the error text's "add a registry row" advice
+# does not apply. Both entries are the TestRun driver's identity — a character
+# name and the account that owns it — read once per driver resolve, not per tick.
+ALLOWLIST = {
+    "DungeonClear.TestRun.DriverCharacter",
+    "DungeonClear.TestRun.DriverAccount",
+}
 
 CALL = re.compile(r"sConfigMgr->Get\w*\s*(?:<[^>;]*>)?\s*\(")
 

@@ -37,6 +37,7 @@
 #include "Position.h"
 #include "ServerFacade.h"
 #include "SharedDefines.h"
+#include "SpellAuras.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "Ai/Dungeon/DungeonClear/DcApproachState.h"
@@ -643,6 +644,18 @@ namespace DcActionShared
         if (!bot || !unit || unit == bot || bot->HasInArc(CAST_ANGLE_IN_FRONT, unit))
             return;
         ServerFacade::instance().SetFacingTo(bot, unit);
+    }
+
+    // See the header for why a recall has to ask this before it hauls anyone home.
+    bool DcInGroundEffect(AiObjectContext* ctx)
+    {
+        if (!ctx)
+            return false;
+
+        Aura* const aura = ctx->GetValue<Aura*>(DcKey::Stock::AreaDebuff)->Get();
+        // Same staleness guard AvoidAoeAction applies to the same value: the read is
+        // cached for a tick and the dynamic object can be gone inside it.
+        return aura && !aura->IsRemoved() && !aura->IsExpired();
     }
 
     // See the header for why a rung whose destination is the ROUTE has to re-ask

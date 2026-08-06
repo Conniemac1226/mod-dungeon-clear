@@ -1025,7 +1025,8 @@ Unit* DcTargeting::NearestHostileNearPoint(Player* bot, AiObjectContext* ctx,
                                            float radius, float zBand,
                                            std::vector<uint32> const* entryFilter,
                                            Position const* rankFrom,
-                                           ObjectGuid exclude)
+                                           ObjectGuid exclude,
+                                           Position const* awayFrom)
 {
     if (!bot || !ctx || radius <= 0.0f)
         return nullptr;
@@ -1087,10 +1088,16 @@ Unit* DcTargeting::NearestHostileNearPoint(Player* bot, AiObjectContext* ctx,
 
         // Rank from the caller's reference point when it gave one, else from the
         // bot. Everything above this line — the filters — is unchanged either way;
-        // `rankFrom` only decides which of the qualifying candidates wins.
-        float const d = rankFrom
-            ? rankFrom->GetExactDist2d(u->GetPositionX(), u->GetPositionY())
-            : bot->GetExactDist2d(u);
+        // `rankFrom`/`awayFrom` only decide which of the qualifying candidates wins.
+        //
+        // `awayFrom` wins by being FURTHEST from the anchor, which is the same
+        // comparison with the sign flipped — stored negated so one `d < bestDist`
+        // serves both and the "no candidate yet" sentinel stays a single max().
+        float const d = awayFrom
+            ? -awayFrom->GetExactDist2d(u->GetPositionX(), u->GetPositionY())
+            : rankFrom
+                ? rankFrom->GetExactDist2d(u->GetPositionX(), u->GetPositionY())
+                : bot->GetExactDist2d(u);
         if (d < bestDist)
         {
             best = u;

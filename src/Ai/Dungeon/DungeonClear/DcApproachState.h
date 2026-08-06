@@ -44,6 +44,31 @@ struct DcApproachState
     DcProgressWatchdog doorWalkInWatch;      // door walk-in wedge (was doorWalkInStuckTicks)
     DcProgressWatchdog pursuitWatch;         // direct-pursuit give-up latch (was pursuitFailTicks)
     DcProgressWatchdog finalApproachWatch;   // path-ends-short escalation (was doneNotEngagedTicks)
+    // Net-progress gate for the stuck-recovery LADDER (resnap -> rebuild -> nudge ->
+    // stall). Distinct from routeGlideWatch, which asks "did I move this tick"; this
+    // asks "have I got any NEARER my objective since the last recovery". They must be
+    // different questions: a bot shuttling back and forth displaces plenty every tick
+    // while getting nowhere, and keying the ladder's reset on displacement made the
+    // escalation unreachable by construction (tr-20260804-153254-2: 87 of 87 posStuck
+    // events logged resnapAttempts=1 rebuildAttempts=0 — the ladder never once left
+    // its first rung across a 27-minute run). See FillStuckObs.
+    DcProgressWatchdog recoveryProgressWatch;
+    // Bounds the engage-trash "far, long-route trash -> let Advance close the gap"
+    // hand-off. It is only sound while Advance is actually walking us toward the pack;
+    // for one beside or behind the route to the next boss the hand-off is permanent and
+    // a pack DC already voted to fight is silently abandoned (tr-20260804-153254-2).
+    // Tracks whether the gap to `longRouteDeferTarget` is closing — see
+    // DungeonClearEngageTrashAction::Execute.
+    DcProgressWatchdog longRouteDeferWatch;
+    ObjectGuid longRouteDeferTarget;         // pack the deferral above is measuring
+    // The deferral has been judged a failure for THIS target and must not be offered
+    // again while it stays the target. A latch, because the budget alone cannot carry
+    // the verdict: the one walk-in step taken on the tick the budget blew is itself an
+    // improvement in the gap, which re-arms the closing test and hands the pack
+    // straight back to Advance. Without this the action claims one tick in every
+    // DC_LONGROUTE_DEFER_LIMIT and the tank is dragged away in between — a stutter
+    // rather than an engagement. Cleared when the target changes or comes in range.
+    bool longRouteDeferBlown = false;
     uint32 stuckCount          = 0;  // MoveTo-returned-false backup (was "stuck count")
     uint32 rebuildAttempts     = 0;  // consecutive rebuilds w/o progress ("stride rebuild attempts")
     uint32 resnapAttempts      = 0;  // consecutive Resnap recoveries w/o progress (rung-1 give-up)
@@ -195,6 +220,10 @@ struct DcApproachState
         doorWalkInWatch.Reset();
         pursuitWatch.Reset();
         finalApproachWatch.Reset();
+        recoveryProgressWatch.Reset();
+        longRouteDeferWatch.Reset();
+        longRouteDeferTarget.Clear();
+        longRouteDeferBlown = false;
         rebuildAttempts     = 0;
         resnapAttempts      = 0;
         partyNotReadyTicks  = 0;

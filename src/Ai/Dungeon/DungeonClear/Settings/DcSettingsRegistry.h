@@ -371,11 +371,15 @@ inline constexpr DcSettingDef kDcSettings[] =
     // UNREACHABLE (no navmesh path to it), DC's own gates that key off "someone is in
     // combat" then spin forever, and a `dc off`/`on` can't clear it (the flag isn't
     // DC's). ONLY when a member is in combat, nothing is meleeing it, it has no victim,
-    // AND every unit holding it in combat is unreachable-by-path or evading — for
-    // StuckCombatTimeout seconds — does DC force-clear its combat + threat (the effect
-    // of a GM `.combatstop`). Keying on REACHABILITY, not distance, is what makes it
-    // safe: a fleeing/kiting party's pursuers are always path-reachable, so it never
-    // fires there; a bot with combat forced by a script that leaves no unit reference
+    // AND every unit holding it in combat is unreachable-by-path, evading, or reachable
+    // but NOT COMING (far and no longer closing on us — an instanced mob never leashes,
+    // so one that tagged the party and stopped holds the flag from where it stands
+    // forever) — for StuckCombatTimeout seconds — does DC force-clear its combat +
+    // threat (the effect of a GM `.combatstop`). Keying on REACHABILITY and CLOSING
+    // DISTANCE, not raw distance, is what makes it
+    // safe: a fleeing/kiting party's pursuers are always path-reachable AND closing, so
+    // it never fires there; a holder inside engage range is always a real fight
+    // whatever the numbers say; a bot with combat forced by a script that leaves no unit reference
     // is likewise never touched; and it is disabled outright in RAID zones (where an
     // errant drop could reset a boss). The timeout is LONG by default so an encounter
     // that intentionally holds the party in combat is never mistaken for a stuck flag;

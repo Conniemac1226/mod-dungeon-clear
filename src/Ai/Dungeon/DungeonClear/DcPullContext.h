@@ -128,13 +128,47 @@ struct DcPullContext
                                                  // currently walking the tank back
                                                  // (see DC_SCRIPTED_PULL_LEASH).
                                                  // A latch, not a per-tick test, so
-                                                 // the recall runs to the camp
+                                                 // the recall runs all the way to
+                                                 // DC_SCRIPTED_PULL_RECALL_HOME
                                                  // instead of stopping the instant
                                                  // the tank re-enters the leash
                                                  // radius and being re-tripped by
                                                  // the next chase step — the
                                                  // in-out oscillation a bare
-                                                 // threshold produces.
+                                                 // threshold produces. It is also
+                                                 // dropped outright when the tank is
+                                                 // standing in a ground effect, so
+                                                 // the leash never walks it back
+                                                 // into what pushed it out.
+    uint32      scriptedAtStandMs = 0;           // ms the tank REACHED this stage's
+                                                 // stand spot; 0 = not there yet. Two
+                                                 // jobs, and the second is why it is a
+                                                 // timestamp rather than a bool.
+                                                 //
+                                                 // LATCH. The walk-to-the-spot leg is
+                                                 // done and must not re-issue — the
+                                                 // same reason scriptedRecall is a
+                                                 // latch. Load-bearing on a BODY-PULL
+                                                 // row (ScriptedPullStage::bodyPull):
+                                                 // there the tag leg's next move is
+                                                 // deliberately AWAY from the spot, out
+                                                 // to the pack's aggro edge ~8yd on. A
+                                                 // bare "am I within the arrive radius"
+                                                 // test flips false a tick or two into
+                                                 // that walk and sends the tank back,
+                                                 // which is the forward / turn-around /
+                                                 // forward shuffle.
+                                                 //
+                                                 // CLOCK. The tag walk-in creeps closer
+                                                 // the longer it goes without aggro,
+                                                 // measured from the start of Advancing
+                                                 // — which on an ordinary pull is the
+                                                 // moment the tank starts closing, and
+                                                 // on a scripted stage is up to a
+                                                 // minute earlier, at the far end of
+                                                 // the walk to the stand spot. See the
+                                                 // creep in DcPullActions for what that
+                                                 // cost.
     float       scriptedRecallBest = 0.0f;       // closest the tank has been to the
                                                  // camp on the CURRENT leash recall.
                                                  // The third site of the same
@@ -323,6 +357,11 @@ struct DcPullContext
         phase = DcPullPhase::Engage;
         phaseSince = nowMs;
         tagTarget = ObjectGuid::Empty;
+        // Per-PULL for the same reason tagTarget is: the next pull of this stage — a
+        // re-pull after a fizzle, or the next stage of the plan — has to walk to a
+        // stand spot again, and a latch left standing would skip that walk entirely
+        // and start the tag leg from wherever the last camp fight ended.
+        scriptedAtStandMs = 0;
     }
 
     // The single phase-write entry point. Every phase change goes through here so

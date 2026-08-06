@@ -161,10 +161,13 @@ party.
 | `.dc test plan status` | Progress of each live plan. |
 | `.dc test plan stop [planId\|all]` | Stop a plan and its runs. |
 
-These also work from the **worldserver console** and the AC Command Deck. For
-console use, create a dedicated bot account with one character named per
-`DungeonClear.TestRun.DriverCharacter` (default `Dcdriver`); the module logs it
-in and parks it as the stand-in GM.
+These also work from the **worldserver console** and the AC Command Deck. Those
+have no in-game player to anchor a run, so the module logs a dedicated
+character in headlessly and parks it as the stand-in GM. It creates that
+character and its account the first time one is needed —
+`DungeonClear.TestRun.DriverAccount` / `.DriverCharacter` name them (default
+`dcdriver` / `Dcdriver`), and setting the account to `""` turns auto-creation
+off if you would rather make it yourself.
 
 A run succeeds when every boss is down. It fails on a party wipe, a long stall,
 no progress, or the overall time cap (tunable via the `DungeonClear.TestRun.*`

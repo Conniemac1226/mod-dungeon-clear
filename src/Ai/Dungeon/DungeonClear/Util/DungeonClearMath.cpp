@@ -307,6 +307,38 @@ bool DungeonClearMath::ShouldPlantEarly(std::vector<float> const& attackerDists,
     return plantTicks >= glueTicksNeeded;
 }
 
+float DungeonClearMath::PullTagStopDistance(float aggroRange, float meleeReach,
+                                            std::uint32_t closingMs,
+                                            std::uint32_t graceMs,
+                                            float creepYardsPerSec, float creepFloor,
+                                            bool& forceTagOut)
+{
+    forceTagOut = false;
+
+    // Two yards inside the radius: far enough in that the arrival itself is a
+    // relocation across the notice threshold, close enough to the edge that the pull
+    // is a pull rather than a face-pull.
+    float stop = aggroRange - 2.0f;
+
+    // The creep. Bounded by `creepFloor`, which is the whole difference between an
+    // ordinary pull and a scripted stage — see the header.
+    if (closingMs > graceMs && creepYardsPerSec > 0.0f)
+    {
+        stop -= ((closingMs - graceMs) / 1000.0f) * creepYardsPerSec;
+        if (stop < creepFloor)
+            stop = creepFloor;
+    }
+
+    // Body contact is the last floor either way. If the pack's aggro is at or below
+    // melee reach, closing cannot cross it and the caller has to swing.
+    if (stop <= meleeReach)
+    {
+        forceTagOut = true;
+        return meleeReach;
+    }
+    return stop;
+}
+
 bool DungeonClearMath::ShouldReleaseFollower(bool isHealer, bool alreadyInCombat,
                                              std::uint32_t combatSinceMs,
                                              std::uint32_t now, std::uint32_t leadMs,

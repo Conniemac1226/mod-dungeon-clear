@@ -8,6 +8,8 @@
 
 #include "Trigger.h"
 
+#include "Ai/Dungeon/DungeonClear/Util/DcProgressWatchdog.h"
+
 #include <cstdint>
 
 class PlayerbotAI;
@@ -414,12 +416,23 @@ public:
 // then spin forever — a hard deadlock a `dc off`/`on` cannot clear because the flag
 // lives in the core CombatManager, not in DC. This trigger fires only when the bot is
 // in combat but nothing is fightable — nothing meleeing it, no victim, and EVERY unit
-// holding it in combat is unreachable-by-path or evading — sustained for
+// holding it in combat is unreachable-by-path, evading, forbidden by its own AI from
+// attacking us, or REACHABLE BUT NOT COMING — sustained for
 // DungeonClear.StuckCombatTimeout seconds (long by default so a scripted encounter
 // that intentionally holds combat is never mistaken for a stuck flag). Keying on
 // REACHABILITY (not distance) is the safety property: a fleeing or kiting party's
 // pursuers are always path-reachable, so it can never fire there; a combat forced by
-// a script with no unit reference is likewise never touched. Drives
+// a script with no unit reference is likewise never touched.
+//
+// The "reachable but not coming" arm is the S1487 addition. In an instance a creature
+// never leashes (the dungeon short-circuit in CanCreatureAttack), so a mob that tagged
+// the party and then stopped keeps its combat reference alive from wherever it stands
+// — alive, non-evading, path-reachable, allowed to attack, and completely inert. That
+// read as a real fight, so this hatch stood down while every DC gate keyed off "someone
+// is in combat" spun. It is bounded by CLOSING DISTANCE, not by distance or time alone:
+// a holder inside DC_ENGAGE_RANGE is a fight whatever the numbers say, and one that is
+// improving its closest-ever distance to us is chasing. Only a holder that is far AND
+// has stopped closing counts as stale. Drives
 // DungeonClearBreakStuckCombatAction, which force-clears combat + threat (the same
 // effect as a GM `.combatstop`). Inert the instant anything becomes fightable, outside
 // a live/unpaused DC run, and — deliberately — in any RAID zone, where an errant
@@ -450,6 +463,12 @@ private:
     // streaking. Reset to 0 the instant anything becomes fightable. The action reads
     // nothing from here — the force-clear is stateless.
     std::uint32_t stuckCombatSinceMs = 0;
+
+    // Closing-distance tracker over the NEAREST legitimate combat holder. Reachability
+    // proves a holder COULD come; this proves whether it IS coming. Re-armed only when
+    // there is nothing to measure (out of combat, a real fight, no legitimate holder),
+    // never on a tick where the holder merely happened to close — see IsActive.
+    DcProgressWatchdog holderCloseWatch;
 };
 
 // LEADER-only, COMBAT engine. The combat-side rung of the KillCreature-engage

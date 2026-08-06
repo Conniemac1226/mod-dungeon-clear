@@ -644,8 +644,32 @@ DungeonClearAdvanceAction::Step DungeonClearAdvanceAction::TryBetweenPullsRest(A
     // a single-tick trip (a follower momentarily at PartyMaxSpread while the tank
     // glides) would cost a full stop and re-issue — the micro-stutter. Ride out a
     // brief trip; a real wait trips every tick and halts within the budget.
+    //
+    // But ride out ONLY a glide that is already in flight. Falling through with no
+    // escort running lets the ladder below LAUNCH A FRESH 35-38yd window, and that is
+    // not "a few ticks of extra travel" — it is a five-second committed glide bought
+    // with a three-tick grace. A party that flickers ready/not-ready every few seconds
+    // then chains those windows into unlimited travel while the status panel says
+    // "waiting". Live in tr-20260804-153254-2: the tank covered 97 yards — y=14.8 to
+    // y=112.2, one gap of 34.87yd — entirely inside a "waiting on Toogo" yield, and
+    // ran straight through the Sunblade Mage Guard it had voted LEEROY on one second
+    // earlier at 20.1yd. The blocking-trash trigger was standing down on this very
+    // same IsBetweenPullsReady gate for the whole window, so nothing engaged the pack;
+    // it tagged two members and held the run in combat from 68yd back for 8 minutes.
+    //
+    // The gate must be symmetric: if we are not ready to FIGHT what is in front of us,
+    // we are not ready to walk into it either. Riding an in-flight glide keeps the
+    // anti-stutter property (DoRideLiveGlide claims the tick without re-issuing);
+    // refusing to start a new one is what closes the ratchet.
     if (++appr.partyNotReadyTicks <= DC_PARTY_YIELD_DEBOUNCE_TICKS)
-        return Step::Continue;
+    {
+        MotionMaster const* const mm = bot->GetMotionMaster();
+        bool const glideInFlight =
+            mm && mm->GetCurrentMovementGeneratorType() == ESCORT_MOTION_TYPE;
+        if (glideInFlight)
+            return Step::Continue;   // ride it out; a real wait halts it next tick
+        return Step::ReturnFalse;    // standing still already — do not commit a new window
+    }
 
     // Name the limiting member/reason with the SAME thresholds the gate used, so
     // this line says whether it was spread, HP/mana, or the rest latch instead of
@@ -740,11 +764,24 @@ void DungeonClearAdvanceAction::FillStuckObs(AdvanceState& st, DungeonClearAppro
     bool const moving = lastPosValid && bot->isMoving();
     uint32 const posStuck =
         appr.routeGlideWatch.TickDisplacement(moving, moved, DC_STUCK_DISPLACEMENT);
-    // Real forward progress (moving AND displaced past the threshold) clears any
-    // prior consecutive-rebuild count — the strongest signal the route resumed.
-    // Same signal re-arms the cheap Resnap rung: a resnap that actually restored
-    // movement must not count toward the give-up budget.
-    if (moving && moved >= DC_STUCK_DISPLACEMENT)
+    // Clearing the recovery ladder's counters needs PROGRESS, not motion. This used to
+    // read `moving && moved >= DC_STUCK_DISPLACEMENT` — any single tick that displaced
+    // half a yard re-armed both counters — which makes the whole escalation
+    // (resnap -> forced rebuild -> navmesh nudge -> stall) unreachable for the exact
+    // failure it exists to catch: a bot that is SHUTTLING. Live in
+    // tr-20260804-153254-2, where the tank was dragged back and forth over 29yd of the
+    // Kael'thas corridor by a stale combat flag for eight minutes: 87 of 87 posStuck
+    // events logged `resnapAttempts=1 rebuildAttempts=0`, the ladder never left rung 1,
+    // and the run hung silently instead of stalling with a `dc skip` prompt.
+    //
+    // Net progress is "did I get any nearer the objective than I have ever been on
+    // this approach" — the closing-distance watchdog, re-armed on a boss change. A
+    // shuttle can never satisfy it (its near end only ties the best, its far end is
+    // worse), while genuinely resumed travel satisfies it on the very next tick. It
+    // cannot mis-fire on a boss that WANDERS away either: the counters are only ever
+    // INCREMENTED on a posStuck tick (moving with ~0 displacement), which a bot that is
+    // actually travelling never produces.
+    if (appr.recoveryProgressWatch.TickClosing(st.engageDist, DC_STUCK_DISPLACEMENT, getMSTime()))
     {
         rebuildAttempts = 0;
         appr.resnapAttempts = 0;

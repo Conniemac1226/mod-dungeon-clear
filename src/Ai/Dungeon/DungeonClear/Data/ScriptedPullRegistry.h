@@ -71,12 +71,35 @@ class AiObjectContext;
 // ScriptedPullTravelBudgetMs below and its two use sites), and the arm gate can no
 // longer be measured from the camp at all (see `armX`).
 //
+// The SECOND plan on that map — the five-stage rotunda between Vexallus and
+// Delrissa — is the same machinery solving a differently-shaped room, and it is
+// worth knowing which parts of the above were about Selin specifically. There is no
+// wall to hide behind there: it is one open circle holding five formations whose
+// nearest members are 12-23yd apart, against a ~21yd elite aggro reach. So the
+// separation a stand spot provides is DISTANCE, not line of sight, and it only
+// exists relative to the packs that are still ALIVE when the spot is used. That
+// makes `order` load-bearing in a way it is not for Selin's mirrored pair: every
+// stage is approached across ground the previous stages emptied, and a stand spot is
+// only ever checked against the packs LATER in the order. Reorder those rows and the
+// coordinates stay valid while the plan stops working — which is why changing the
+// order means re-deriving the spots, not just renumbering (it did, when the order
+// became south -> centre -> east -> north-east -> north-west).
+//
+// It is also the plan that mostly does not tag at range. See `bodyPull` below: four
+// of those five rows are authored as body pulls, so their stand spots are waypoints
+// rather than firing positions and the distance that has to clear the still-live packs
+// is measured from the AGGRO EDGE the tank walks on to, ~8yd past the spot. The EAST
+// row is the exception — its neighbour is engaged at T=0 no matter what the opener is,
+// so there is no separation for a body pull to buy and the row keeps the 8yd instead.
+//
 // A stand spot is measured in-game and cannot be sanity-checked by eye: the first
 // west row here was, to two decimals on all three axes, the SPAWN POSITION OF ONE
 // OF THE MOBS, and the plan dutifully walked the tank into the middle of the pack
 // for four test runs while every gate downstream was patched around the symptom.
-// Cross-check a new row against `creature` before trusting it — the row-geometry
-// gtests in t/TestScriptedPull.cpp exist for exactly this.
+// Cross-check a new row against `creature` before trusting it — and against the
+// navmesh, which is how the rotunda's first east spot was caught sitting outside the
+// room's south-east wall. The row-geometry gtests in t/TestScriptedPull.cpp exist for
+// exactly this.
 //
 // Everything after the plan is the EXISTING advanced-pull machinery, unchanged:
 // the Forming/Advancing/Returning/Engage FSM, the follower hold-at-camp, the
@@ -92,11 +115,29 @@ struct ScriptedPullStage
     // volume holds no live pack member — i.e. once that pack has been peeled out
     // and killed. Must be unique per map (it is the stage's identity: the in-flight
     // stage is remembered as DcPullContext::scriptedStage).
+    //
+    // That "only once N is empty" rule is also how a plan states a PREREQUISITE, and
+    // the rotunda's first row is one: a Sunblade Sentinel patrols the hall the camp
+    // stands in and, left alive, walks into the middle of a later stage's drag-back.
+    // Expressed as stage order-2 whose volume is the patrol's own waypoint path, it
+    // costs no new machinery — nothing downstream can arm while that volume holds a
+    // live sentinel, and when the route trash already killed it on the way in the row
+    // reads empty and is skipped.
     uint32 order{0};
     char const* name{nullptr};
 
     // Party camp: where the followers hold, passive, and where the tank drags the
     // pack back to. Hand-authored OUT of the pack's line of sight.
+    //
+    // PER ROW, not per plan. Selin's two rows share one camp because his two packs
+    // are a mirrored pair either side of one doorway, so one piece of wall serves
+    // both. The rotunda's do not: one camp far enough back to be safe from the SOUTH
+    // pack is 97-102yd from the northern ones, and the drag-back is then most of the
+    // maneuver's wall clock and all of its risk. Those rows move the camp forward one
+    // room once the packs that made the back camp necessary are dead — which is only
+    // sound because the ordering already guarantees they are (see `order`), and
+    // because the forward camp still clears every LIVE pack by more than the 40yd a
+    // castFlags-64 caster answers by planting instead of coming.
     float campX{0.0f}, campY{0.0f}, campZ{0.0f};
 
     // Tank stand spot: the one place with line of sight to THIS pack and to
@@ -131,6 +172,14 @@ struct ScriptedPullStage
     // the middle of it. So a row whose camp is out of reach of its own work names its
     // arm anchor separately, and Selin's stays where it has always been: the staging
     // chamber in front of the doorway.
+    //
+    // A PATROL is the other thing that forces a row off its camp, and the rotunda rows
+    // are the case: their camp is clear floor 57yd from the nearest pack, but a
+    // Sunblade Sentinel's waypoint path runs the hall it stands in and passes 5.6yd
+    // from it. Route trash — dead before the party settles, in the healthy case — but
+    // an arm radius drawn at the camp covers the patrol's whole approach, so the stage
+    // could arm off a tank standing next to a live one. Their anchor sits forward at
+    // the mouth of the room's neck, which clears the patrol line and the camp both.
     float armX{0.0f}, armY{0.0f}, armZ{0.0f};
     float armRadius{0.0f};
 
@@ -145,6 +194,95 @@ struct ScriptedPullStage
     // faction 190 and sit at the centre of both guard packs), and a stage that
     // counted one would never report its pack cleared.
     std::vector<uint32> entries;
+
+    // TAKE THE TAG BY WALKING INTO THE PACK — never with a ranged opener.
+    //
+    // The default is the opposite, and for a good reason: a ranged tag lets the tank
+    // stand on the authored spot and stay there, which is the whole design of Selin's
+    // rows. A body pull is what happens when no opener resolves, and the code has
+    // always treated that as the degraded case.
+    //
+    // The rotunda inverts it, off live observation: pull most of those formations with
+    // a ranged opener and the tagged pack brings NEIGHBOURS that the same pull taken by
+    // body contact does not. That is not a wider CONFIG_CREATURE_FAMILY_ASSISTANCE_
+    // RADIUS — that radius is a flat config drawn around the PULLED mob and is the
+    // same either way — so this row does not try to out-measure it with geometry. It
+    // forbids the opener instead, which is the one lever that reproducibly changes
+    // which mobs come.
+    //
+    // The MECHANISM is worth knowing before setting this on a new row, because it
+    // decides which rows it can help. CallAssistance fires twice over: once at T=0 from
+    // the mob's SPAWN (engaging the neighbour 2000ms later), and then again every
+    // CreatureFamilyAssistancePeriod — 3s — from wherever the mob is standing by then,
+    // for the whole fight. Only the second kind is opener-dependent, because only it
+    // samples a position the pull style can change. So this flag buys separation for a
+    // pair that is a NEAR MISS at spawn and would have been caught by a later re-call,
+    // and buys nothing at all for a pair that is already inside at T=0. The rotunda's
+    // east/north-east pair is the second kind, which is why that row is ranged: see the
+    // cross-pack margin table in ScriptedPullRegistry.cpp.
+    //
+    // What it costs is the stand spot's original job. On a ranged row the spot is a
+    // FIRING POSITION and the tank never leaves it (DC_SCRIPTED_PULL_CREEP is 0). On a
+    // body-pull row it is a WAYPOINT: the tank walks to it, and then walks on to the
+    // aggro edge of its own pack — about 8 more yards, in a direction the spot chose.
+    // So the number a body-pull row is authored against is not "is the nearest member
+    // inside 30yd" but "is the point 18-19yd from the nearest member still clear of
+    // every pack this plan has not pulled yet". See the rotunda dossier in
+    // ScriptedPullRegistry.cpp for those five measurements, and
+    // RotundaBodyTagPointsClearEveryStillLivePack in t/TestScriptedPull.cpp for the
+    // assertion that keeps them true.
+    //
+    // Two things downstream key on this, both in DcPullActions' Advancing branch, and
+    // both already existed as the no-opener fallback path:
+    //   * the stand-spot CLAMP on the walk-in is dropped, so the tank may cross the
+    //     8yd from the spot to the aggro edge;
+    //   * the generic bystander detour is restored, because there is no longer an
+    //     authored firing lane for it to bend the tank off.
+    // The third is new and is only needed once a body pull is the PLAN rather than a
+    // fallback: the walk-to-the-stand-spot leg has to stop re-issuing itself once the
+    // tank has arrived (DcPullContext::scriptedAtStandMs), or the two legs fight —
+    // forward to the aggro edge, back to the spot, forward again.
+    bool bodyPull{false};
+
+    // WHICH member of the pack to tag: the one FURTHEST FROM THIS ANCHOR.
+    //
+    // The default ranks candidates by distance from the STAND SPOT and takes the
+    // nearest, which is the right answer for a ranged row (the nearest member is the
+    // one the opener can actually reach) and a defensible one for a body pull (the
+    // shortest walk in). It is the wrong answer when the pack has a NEIGHBOUR that is
+    // going to come anyway, because then the only quantity worth optimising is how far
+    // that neighbour has to run before it arrives.
+    //
+    // The rotunda's east pack is the case, and the reason is stock and measurable.
+    // Sunblade Mage Guard 96774 sits at (146.79, -125.14) with combat reach 1.8 and NE
+    // pack Ethereum Smuggler 96849 at (144.71, -113.34) with reach 1.25: 12.00yd apart
+    // against a limit of 13.05 — AnyAssistCreatureInRangeCheck hands
+    // CreatureFamilyAssistanceRadius (10) to IsWithinDistInMap with both radius flags
+    // set, so the two reaches are ADDED to the allowance, not subtracted from the gap.
+    // Inside by 1.05yd, at T=0, before anything moves. Creature::AtEngage runs
+    // CreatureGroup::MemberEngagingTarget for EVERY member of a groupAI-3 formation,
+    // and each of those goes through Unit::Attack, which calls CallAssistance() from
+    // the member's own SPAWN position. So tagging ANY east mob engages 96774 where it
+    // stands and pulls the north-east formation in behind it. No stand spot and no
+    // choice of target can prevent that — the call is issued before anything has moved.
+    //
+    // What the choice DOES decide is where the fight starts. Tag the east member
+    // nearest the north-east pack and the two formations converge on the tank at once;
+    // tag the one furthest from it and the east pack is already at the camp, being
+    // fought, by the time the north-east pack finishes its run. The anchor names the
+    // neighbour, not a spot on the floor: point it at the pack the plan cannot avoid
+    // waking, and the row takes the tag from the far side of its own.
+    //
+    // Everything else about selection is unchanged — the candidate must still be a live
+    // member of THIS stage's cylinder, still reachable, still not the abort target.
+    // (0,0,0) => rank nearest-to-the-stand-spot, as before.
+    float avoidX{0.0f}, avoidY{0.0f}, avoidZ{0.0f};
+
+    // True once a row names a neighbour to tag away from.
+    bool HasAvoidAnchor() const
+    {
+        return avoidX != 0.0f || avoidY != 0.0f || avoidZ != 0.0f;
+    }
 };
 
 // Vertical tolerance, in yards, for the arm-range test (a bot on the room's floor
@@ -199,10 +337,60 @@ inline constexpr float DC_SCRIPTED_PULL_CREEP = 0.0f;
 //           is walked back. Generous on purpose: it exists to catch a chase
 //           excursion, not to fight the tank's own footwork. It used to have to stay
 //           inside the ~20yd from camp to the doorway; with the camp 45yd back that
-//           ceiling is slack and 12yd is simply "planted, with footwork". This — not
-//           an arrival hold — is what keeps the tank off the doorway, and it applies
-//           for the entire fight rather than just its first seconds.
-inline constexpr float  DC_SCRIPTED_PULL_LEASH   = 12.0f;
+//           ceiling is slack. This — not an arrival hold — is what keeps the tank off
+//           the doorway, and it applies for the entire fight rather than just its
+//           first seconds.
+//
+// IT IS SIZED BY THE STEP-OUT, NOT BY THE FOOTWORK. It was 12yd — "planted, with
+// footwork" — and that number is wrong the moment a ground effect lands ON the camp,
+// because then the two rungs driving the bot are asking for incompatible places and
+// neither ever wins:
+//   * the generic avoid-aoe hops min(radius + 1, AiPlayerbot.FleeDistance) = 5yd from
+//     wherever the bot is standing, and CheckLastFlee then forbids reversing that hop
+//     for 5s — so a bot hauled back does not settle, it re-hops SIDEWAYS;
+//   * MgT's Magic Dampening Field step-out is stricter still: it only accepts a spot
+//     that clears every field by DAMPENING_CLEAR (9yd), off rings of 7/10/13/16yd
+//     around the bot.
+// And the bot doing the stepping is not standing on the camp anchor when the field
+// lands — it is in melee on something that reached the camp, i.e. already ~5yd out.
+// That puts the generic hop at ~10yd from camp and a dampening escape at ~14yd, both
+// outside a 12yd leash. So EVERY legal step-out tripped the recall, the recall walked
+// the bot back into the effect, and the effect pushed it out again. That is the
+// ping-pong the player watched: not a chase, two correct rungs with contradictory
+// destinations, neither of which can yield.
+//
+// 14 is that worst case with a yard of slack, and it is deliberately NOT the 18 this
+// number was first set to. The leash is not just a ceiling on an excursion — with the
+// release band below it also sets where the tank FIGHTS, and every yard of it is spent
+// permanently, on every camp fight, whether or not anything was ever dropped on the
+// camp. At 18/10 the tank's steady state was 10-20yd forward of the authored camp:
+// live, one Selin camp fight logged seven leash trips (18.0, 18.1, 18.6, 19.0, 19.3,
+// 20.8, 22.7yd) in under a minute, and eighteen across five minutes of play. That is
+// the reported "tank runs forward" — not the walk-in, the camp fight.
+//
+// The ping-pong this constant was widened for is fixed by the two rungs that landed
+// with it and not by the width: the recall RELEASES at DC_SCRIPTED_PULL_RECALL_HOME
+// (outside any field centred on the camp) instead of marching the tank back onto the
+// anchor, and a recall is dropped outright while the bot stands in a ground effect. 12
+// already cleared both step-out bounds the tests pin; 14 keeps a 4yd band above the
+// release so the latch cannot arm and clear on the same tick.
+//
+// It stays far short of what the plans need it to be short of: Selin's
+// camp-to-doorway gap, and the 40yd of caster range every rotunda row keeps between
+// its camp and every still-live pack. Both are pinned in t/TestScriptedPull.cpp.
+inline constexpr float  DC_SCRIPTED_PULL_LEASH   = 14.0f;
+
+// Where a tripped recall LETS GO. It used to be the generic 5yd camp-arrive ball, and
+// that gap IS the ping-pong's amplitude: trip at the leash and release at 5 is a
+// 13yd forced march back onto the exact point the bot was just pushed off — which,
+// for an effect centred on the camp, means back into the middle of it.
+//
+// A recall exists to end an excursion, not to re-plant the tank on a coordinate, so
+// it lets go once the tank is comfortably home. Wide enough to clear a field sitting
+// on the camp (a dampening escape is only ever accepted at 9yd out), and still well
+// inside the trip distance, so the latch cannot arm and clear on the same tick — the
+// in-out shuffle the old 5yd ball was chosen to avoid.
+inline constexpr float  DC_SCRIPTED_PULL_RECALL_HOME = 10.0f;
 
 // --- clocks on a scripted stage's ground --------------------------------------
 // A scripted stage's distances are authored, not emergent, and a row is free to put
@@ -239,12 +427,24 @@ inline constexpr uint32 ScriptedPullTravelBudgetMs(float yards)
     return DC_SCRIPTED_PULL_TRAVEL_BASE_MS + static_cast<uint32>(travelMs);
 }
 
-// The FOLLOWERS' leash. Tighter than the tank's: the tank plants ON the camp and
-// the pack piles onto it there, so a melee follower needs its fuzzed slot offset
-// plus melee reach and no more. Every extra yard is drift the follower spends
-// "parked" — yielding the tick to whatever is carrying it — before anything
-// objects.
-inline constexpr float  DC_SCRIPTED_PULL_FOLLOWER_LEASH = 8.0f;
+// The FOLLOWERS' leash. Tighter than the tank's, for the reason it always was: the
+// tank plants ON the camp and the pack piles onto it there, so a follower has less
+// legitimate ground to cover than the tank does.
+//
+// But sized the same way as the tank's — by the STEP-OUT, not by melee reach. It was
+// 8yd on the argument that a melee follower needs its fuzzed slot offset plus melee
+// reach and no more, and that argument holds right up until something is dropped on
+// the camp. A dampening-field escape is only ever ACCEPTED at 9yd or more from the
+// field centre, so an 8yd leash and a field on the camp were unsatisfiable at the
+// same time by construction: the follower stepped out, the leash pulled it straight
+// back in, and it spent the fight walking instead of casting. That is what "the party
+// never settles to dps or heal" looks like from the outside.
+//
+// 12 is a melee follower already ~5yd out on its mob plus the generic hop, and clear
+// of the 9yd a dampening escape is accepted at. Same correction as the tank's above:
+// this was first set to 15, which bought nothing the bound below does not already buy
+// and spent it on a party that fights three yards further forward all fight.
+inline constexpr float  DC_SCRIPTED_PULL_FOLLOWER_LEASH = 12.0f;
 
 // --- the losing-ground ratchet -------------------------------------------------
 // How much ground a leg that should only ever CLOSE may lose against its own

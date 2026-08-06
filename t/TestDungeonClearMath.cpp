@@ -5,6 +5,7 @@
 
 #include "gtest/gtest.h"
 #include "DungeonClearMath.h"
+#include "DcProgressWatchdog.h"
 
 // Test point directly on the segment (midpoint)
 TEST(DungeonClearMathTest, PointOnSegmentMidpoint)
@@ -1283,6 +1284,67 @@ TEST(DungeonClearStuckCombatTest, AnyRealFightSignalIsNotPhantom)
     EXPECT_FALSE(DungeonClearMath::IsPhantomCombat(true, false, false, true));
 }
 
+// Reachability says a holder COULD come; IsHolderProsecutingFight says whether it IS.
+TEST(DungeonClearStuckCombatTest, HolderInEngageRangeAlwaysProsecutes)
+{
+    constexpr float engageRange = 22.0f;
+
+    // Inside engage range is a fight whatever the closing tracker says — a mob toe to
+    // toe with us that simply cannot get closer must never read as stale.
+    EXPECT_TRUE(DungeonClearMath::IsHolderProsecutingFight(true, 5.0f, engageRange, false));
+    EXPECT_TRUE(DungeonClearMath::IsHolderProsecutingFight(true, engageRange, engageRange, false));
+
+    // The opaque script-forced case reports distance 0 with a legitimate verdict, so it
+    // lands here too and is never cleared.
+    EXPECT_TRUE(DungeonClearMath::IsHolderProsecutingFight(true, 0.0f, engageRange, false));
+}
+
+TEST(DungeonClearStuckCombatTest, FarHolderProsecutesOnlyWhileClosing)
+{
+    constexpr float engageRange = 22.0f;
+
+    // A chaser / a mob we are kiting keeps improving its closest-ever distance.
+    EXPECT_TRUE(DungeonClearMath::IsHolderProsecutingFight(true, 70.0f, engageRange, true));
+
+    // Far and no longer closing: the instanced no-leash straggler that tagged us and
+    // stopped. This is the arm that lets the hatch fire (tr-20260804-153254-2).
+    EXPECT_FALSE(DungeonClearMath::IsHolderProsecutingFight(true, 70.0f, engageRange, false));
+
+    // No legitimate holder at all -> nothing prosecuting, whatever the other inputs.
+    EXPECT_FALSE(DungeonClearMath::IsHolderProsecutingFight(false, 1.0f, engageRange, true));
+}
+
+// The closing signal is produced by DcProgressWatchdog::TickClosing, so wire the two
+// together the way the trigger does and prove the stale-holder shape converges: a
+// holder that stops reads as prosecuting exactly once (the arming sample) and never
+// again, while a party that walks AWAY from it cannot re-arm it.
+TEST(DungeonClearStuckCombatTest, StoppedHolderStopsProsecutingAndStaysStopped)
+{
+    constexpr float engageRange = 22.0f;
+    DcProgressWatchdog watch;
+    std::uint32_t now = 1000;
+
+    auto prosecuting = [&](float dist)
+    {
+        now += 200;
+        bool const closing = watch.TickClosing(dist, 0.5f, now);
+        return DungeonClearMath::IsHolderProsecutingFight(true, dist, engageRange, closing);
+    };
+
+    // First sample arms the tracker and counts as progress.
+    EXPECT_TRUE(prosecuting(70.0f));
+    // Holder is stationary: no improvement, so it stops counting as a fight.
+    EXPECT_FALSE(prosecuting(70.0f));
+    EXPECT_FALSE(prosecuting(70.0f));
+    // The party shuttles away and back — distance gets WORSE then returns to the same
+    // value, which is not an improvement on the closest-ever. Still stale.
+    EXPECT_FALSE(prosecuting(99.0f));
+    EXPECT_FALSE(prosecuting(70.0f));
+    // It finally starts chasing -> prosecuting again, and the hatch goes back to sleep.
+    EXPECT_TRUE(prosecuting(60.0f));
+    EXPECT_TRUE(prosecuting(40.0f));
+}
+
 // The streak gate: a transient phantom tick must not fire; only a phantom state held
 // continuously for the timeout does, and any break resets the clock.
 TEST(DungeonClearStuckCombatTest, StreakGateArmsHoldsAndFires)
@@ -1790,4 +1852,104 @@ TEST(DungeonClearPathCursorTest, FlatRouteIsUnaffectedByTheZTerm)
     };
     EXPECT_EQ(DungeonClearMath::PathProgressCursor(flat, 11.0f, 2.0f, 100.0f), 1u);
     EXPECT_EQ(DungeonClearMath::PathProgressCursor(flat, 19.0f, -3.0f, 100.5f), 2u);
+}
+
+// --- PullTagStopDistance (where the tag walk-in stops) ---------------------
+using DungeonClearMath::PullTagStopDistance;
+
+namespace
+{
+    // The live numbers this was rebuilt against: MgT's Sunblade elites carry
+    // detection_range 20 and are level 70-71 against a level-70 party, so
+    // GetAggroRange is 20-21yd. A bear tank's reach plus a humanoid's plus one is
+    // ~4.3yd, which is the value the rotunda log kept printing as its STOP distance.
+    float constexpr kAggro  = 20.0f;
+    float constexpr kMelee  = 4.3f;
+    // As passed by DcPullActions: 1500ms grace, 3yd/s, and a scripted stage's floor
+    // is the aggro edge less DC_PULL_SCRIPTED_CREEP_LIMIT (4yd).
+    uint32 constexpr kGrace = 1500;
+    float constexpr kRate   = 3.0f;
+    float constexpr kScriptedFloor = kAggro - 2.0f - 4.0f;   // 14.0
+}
+
+TEST(DcPullTagStopTest, StopsTwoYardsInsideTheAggroRadius)
+{
+    // The notice test is centre-to-centre distance vs GetAggroRange, re-run only on
+    // relocation — so the tank has to ARRIVE strictly inside the radius. Two yards.
+    bool force = true;
+    EXPECT_FLOAT_EQ(PullTagStopDistance(kAggro, kMelee, 0, kGrace, kRate, 0.0f, force),
+                    18.0f);
+    EXPECT_FALSE(force);
+    // Still 18 all the way through the grace: the arrival tick almost always trips
+    // the notice on its own, and re-creeping immediately would just add a redundant
+    // micro-move.
+    EXPECT_FLOAT_EQ(PullTagStopDistance(kAggro, kMelee, kGrace, kGrace, kRate, 0.0f,
+                                        force),
+                    18.0f);
+}
+
+TEST(DcPullTagStopTest, AnOrdinaryPullMayCreepAllTheWayToContact)
+{
+    // Unbounded is right for a corridor pull: the pack it eventually touches is the
+    // pack it came for, and a tank parked exactly at the edge is never re-evaluated.
+    bool force = false;
+    EXPECT_NEAR(PullTagStopDistance(kAggro, kMelee, kGrace + 1000, kGrace, kRate, 0.0f,
+                                    force),
+                15.0f, 0.01f);
+    EXPECT_FALSE(force);
+    EXPECT_FLOAT_EQ(PullTagStopDistance(kAggro, kMelee, kGrace + 10000, kGrace, kRate,
+                                        0.0f, force),
+                    kMelee);
+    EXPECT_TRUE(force);
+}
+
+TEST(DcPullTagStopTest, AScriptedStageCreepsFourYardsAndNoFurther)
+{
+    // THE REGRESSION. A scripted stage's clock used to run from the start of
+    // Advancing, which on a rotunda row is the far end of a 60-77yd walk to the stand
+    // spot — so the first walk-in tick already carried 10s+ of creep, the stop point
+    // collapsed onto the melee floor, and the tank body-pulled the formation from the
+    // inside. Live: `closing to aggro edge (27.5yd, stop 4.3)` on every stage of
+    // tp-20260803-232932-1, 10/10 runs stalled or wiped in that room.
+    //
+    // Two things stop it coming back. The caller now measures from stand-spot
+    // arrival, which is this function's `closingMs` argument and is asserted in
+    // DcPullActions rather than here. And the floor below, which bounds what any
+    // amount of clock can spend.
+    bool force = true;
+    for (uint32 ms : {kGrace + 5000, kGrace + 20000, kGrace + 120000})
+    {
+        EXPECT_FLOAT_EQ(PullTagStopDistance(kAggro, kMelee, ms, kGrace, kRate,
+                                            kScriptedFloor, force),
+                        kScriptedFloor)
+            << "closingMs=" << ms;
+        EXPECT_FALSE(force) << "closingMs=" << ms;
+    }
+    // And the four yards it may spend are real — the creep still exists, because a
+    // few more yards of approach is what generates the relocations the notice needs.
+    EXPECT_NEAR(PullTagStopDistance(kAggro, kMelee, kGrace + 1000, kGrace, kRate,
+                                    kScriptedFloor, force),
+                15.0f, 0.01f);
+    // 14.0 is a long way outside the pack. The rotunda's rows are authored with
+    // 12-24yd of margin measured at the aggro edge and none at all at the spawn, so
+    // "how far past the edge may this creep" is the difference between the plan
+    // working and the plan taking a neighbouring formation.
+    EXPECT_GT(kScriptedFloor, kMelee + 8.0f);
+}
+
+TEST(DcPullTagStopTest, ForceTagOnlyWhenClosingCannotCrossTheThreshold)
+{
+    // The core floors aggro at 5yd, so a much-higher-level tank can face a pack whose
+    // radius is inside its own melee reach. Closing can never trip the notice there —
+    // the caller has to swing — and that is the ONLY thing forceTag means.
+    bool force = false;
+    EXPECT_FLOAT_EQ(PullTagStopDistance(5.0f, kMelee, 0, kGrace, kRate, 0.0f, force),
+                    kMelee);
+    EXPECT_TRUE(force);
+
+    // A scripted stage's floor does not rescue a genuinely-too-small radius: body
+    // contact is the last floor either way.
+    EXPECT_FLOAT_EQ(PullTagStopDistance(5.0f, kMelee, 0, kGrace, kRate, 1.0f, force),
+                    kMelee);
+    EXPECT_TRUE(force);
 }

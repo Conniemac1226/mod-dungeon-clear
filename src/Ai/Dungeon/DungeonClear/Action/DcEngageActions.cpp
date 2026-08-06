@@ -737,9 +737,64 @@ bool DungeonClearEngageTrashAction::Execute(Event /*event*/)
     // (proximity/sticky) and pulls it. Gated on distance so ordinary
     // in-corridor pulls keep their direct bee-line; only genuinely far,
     // out-of-aggro targets are deferred.
-    if (bot->GetDistance(target) > DC_ENGAGE_RANGE &&
-        !IsDirectlyReachable(bot, target))
-        return false;
+    //
+    // BOUNDED, because "this action preempts again as the tank descends" is only true
+    // while Advance is walking us TOWARD the pack. When Advance is routing AWAY from it
+    // — a pack beside or behind the line to the next boss — the hand-off is permanent
+    // and nothing ever engages a pack DC has already decided to fight. That is how
+    // tr-20260804-153254-2 hung: `dynamic verdict for pack <24683/166>: LEEROY` at
+    // 15:52:09, then not one engage line for the rest of the run. The tank glided north
+    // to Kael'thas across the 98yd empty stretch after the last pack, the abandoned
+    // guard held two members in combat from 68yd back, and the run never recovered.
+    //
+    // So measure the premise instead of assuming it: keep deferring only while the gap
+    // is actually CLOSING. A genuine ramp descent improves the straight-line distance
+    // several times a second and never trips this; a tank walking away never improves
+    // it at all. Once the deferral has stopped paying for DC_LONGROUTE_DEFER_LIMIT
+    // ticks we take the tick back and walk in ourselves — but only for a pack the
+    // CHUNKED router says is reachable, so a genuinely unreachable pack (across a gap,
+    // behind a gate) still falls through to Advance rather than grinding at it.
+    DcApproachState& appr =
+        context->GetValue<DcApproachState&>(DcKey::ApproachState)->Get();
+    float const targetDist = bot->GetDistance(target);
+    if (targetDist > DC_ENGAGE_RANGE && !IsDirectlyReachable(bot, target))
+    {
+        if (appr.longRouteDeferTarget != target->GetGUID())
+        {
+            appr.longRouteDeferTarget = target->GetGUID();
+            appr.longRouteDeferWatch.Reset();
+            appr.longRouteDeferBlown = false;
+        }
+        // Only measure while the deferral is still on offer. Once it has lost, the
+        // verdict LATCHES for as long as this stays the target — it cannot be carried
+        // by the budget alone, because the walk-in step taken on the tick the budget
+        // blows improves the gap, which re-arms the closing test and hands the pack
+        // straight back. That would buy one engage tick per DC_LONGROUTE_DEFER_LIMIT
+        // with Advance reversing it in between: a stutter, not an engagement.
+        if (!appr.longRouteDeferBlown)
+        {
+            appr.longRouteDeferWatch.TickClosing(targetDist, DC_STUCK_DISPLACEMENT, getMSTime());
+            bool const advanceIsClosingTheGap =
+                appr.longRouteDeferWatch.stuckTicks < DC_LONGROUTE_DEFER_LIMIT;
+            if (advanceIsClosingTheGap ||
+                !DcEngageGeometry::IsReachable(bot, target->GetPositionX(),
+                                               target->GetPositionY(), target->GetPositionZ()))
+                return false;
+
+            LOG_INFO("playerbots.dungeonclear",
+                     "[DC:{}] engage trash: deferred {} to advance for {} ticks at {:.1f}yd "
+                     "without closing -> advance is not going there, walking in ourselves",
+                     bot->GetName(), target->GetGUID().ToString(),
+                     appr.longRouteDeferWatch.stuckTicks, targetDist);
+            appr.longRouteDeferBlown = true;
+        }
+    }
+    else
+    {
+        appr.longRouteDeferTarget.Clear();
+        appr.longRouteDeferWatch.Reset();
+        appr.longRouteDeferBlown = false;
+    }
 
     // CHASE LEASH. The sticky above is deliberately commit-and-hold — it never
     // releases on distance, because releasing on distance is what made the tank
@@ -2140,13 +2195,14 @@ bool DungeonClearDisableOnClearedAction::Execute(Event /*event*/)
 bool DungeonClearBreakStuckCombatAction::Execute(Event /*event*/)
 {
     // Phantom combat: the trigger has confirmed we've been flagged in combat with
-    // nothing fightable for the full StuckCombatTimeout. Force-clear it exactly as a
-    // GM `.combatstop` does — end combat AND remove ourselves from every threat list,
-    // so the far/unreachable holder that ghost-flagged us releases the reference
-    // instead of re-adding it next tick.
+    // nothing fightable for the full StuckCombatTimeout — no holder that is both
+    // reachable and actually coming for us. Force-clear it exactly as a GM
+    // `.combatstop` does — end combat AND remove ourselves from every threat list, so
+    // the far/unreachable/stationary holder that ghost-flagged us releases the
+    // reference instead of re-adding it next tick.
     LOG_INFO("playerbots.dungeonclear",
-             "[DC:{}] stuck-combat: flagged in combat with no reachable enemy past the "
-             "timeout -> force-clearing combat + threat",
+             "[DC:{}] stuck-combat: flagged in combat with nothing reachable and coming "
+             "for us past the timeout -> force-clearing combat + threat",
              bot->GetName());
     bot->CombatStop();
     bot->GetThreatMgr().RemoveMeFromThreatLists();

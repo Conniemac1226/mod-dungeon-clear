@@ -151,10 +151,30 @@ namespace
     {
         pull.scriptedStage = -1;
         pull.scriptedRecall = false;
+        pull.scriptedAtStandMs = 0;
         pull.scriptedReturnBest = 0.0f;
         pull.scriptedRecallBest = 0.0f;
         pull.scriptedEngageHp = -1.0f;
         pull.scriptedEngageSince = 0;
+    }
+
+    // Is the stage this pull is executing authored as a BODY pull — walk in and take
+    // the tag by contact, never with a ranged opener? False for an ordinary pull and
+    // for a ranged scripted row.
+    //
+    // Read at two sites in the Advancing branch, and it must be the same answer at
+    // both: the opener resolution (there is no opener on a body-pull row, by
+    // construction) and everything downstream that keys on "did an opener resolve" —
+    // the stand-spot clamp and the bystander detour. Deriving it twice from the row is
+    // cheap; deriving it inconsistently would clamp the tank onto a spot it is
+    // supposed to walk off.
+    bool ScriptedStageIsBodyPull(Player* bot, DcPullContext const& pull)
+    {
+        if (!bot || pull.scriptedStage < 0)
+            return false;
+        ScriptedPullStage const* const stage =
+            ScriptedPullRegistry::Find(bot->GetMapId(), pull.scriptedStage);
+        return stage && stage->bodyPull;
     }
 
     uint32 DcPullLegTimeoutMs(DcPullContext const& pull, float legDist)
@@ -351,6 +371,37 @@ namespace
     // master installed for exactly this reason) and leave the ramp alone.
     constexpr uint32 DC_PULL_TAG_CREEP_GRACE_MS = 1500;
     constexpr float DC_PULL_TAG_CREEP_YARDS_PER_SEC = 3.0f;
+
+    // How many yards of CREEP a SCRIPTED stage's walk-in may spend, total.
+    //
+    // On an ordinary pull the creep is unbounded and that is fine: it ends at body
+    // contact with the one pack the pull came for. On a scripted stage it ends inside
+    // a room of formations the plan has deliberately left standing, and the walk from
+    // the aggro edge to the pack's feet crosses every yard of margin the row was
+    // authored with. Four is enough approach to generate the relocations the notice
+    // test needs and far too few to reach a neighbour.
+    constexpr float DC_PULL_SCRIPTED_CREEP_LIMIT = 4.0f;
+
+    // THERE IS NO STEP-IN / RING-AND-CROSSING PAIR HERE ANY MORE, and the reason is
+    // worth keeping so it is not re-derived a third time.
+    //
+    // Two commits tried to bound the tank's overshoot by shortening the LEG: first a
+    // 2yd cap over the whole scripted walk-in, then a split that ran the approach at
+    // full speed to a ring 1.5yd outside GetAggroRange and stuttered only the ~3.5yd
+    // inside it. Both were aimed at the wrong quantity. The overshoot was never the
+    // leg's length — it was that nothing was CANCELLING the leg, because every brake on
+    // the walk-in used a stop strength that early-outs on bot->isMoving(), which a
+    // server-driven spline never sets. DcPullBrake fixed that at the combat flag with
+    // an unconditional stop (measured: 18.9yd -> 18.8yd, 0.1yd of coast), and the
+    // aggro-edge hold below now takes the same strength.
+    //
+    // The split also never ran. Its band is holdRing - tagStop = margin + 2 = 3.5yd,
+    // and a tank at 7.5yd/s covers 2.4-3.5yd per think, so a running bot steps over the
+    // whole band between two samples: zero "crossing the aggro edge" lines in ten
+    // minutes of live play across seven concurrent runs, including a body-pull row that
+    // ran a full walk-in. What it did do was label every ORDINARY pull's walk-in
+    // "approaching the ring" against a ring nothing aimed at, which is worse than dead
+    // code — it is dead code that answers a question in the log.
 
     // Consecutive fizzled pulls of the SAME pack (Engage cleanup found the pull
     // target alive and idle — the drag never delivered it) before the pack is
@@ -555,17 +606,22 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
                 DcMovement::StopBot(bot, DcMovement::Stop::Hold);
                 DcFaceIfNeeded(bot, trash);
                 DcSetPullPhase(context, DcPullPhase::Forming);
-                // THE OPENER, ON THE PLAN LINE. The whole maneuver is "tag from the
-                // stand spot without moving off it", so whether the tank has anything
-                // to tag WITH is the single most load-bearing fact about the attempt —
-                // and it was the one fact the log never carried. A stage with no
-                // opener is silent in exactly the same way as a stage with one: the
-                // tank walks to the spot, holds, and the leg watchdog eventually hands
-                // the pack to the walk-in. Telling those two apart took a database
-                // query against the tank's ammo slot (tr-20260803-154419-13). Once
-                // per stage, next to the coordinates it belongs with.
+                // THE OPENER, ON THE PLAN LINE. On a RANGED row the whole maneuver is
+                // "tag from the stand spot without moving off it", so whether the tank
+                // has anything to tag WITH is the single most load-bearing fact about
+                // the attempt — and it was the one fact the log never carried. A stage
+                // with no opener is silent in exactly the same way as a stage with one:
+                // the tank walks to the spot, holds, and the leg watchdog eventually
+                // hands the pack to the walk-in. Telling those two apart took a
+                // database query against the tank's ammo slot (tr-20260803-154419-13).
+                // Once per stage, next to the coordinates it belongs with.
+                //
+                // A BODY-PULL row does not resolve one at all — not "resolves one and
+                // ignores it". Asking would put a spell id on the plan line that the
+                // stage is never going to cast, which is exactly the kind of log that
+                // sends the next reader looking for a cooldown or an ammo slot.
                 std::optional<ResolvedPullSpell> const opener =
-                    ResolvePullSpell(botAI, bot);
+                    stage->bodyPull ? std::nullopt : ResolvePullSpell(botAI, bot);
                 DC_PULL_INFO("[DC:{}] scripted-pull plan [{}]: target {} at {:.1f}yd | "
                              "camp ({:.1f},{:.1f},{:.1f}) | stand "
                              "({:.1f},{:.1f},{:.1f}) | opener {} -> forming, waiting "
@@ -574,10 +630,14 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
                              trash->GetGUID().ToString(), bot->GetExactDist(trash),
                              stage->campX, stage->campY, stage->campZ,
                              stage->standX, stage->standY, stage->standZ,
-                             opener ? std::to_string(opener->spellId)
-                                    : std::string("NONE (no class opener and no usable "
-                                                  "ranged weapon — this stage cannot "
-                                                  "tag and will time out)"));
+                             stage->bodyPull
+                                 ? std::string("none — this row is authored as a BODY "
+                                               "PULL, and the stand spot is a waypoint "
+                                               "on the way to the pack's aggro edge")
+                             : opener ? std::to_string(opener->spellId)
+                                      : std::string("NONE (no class opener and no usable "
+                                                    "ranged weapon — this stage cannot "
+                                                    "tag and will time out)"));
                 return true;
             }
 
@@ -949,7 +1009,20 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
             // where it tagged, and re-issuing a walk to the stand spot would fight
             // both. Arrival tolerance is the camp-arrive radius — the spot is a
             // vantage point, not a pixel.
-            if (pull.scriptedStage >= 0 && pull.tagTarget != trash->GetGUID())
+            //
+            // And skipped once the tank has ARRIVED, whether or not anything is tagged
+            // yet — DcPullContext::scriptedAtStandMs, stamped below. On a ranged row
+            // those two conditions coincide (the tag is taken from the spot, so the
+            // tank is standing on it when tagTarget goes live) and the latch changes
+            // nothing. On a BODY-PULL row they are opposites: arriving is precisely
+            // when the tank starts walking AWAY, out to the pack's aggro edge ~8yd on,
+            // and nothing is tagged until it gets there. Without the latch this leg
+            // sees the tank drift past the arrive radius a tick or two into that walk
+            // and hauls it back, then the tag leg pushes forward again — the reported
+            // walk-forward / turn-around / walk-forward shuffle, which in this room
+            // also burns the leg budget without ever reaching the pack.
+            if (pull.scriptedStage >= 0 && pull.scriptedAtStandMs == 0 &&
+                pull.tagTarget != trash->GetGUID())
             {
                 if (ScriptedPullStage const* stage =
                         ScriptedPullRegistry::Find(bot->GetMapId(), pull.scriptedStage))
@@ -978,9 +1051,15 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
                     }
                     else
                     {
-                        // Arrived. Drop the walk-in's MOVEMENT_COMBAT wait so it can't
-                        // refuse the drag-back the tag is about to trigger (same stall
-                        // the ranged-tag branches below clear).
+                        // Arrived. Latch it — the leg is done, and on a body-pull row
+                        // the tank is about to leave the spot on purpose.
+                        pull.scriptedAtStandMs = now;
+                        DC_PULL_DEBUG("[DC:{}] scripted-pull: on the stand spot "
+                                      "({:.1f}yd) -> taking the tag from here",
+                                      bot->GetName(), toStand);
+                        // Drop the walk-in's MOVEMENT_COMBAT wait so it can't refuse
+                        // the drag-back the tag is about to trigger (same stall the
+                        // ranged-tag branches below clear).
                         DcMovement::StopBot(bot, DcMovement::Stop::Soft);
                         DcMovement::ClearMovementWait(bot);
                     }
@@ -1146,8 +1225,17 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
             // onto the stand spot and the suppressed bystander detour — exists to
             // serve a tag the tank can take FROM that spot, and is meaningless when
             // there is nothing to take it with. See the fallback at the clamp.
+            //
+            // A BODY-PULL row (ScriptedPullStage::bodyPull) declines to resolve one at
+            // all, which routes the rest of this branch down the no-opener path
+            // deliberately rather than by accident: the clamp comes off, the bystander
+            // detour comes back, and the walk-in below closes to the pack's aggro edge.
+            // That path already existed and is already the one every openerless tank
+            // takes; the row is choosing it rather than discovering it.
+            bool const bodyPullStage = ScriptedStageIsBodyPull(bot, pull);
             std::optional<ResolvedPullSpell> const opener =
-                DC_TRY_PULL_SPELL ? ResolvePullSpell(botAI, bot) : std::nullopt;
+                (DC_TRY_PULL_SPELL && !bodyPullStage) ? ResolvePullSpell(botAI, bot)
+                                                      : std::nullopt;
 
             ObjectGuid const lastPull = pull.tagTarget;
             if (DC_TRY_PULL_SPELL)
@@ -1167,7 +1255,28 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
                         // drag-back the moment aggro lands — and both would
                         // otherwise be silently held down for whatever is left of
                         // the approach budget while the pack chews on the tank.
-                        DcMovement::StopBot(bot, DcMovement::Stop::Soft);
+                        //
+                        // HARDPIN, AND NOT BECAUSE THE GLIDE NEEDS IT. This site spent
+                        // a commit on Soft -> Hold "because Soft is not escort-aware",
+                        // and that was the wrong axis twice over: DcMoveTo already
+                        // calls ResolveEscortConflict on every issuance, so the walk-in
+                        // killed Advance's glide with its own first leg and there is
+                        // none left here — and what IS in flight is a POINT move
+                        // (DcMoveTo -> MoveTo -> DoMovePoint -> MovePoint), which Hold
+                        // does not treat any differently from Soft. Both early-out on
+                        // bot->isMoving(), so on this branch they are the same code and
+                        // that commit changed nothing.
+                        //
+                        // The stop that has to land here is the UNCONDITIONAL one. The
+                        // two-to-three seconds between the tag and aggro flipping the
+                        // phase to the drag-back are the window in which neither pull
+                        // rung is live to re-issue anything, so a leg left running is a
+                        // leg that carries the tank off the authored spot and into the
+                        // room — the reported "tags, runs forward a few ticks, turns
+                        // around and runs back". HardPin is the only strength that
+                        // cancels a point-move whatever isMoving() says, which is the
+                        // same reason DcPullBrake takes it.
+                        DcMovement::StopBot(bot, DcMovement::Stop::HardPin);
                         DcMovement::ClearMovementWait(bot);
                         DcFaceIfNeeded(bot, trash);
                         DC_PULL_TRACE("[DC:{}] pull advancing: tagged, holding for aggro "
@@ -1189,21 +1298,20 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
                             // landed, so the walk-in's MOVEMENT_COMBAT wait must not
                             // survive to refuse the drag-back.
                             //
-                            // HOLD, not Soft, for a scripted stage. Stop::Soft is not
-                            // escort-aware, and the tick before a tag lands is very
-                            // often the one that issued a closing glide — the pack's
-                            // nearest member sat at 30.6yd against a 30yd opener in
-                            // tr-20260803-140306-1, so the leg stepped forward and
-                            // tagged at 29.1yd on the next tick. A Soft stop leaves
-                            // that glide running, and the next few seconds are exactly
-                            // the window where neither pull rung is live to re-issue
-                            // anything (the non-combat trigger has gone quiet on the
-                            // new combat flag, the drag-back is not on the combat
-                            // engine yet). Coasting anywhere in that window is coasting
-                            // off the authored spot toward the pack.
-                            DcMovement::StopBot(bot, pull.scriptedStage >= 0
-                                                         ? DcMovement::Stop::Hold
-                                                         : DcMovement::Stop::Soft);
+                            // HARDPIN, for the reason spelled out on the dwell above.
+                            // The tick before a tag lands is very often the one that
+                            // issued a closing leg — the pack's nearest member sat at
+                            // 30.6yd against a 30yd opener in tr-20260803-140306-1, so
+                            // the leg stepped forward and tagged at 29.1yd on the next
+                            // tick — and the next few seconds are exactly the window
+                            // where neither pull rung is live to re-issue anything (the
+                            // non-combat trigger has gone quiet on the new combat flag,
+                            // the drag-back is not on the combat engine yet). Coasting
+                            // anywhere in that window is coasting off the authored spot
+                            // toward the pack, and Soft/Hold both let it, because both
+                            // early-out on a bot whose movement flags a server-driven
+                            // spline never sets.
+                            DcMovement::StopBot(bot, DcMovement::Stop::HardPin);
                             DcMovement::ClearMovementWait(bot);
                             DC_PULL_INFO("[DC:{}] advanced-pull: ranged tag spell {} at "
                                          "{:.1f}yd", bot->GetName(), pick->spellId, d);
@@ -1247,35 +1355,55 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
             if (trashCreature)
             {
                 meleeReach = bot->GetCombatReach() + trash->GetCombatReach() + 1.0f;
-                tagStop = trashCreature->GetAggroRange(bot) - 2.0f;
-                // Creep the stop point inward the longer we go without aggro. A tank
-                // parked exactly at the edge is never re-evaluated (no relocation ->
-                // no MoveInLineOfSight), so stepping a little closer each tick is what
-                // ultimately trips the notice.
+                float const aggroRange = trashCreature->GetAggroRange(bot);
+
+                // THE CREEP CLOCK IS "HOW LONG HAVE I BEEN CLOSING", NOT "HOW LONG
+                // HAVE I BEEN IN THIS PHASE". On an ordinary pull those are the same
+                // thing: Advancing begins at commit range, a couple of yards outside
+                // aggro, so the walk-in starts on the phase's first tick. That is the
+                // pull the creep was tuned against, and it behaves well.
                 //
-                // The grace before the creep starts is DEAD TIME, and it is the
-                // "walks up to the mob and just stands there" beat in the pull: the
-                // tank has stopped, so by construction nothing will re-evaluate the
-                // pack's aggro until we move again. Waiting a beat is still right —
-                // the arrival tick itself usually trips the notice and re-creeping
-                // immediately would just add a redundant micro-move — but it only
-                // needs to be a couple of AI ticks, not a second and a half. Trimmed
-                // to DC_PULL_TAG_CREEP_GRACE_MS and sped up to
-                // DC_PULL_TAG_CREEP_YARDS_PER_SEC, so a pack that doesn't notice on
-                // arrival is walked into within a fraction of a second instead of
-                // several. Both stay far inside the leg watchdog.
-                uint32 const advancingMs = now - since;
-                if (advancingMs > DC_PULL_TAG_CREEP_GRACE_MS)
-                    tagStop -= ((advancingMs - DC_PULL_TAG_CREEP_GRACE_MS) / 1000.0f) *
-                               DC_PULL_TAG_CREEP_YARDS_PER_SEC;
-                // Floor at body contact. If the pack's aggro is at/below melee (a
-                // much-higher-level tank vs the core's 5yd minimum aggro), closing to
-                // the edge can't cross it — go to contact and actively tag instead.
-                if (tagStop <= meleeReach)
-                {
-                    tagStop = meleeReach;
-                    forceTag = true;
-                }
+                // A SCRIPTED stage breaks the identity. Advancing there begins at the
+                // CAMP and spends its first leg walking to the row's stand spot — up to
+                // 77yd of it, ten seconds and more. By the time the tank turns to face
+                // the pack the clock already reads far past the grace and the creep
+                // term is bigger than the whole aggro radius, so the stop point lands
+                // on the melee floor and "walk to the aggro edge and let the pack
+                // notice" silently becomes "walk into the middle of the formation and
+                // swing".
+                //
+                // Live (tr-20260803-232937-1 and every sibling in
+                // tp-20260803-232932-1): the rotunda walk-in opened at `stop 4.3`
+                // against a 20yd aggro radius — body contact — on every stage, and took
+                // neighbouring formations with it every time. 10/10 runs stalled or
+                // wiped in that room having cleared the two bosses before it.
+                //
+                // So on a scripted stage the clock starts when the tank REACHES the
+                // stand spot: the moment its next step is the walk-in, which is the
+                // same event the ordinary pull has always measured from.
+                uint32 const closingSince =
+                    (pull.scriptedStage >= 0 && pull.scriptedAtStandMs != 0)
+                        ? pull.scriptedAtStandMs
+                        : since;
+
+                // AND ON A SCRIPTED STAGE THE CREEP IS BOUNDED — the guard rail behind
+                // the clock. An ordinary pull may creep all the way to body contact
+                // because over-creeping into one corridor pack costs nothing: the pack
+                // it ends up touching is the pack it came for. A scripted stage is
+                // standing in a room full of formations the plan has deliberately left
+                // up, and the yards between the aggro edge and the pack's feet are
+                // exactly the ones that reach them — the rotunda's rows are authored
+                // with 12-24yd of margin at the edge and none at all at the spawn.
+                float const creepFloor =
+                    pull.scriptedStage >= 0
+                        ? aggroRange - 2.0f - DC_PULL_SCRIPTED_CREEP_LIMIT
+                        : 0.0f;
+
+                tagStop = DungeonClearMath::PullTagStopDistance(
+                    aggroRange, meleeReach,
+                    now > closingSince ? now - closingSince : 0,
+                    DC_PULL_TAG_CREEP_GRACE_MS, DC_PULL_TAG_CREEP_YARDS_PER_SEC,
+                    creepFloor, forceTag);
             }
 
             if (trashCreature && toTag <= tagStop)
@@ -1331,8 +1459,22 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
                 // step, or the drag-back once aggro lands — is refused
                 // (IsWaitingForLastMove yields to a strictly greater priority only)
                 // for whatever is left of the approach budget, with the tank stood
-                // in the pack taking hits. Stop::Soft does not zero it, so say so.
-                DcMovement::StopBot(bot, DcMovement::Stop::Soft);
+                // in the pack taking hits. Neither stop strength zeroes it, so say so.
+                //
+                // AND THE STOP ITSELF HAS TO BE THE UNCONDITIONAL ONE, because this
+                // branch is where "walk to the aggro edge and let the pack come" is
+                // actually enforced and it was not enforcing anything. Stop::Soft is
+                // `if (bot->isMoving()) StopMoving()`, and a bot moved by a server-side
+                // spline carries none of the MovementInfo flags isMoving() reads — the
+                // MOVEMENTFLAG_FORWARD that would set them is commented out in
+                // mod-playerbots. So the guard was false and no stop was ever issued.
+                //
+                // Live (20:45:52, rotunda hall-patrol row): the aim point was 19.0yd
+                // and this line logged "at aggro edge, hold for aggro" on eight
+                // consecutive thinks while the range read 19.0, 16.9, 14.8, 12.7, 10.6,
+                // 8.5, 6.5, 4.7 — fifteen yards of closing, held by nothing, ending at
+                // body contact. HardPin is the strength that does not ask.
+                DcMovement::StopBot(bot, DcMovement::Stop::HardPin);
                 DcMovement::ClearMovementWait(bot);
                 DcFaceIfNeeded(bot, trash);
                 DC_PULL_TRACE("[DC:{}] pull advancing: at aggro edge ({:.1f}yd, "
@@ -1340,8 +1482,10 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
                 return true;
             }
 
-            // Aim for a point tagStop yards out from the pack on the tank's side,
-            // not the pack's centre, so the run stops at the aggro edge.
+            // Aim for a point `tagStop` yards out from the pack on the tank's side, not
+            // the pack's centre, so the run stops at the aggro edge. ONE leg, at speed:
+            // the ring-and-crossing split that used to sit here is gone, and the note on
+            // DC_PULL_SCRIPTED_CREEP_LIMIT says why.
             float tagX = trash->GetPositionX();
             float tagY = trash->GetPositionY();
             float tagZ = trash->GetPositionZ();
@@ -1399,12 +1543,20 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
             // pull there takes the centre pair too. That is the price of having no
             // opener, it is why the ranged fallback is worth keeping working, and it is
             // still the better of the two available outcomes.
+            //
+            // A row that ASKED for a body pull lands in the same place by design, and
+            // the two are worth telling apart in the log: one is the plan working, the
+            // other is a gear/level accident that the plan is coping with.
             bool const canTag = opener.has_value();
             if (pull.scriptedStage >= 0 && !canTag)
             {
-                DC_PULL_TRACE("[DC:{}] scripted-pull: no opener resolves — body-pulling "
-                              "the pack instead of holding the stand spot ({:.1f}yd to "
-                              "target)", bot->GetName(), toTag);
+                DC_PULL_TRACE("[DC:{}] scripted-pull: {} — walking to the pack's aggro "
+                              "edge ({:.1f}yd to target)", bot->GetName(),
+                              bodyPullStage
+                                  ? "the row is authored as a BODY PULL"
+                                  : "no opener resolves, so this falls back to a body "
+                                    "pull instead of holding the stand spot",
+                              toTag);
             }
             if (pull.scriptedStage >= 0 && canTag)
             {
@@ -1456,8 +1608,32 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
                 tagY = avoid->GetPositionY();
                 tagZ = avoid->GetPositionZ();
             }
+            // BAIL OUTRIGHT ONCE THE TANK IS FLAGGED.
+            //
+            // This branch normally goes silent the moment combat starts — the pull
+            // trigger is a non-combat trigger — but "normally" is a race, and on the
+            // tick it does get, the answer is not "take another step toward the pack
+            // that just noticed you". Kill the inbound leg here so the drag-back
+            // inherits a stopped tank rather than a coasting one.
+            //
+            // HardPin, not Hold: Hold early-outs on a bot that is not currently
+            // ESCORT-gliding and whose isMoving() reads false, which is every bot on a
+            // point-move walk-in. DcPullBrake already stops the tank at the flag itself
+            // (earlier than any think, by construction), so this is a backstop for the
+            // case the brake missed the 0->1 transition — a tank that entered combat
+            // before the walk-in began. Doing it twice is free.
+            if (pull.scriptedStage >= 0 && bot->IsInCombat())
+            {
+                DcMovement::StopBot(bot, DcMovement::Stop::HardPin);
+                DcMovement::ClearMovementWait(bot);
+                DC_PULL_TRACE("[DC:{}] scripted-pull: aggro landed mid walk-in "
+                              "({:.1f}yd to target) -> killing the inbound leg",
+                              bot->GetName(), toTag);
+                return true;
+            }
             DC_PULL_TRACE("[DC:{}] pull advancing: closing to aggro edge ({:.1f}yd, "
-                          "stop {:.1f})", bot->GetName(), toTag, tagStop);
+                          "stop {:.1f}, leg {:.1f})", bot->GetName(), toTag, tagStop,
+                          bot->GetExactDist2d(tagX, tagY));
             bool const moved = DcMoveTo(trash->GetMapId(), tagX, tagY, tagZ,
                                       /*idle*/ false, /*react*/ false, /*normal_only*/ false,
                                       /*exact_waypoint*/ false, MovementPriority::MOVEMENT_COMBAT);
@@ -1815,7 +1991,14 @@ bool DungeonClearPullManeuverAction::Execute(Event /*event*/)
     if (pull.scriptedStage >= 0 && phase == DcPullPhase::Engage)
     {
         float const toCamp = bot->GetExactDist(&camp);
-        if (!pull.scriptedRecall && toCamp > DC_SCRIPTED_PULL_LEASH)
+        // A TANK STANDING IN FIRE IS ALLOWED TO BE OFF THE CAMP. The leash and a
+        // ground-effect step-out are both right and they want different places, so
+        // the leash is the one that gives — see DcInGroundEffect. It suppresses the
+        // ARM (below) and cancels an armed recall (further down); the predicate goes
+        // false the instant the tank is clear, so the leash re-arms by itself if the
+        // step-out left it genuinely out of position.
+        bool const inGroundEffect = DcInGroundEffect(context);
+        if (!pull.scriptedRecall && toCamp > DC_SCRIPTED_PULL_LEASH && !inGroundEffect)
         {
             pull.scriptedRecall = true;
             // Arm the ground ratchet at the distance the leash tripped at (see the
@@ -1832,13 +2015,32 @@ bool DungeonClearPullManeuverAction::Execute(Event /*event*/)
         }
         if (pull.scriptedRecall)
         {
-            if (toCamp <= DC_PULL_CAMP_ARRIVE)
+            // Home is a BAND, not the anchor point — see DC_SCRIPTED_PULL_RECALL_HOME.
+            // Walking the last ten yards back onto the exact coordinate is what put
+            // the tank back inside whatever pushed it off in the first place.
+            if (toCamp <= DC_SCRIPTED_PULL_RECALL_HOME)
             {
                 pull.scriptedRecall = false;
                 pull.scriptedRecallBest = 0.0f;
                 DcMovement::StopBot(bot, DcMovement::Stop::Soft);
                 DC_PULL_DEBUG("[DC:{}] scripted-pull: back on the camp ({:.1f}yd) -> "
                               "fighting", bot->GetName(), toCamp);
+                return false;
+            }
+
+            // Walked into a ground effect on the way home (or the effect landed on
+            // us): drop the recall and hand the tick to the step-out. Cancelling
+            // rather than pausing keeps the losing-ground ratchet honest — there is
+            // no leg in flight to measure — and the leash re-arms on its own once we
+            // are clear and still outside it.
+            if (inGroundEffect)
+            {
+                pull.scriptedRecall = false;
+                pull.scriptedRecallBest = 0.0f;
+                DC_PULL_INFO("[DC:{}] scripted-pull: recall cancelled at {:.1f}yd — "
+                             "standing in a ground effect, so the step-out owns the "
+                             "tick; the leash re-arms once we are clear",
+                             bot->GetName(), toCamp);
                 return false;
             }
 

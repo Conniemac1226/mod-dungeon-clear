@@ -34,9 +34,16 @@ class Player;
 //   * its AI is neutralized (stay + passive, GM mode on) so the character
 //     never wanders, fights, or draws aggro while parked.
 //
+// The character and its account are created on first use
+// (DungeonClear.TestRun.DriverAccount, default "dcdriver") — a console-only
+// harness that cannot run until someone logs in with a game client to make a
+// level-1 character is a harness nobody can use out of the box. Set the
+// account to "" to opt out and provide the character yourself.
+//
 // The driver's account must NOT be in AiPlayerbot.RandomBotAccounts (the
 // random-bot rotation would manage/log it out) and must not be an addclass
-// pool account (pool chars get claimed as party slots).
+// pool account (pool chars get claimed as party slots) — a random-bot account
+// is refused rather than used.
 //
 // All world-thread only.
 namespace DcTestDriver

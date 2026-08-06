@@ -5,11 +5,19 @@
 
 #include "TestRun/DcTestDriver.h"
 
+#include <algorithm>
+
+#include "AccountMgr.h"
 #include "CharacterCache.h"
 #include "Config.h"
+#include "DatabaseEnv.h"
 #include "Log.h"
+#include "MotionMaster.h"
 #include "ObjectAccessor.h"
+#include "ObjectMgr.h"
 #include "Player.h"
+#include "Random.h"
+#include "Timer.h"
 #include "WorldSession.h"
 
 #include "Playerbots.h"
@@ -26,6 +34,15 @@ namespace DcTestDriver
         bool _loginIssued = false;
         bool _initialized = false;
 
+        // Auto-provisioning state. _provisionTried latches per conf name so a
+        // refusal (bad name, forbidden account) is reported once instead of
+        // being retried by every command; _awaitingFlush holds the login back
+        // until the character we just created is actually readable from the DB.
+        bool _provisionTried = false;
+        std::string _provisionRefusal;  // replayed, so the retry keeps the real reason
+        bool _awaitingFlush = false;
+        uint32 _flushProbedAt = 0;  // getMSTime() of the last "is it there yet" probe
+
         std::string ConfName()
         {
             // showLogs=false: a missing conf line is normal (the default below is
@@ -33,6 +50,14 @@ namespace DcTestDriver
             // DcSettings.h. String-valued, so the numeric registry can't hold it.
             return sConfigMgr->GetOption<std::string>("DungeonClear.TestRun.DriverCharacter",
                                                       "Dcdriver", false);
+        }
+
+        // Account that owns the driver character. Empty turns auto-provisioning
+        // off entirely, for operators who would rather create it by hand.
+        std::string ConfAccount()
+        {
+            return sConfigMgr->GetOption<std::string>("DungeonClear.TestRun.DriverAccount",
+                                                      "dcdriver", false);
         }
 
         // Resolve (and re-resolve after a conf change) the driver's guid.
@@ -43,11 +68,171 @@ namespace DcTestDriver
                 return ObjectGuid::Empty;
             if (_guid && name == _resolvedName)
                 return _guid;
+            if (name != _resolvedName)
+            {
+                // A renamed driver is a different character — the new name
+                // gets its own provisioning attempt.
+                _provisionTried = false;
+                _provisionRefusal.clear();
+                _awaitingFlush = false;
+            }
             _guid = sCharacterCache->GetCharacterGuidByName(name);
             _resolvedName = name;
             _initialized = false;
             _loginIssued = false;
             return _guid;
+        }
+
+        // The manual recipe, for every case where we won't or can't do it.
+        std::string ManualSetup(std::string const& name)
+        {
+            return "test driver character '" + name +
+                   "' not found — create it on a dedicated bot account and set "
+                   "DungeonClear.TestRun.DriverCharacter";
+        }
+
+        // A password for an account nobody is meant to log into. The character
+        // is logged in headlessly through the fake-session path, which never
+        // authenticates, so this is written once and deliberately never
+        // recorded anywhere — an operator who wants the account back uses
+        // `account set password`.
+        std::string RandomPassword()
+        {
+            static char const alphabet[] =
+                "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+            std::string out;
+            out.reserve(MAX_PASS_STR - 1);
+            for (uint32 i = 0; i < MAX_PASS_STR - 1; ++i)
+                out += alphabet[urand(0, sizeof(alphabet) - 2)];
+            return out;
+        }
+
+        // Create the driver's account and character when they don't exist.
+        //
+        // Every `.dc test` that isn't typed by an in-game GM needs this
+        // character, and that is all of them from the console, the AC Command
+        // Deck and Test Deck (SOAP commands run through the same CLI queue).
+        // Without this the harness is unusable until someone reads a config
+        // comment, makes an account and logs into the game with a client to
+        // make one level-1 character.
+        //
+        // Mirrors RandomPlayerbotFactory::CreateRandomBot, the core's only
+        // headless character-creation path: a detached WorldSession, a
+        // CharacterCreateInfo, Player::Create, SaveToDB, then the cache entry
+        // that makes the name resolvable. Human warrior with default
+        // appearance — nothing about a parked GM stand-in depends on either,
+        // and it is a valid race/class pair on every realm.
+        //
+        // True when the character now exists (its DB write may still be in
+        // flight — see _awaitingFlush).
+        bool TryProvision(std::string const& name, std::string* why)
+        {
+            std::string const account = ConfAccount();
+            if (account.empty())
+            {
+                // Explicitly opted out of auto-provisioning.
+                *why = ManualSetup(name);
+                return false;
+            }
+
+            // Refuse a name the lookup could never find again. Player::Create
+            // does not validate names, so creating "dcdriver" would succeed
+            // and then never resolve through GetCharacterGuidByName's exact
+            // match — provisioning forever, one orphan character per attempt.
+            std::string normalized = name;
+            if (!normalizePlayerName(normalized) || normalized != name ||
+                ObjectMgr::CheckPlayerName(name, true) != CHAR_NAME_SUCCESS)
+            {
+                *why = "DungeonClear.TestRun.DriverCharacter = '" + name +
+                       "' is not a usable character name" +
+                       (normalized != name ? " (did you mean '" + normalized + "'?)" : "") +
+                       " — the driver could not be created";
+                return false;
+            }
+
+            uint32 accountId = AccountMgr::GetId(account);
+            if (!accountId)
+            {
+                AccountOpResult const res =
+                    sAccountMgr->CreateAccount(account, RandomPassword());
+                if (res != AOR_OK)
+                {
+                    *why = "could not create the test driver account '" + account +
+                           "' (error " + std::to_string(static_cast<uint32>(res)) +
+                           ") — " + ManualSetup(name);
+                    return false;
+                }
+                accountId = AccountMgr::GetId(account);
+                if (!accountId)
+                {
+                    *why = "created the test driver account '" + account +
+                           "' but cannot read it back — " + ManualSetup(name);
+                    return false;
+                }
+                LOG_INFO("playerbots.dungeonclear",
+                         "TESTDRIVER created account '{}' ({}) for the test driver "
+                         "(password randomised and not recorded; use `account set "
+                         "password` if you need it)", account, accountId);
+            }
+
+            // The rotation logs its own accounts' characters in and out on its
+            // own schedule, which would pull the driver out from under a live
+            // run. Refuse rather than produce an intermittently broken harness.
+            auto const& rnd = sPlayerbotAIConfig.randomBotAccounts;
+            if (std::find(rnd.begin(), rnd.end(), accountId) != rnd.end())
+            {
+                *why = "test driver account '" + account +
+                       "' is one of AiPlayerbot.RandomBotAccounts — the bot rotation "
+                       "would log the driver out mid-run. Point "
+                       "DungeonClear.TestRun.DriverAccount at a plain account";
+                return false;
+            }
+
+            // SEC_PLAYER: the driver elevates its own session at init
+            // (SetSecurity below in Tick), so the account itself never needs
+            // a GM level.
+            WorldSession* session =
+                new WorldSession(accountId, "", 0, nullptr, SEC_PLAYER,
+                                 EXPANSION_WRATH_OF_THE_LICH_KING, time_t(0),
+                                 LOCALE_enUS, 0, false, false, 0, true);
+
+            CharacterCreateInfo createInfo(name, RACE_HUMAN, CLASS_WARRIOR,
+                                           GENDER_MALE, 0, 0, 0, 0, 0);
+            Player* player = new Player(session);
+            player->GetMotionMaster()->Initialize();
+            if (!player->Create(sObjectMgr->GetGenerator<HighGuid::Player>().Generate(),
+                                &createInfo))
+            {
+                player->CleanupsBeforeDelete();
+                delete player;
+                delete session;
+                *why = "could not create the test driver character '" + name +
+                       "' on account '" + account + "' — " + ManualSetup(name);
+                return false;
+            }
+
+            player->setCinematic(2);          // skip the intro movie on login
+            player->SetAtLoginFlag(AT_LOGIN_NONE);
+            player->SaveToDB(true, false);
+            sCharacterCache->AddCharacterCacheEntry(
+                player->GetGUID(), accountId, player->GetName(), player->getGender(),
+                player->getRace(), player->getClass(), player->GetLevel());
+
+            ObjectGuid const guid = player->GetGUID();
+            player->CleanupsBeforeDelete();
+            delete player;
+            delete session;
+
+            // SaveToDB queues; the login path loads the character back out of
+            // the database, so issuing it now would race the write. Tick()
+            // releases the hold once the row is readable.
+            _awaitingFlush = true;
+            _flushProbedAt = getMSTime();
+            LOG_INFO("playerbots.dungeonclear",
+                     "TESTDRIVER created character '{}' ({}) on account '{}' ({}) — "
+                     "waiting for the character save to land", name, guid.ToString(),
+                     account, accountId);
+            return true;
         }
 
         Player* FindOnline()
@@ -72,11 +257,55 @@ namespace DcTestDriver
 
         if (!ResolveGuid())
         {
+            std::string const name = ConfName();
+            if (name.empty())
+            {
+                if (why)
+                    *why = "DungeonClear.TestRun.DriverCharacter is empty — the "
+                           "harness has no GM to run as";
+                return Readiness::Unavailable;
+            }
+
+            // One attempt per conf name: a refusal is a standing condition, and
+            // retrying it on every command would just repeat the message.
+            if (_provisionTried)
+            {
+                if (why)
+                    *why = _provisionRefusal.empty() ? ManualSetup(name)
+                                                     : _provisionRefusal;
+                return Readiness::Unavailable;
+            }
+            _provisionTried = true;
+
+            std::string provisionWhy;
+            if (!TryProvision(name, &provisionWhy))
+            {
+                LOG_WARN("playerbots.dungeonclear", "TESTDRIVER {}", provisionWhy);
+                _provisionRefusal = provisionWhy;
+                if (why)
+                    *why = provisionWhy;
+                return Readiness::Unavailable;
+            }
+
+            // Resolve again so _guid picks up the cache entry we just added.
+            if (!ResolveGuid())
+            {
+                if (why)
+                    *why = ManualSetup(name);
+                return Readiness::Unavailable;
+            }
             if (why)
-                *why = "test driver character '" + ConfName() +
-                       "' not found — create it on a dedicated bot account and set "
-                       "DungeonClear.TestRun.DriverCharacter";
-            return Readiness::Unavailable;
+                *why = "created the test driver character '" + name + "' — it is "
+                       "logging in";
+            return Readiness::PendingLogin;
+        }
+
+        if (_awaitingFlush)
+        {
+            if (why)
+                *why = "test driver '" + _resolvedName + "' was just created and is "
+                       "still being written to the database";
+            return Readiness::PendingLogin;
         }
 
         if (!_loginIssued)
@@ -106,6 +335,33 @@ namespace DcTestDriver
 
     void Tick()
     {
+        // A just-created driver is not loadable until its queued INSERTs have
+        // run, and the login path reads the character back out of the
+        // database — a login issued too early fails and latches _loginIssued
+        // with nothing to un-latch it. So hold until the row is really there.
+        //
+        // Asking for the row beats waiting on the write queue to empty: the
+        // queue carries every other character save on the realm and on a busy
+        // one it may never read zero, which would strand the driver offline.
+        if (_awaitingFlush)
+        {
+            // Throttled: this is a synchronous query on the world thread, and
+            // the answer cannot change faster than the write behind it lands.
+            if (GetMSTimeDiffToNow(_flushProbedAt) < 500)
+                return;
+            _flushProbedAt = getMSTime();
+
+            CharacterDatabasePreparedStatement* stmt =
+                CharacterDatabase.GetPreparedStatement(CHAR_SEL_CHECK_NAME);
+            stmt->SetData(0, _resolvedName);
+            if (!CharacterDatabase.Query(stmt))
+                return;  // still queued — poll again next tick
+            _awaitingFlush = false;
+            LOG_INFO("playerbots.dungeonclear",
+                     "TESTDRIVER character save landed — '{}' can log in now",
+                     _resolvedName);
+        }
+
         if (_initialized)
         {
             // A vanished driver (kick, crash recovery) re-arms the login so the

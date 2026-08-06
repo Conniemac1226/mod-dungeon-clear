@@ -716,12 +716,14 @@ bool DungeonClearCampHoldActionBase::Execute(Event /*event*/)
     // the camp, step out of a cleave, take a heal angle — and pinning it to a 2yd
     // slot mid-fight would fight its own rotation every tick.
     //
-    // DC_SCRIPTED_PULL_FOLLOWER_LEASH, not the tank's 12yd: the tank plants ON the
-    // camp and the pack piles onto it there, so a melee follower needs about 8yd
-    // of reach and no more. The tank's number was simply too generous
-    // borrowed here — a follower allowed 12yd of drift spends all 12 of them
-    // logging "parked" and yielding the tick to the chase that is carrying it, and
-    // arrives at the doorway before anything objects.
+    // DC_SCRIPTED_PULL_FOLLOWER_LEASH, and it is deliberately TIGHTER than the tank's
+    // (see both constants): the tank plants ON the camp and the pack piles onto it
+    // there, so a follower has less legitimate ground to cover than the tank does.
+    // Borrowing the tank's number would just be drift — every extra yard is one a
+    // follower spends logging "parked" and yielding the tick to the chase that is
+    // carrying it, and it arrives at the doorway before anything objects. What sizes
+    // it is the ground-effect STEP-OUT, not melee reach; the constant's own comment
+    // carries that derivation.
     //
     // BUT ONLY DURING THE FIGHT (!passive). While the tank is away tagging there is
     // nothing to fight and nothing to leave room for, and a radius is not a place: a
@@ -741,11 +743,33 @@ bool DungeonClearCampHoldActionBase::Execute(Event /*event*/)
     // held follower, which is what puts them on the coordinate.
     Position const slot = DcPullPlanner::ComputeCampSlot(bot, camp);
     float const toCamp = bot->GetExactDist(&slot);
-    float const parkRadius = (scriptedCamp && !passive)
-                                 ? DC_SCRIPTED_PULL_FOLLOWER_LEASH
-                                 : DC_PULL_SLOT_RADIUS;
+    // The scripted camp FIGHT — anchored, not held. Everything below that treats
+    // "inside the radius" as "settled and waiting" is wrong here, because the bot is
+    // mid-fight.
+    bool const campFight = scriptedCamp && !passive;
+    float const parkRadius = campFight ? DC_SCRIPTED_PULL_FOLLOWER_LEASH
+                                       : DC_PULL_SLOT_RADIUS;
     if (toCamp <= parkRadius && !inNoGoRoom)
     {
+        // IN BOUNDS DURING A CAMP FIGHT IS NOT "PARKED". The stop-and-face pair below
+        // is the WAITING party's behaviour: settle in place and watch the tank work.
+        // Run it on a fighting follower and it lands on every tick the bot is inside
+        // the leash — StopMoving cancelling the step it just took toward its mob or
+        // out of a cleave, and a facing packet turning it off its target and back
+        // onto the tank. That is a bot twitching in place rather than one holding a
+        // position, and it is the other half of what the player saw: the leash
+        // supplies the ping-pong, this supplies the never-settles.
+        //
+        // Yield instead. In bounds and fighting means the hold has nothing to do —
+        // the bot's own rotation and the avoid-aoe rungs own the tick, and the leash
+        // below is still there for the moment it actually leaves.
+        if (campFight)
+        {
+            DC_PULL_TRACE("[DC:{}] hold-at-camp: in bounds mid-fight ({:.1f}yd) -> "
+                          "yielding to the rotation", bot->GetName(), toCamp);
+            context->GetValue<DcPullContext&>(DcKey::PullContext)->Get().campHoldBest = 0.0f;
+            return false;
+        }
         DcMovement::StopBot(bot, DcMovement::Stop::Soft);
         // A waiting party watches their tank work: face the LEADER (not the
         // pack) once parked — never while still walking to camp.
@@ -793,6 +817,23 @@ bool DungeonClearCampHoldActionBase::Execute(Event /*event*/)
     // give up ground against the best-so-far and the leg is hard-cancelled so the
     // next MoveTo genuinely re-issues.
     DcPullContext& ownPull = context->GetValue<DcPullContext&>(DcKey::PullContext)->Get();
+
+    // A FOLLOWER STANDING IN FIRE IS ALLOWED TO BE OUT OF BOUNDS. Same call the tank's
+    // camp leash makes and for the same reason (see DcInGroundEffect): the recall and
+    // the step-out are both right, they want different places, and the recall is the
+    // one that gives because the step-out is answering damage. Re-arm the ratchet on
+    // the way past — no leg is in flight to measure — and let the walk home resume the
+    // tick the bot is clear. The keep-out room is the exception: no ground effect
+    // makes standing in the unpulled pack's room acceptable.
+    if (campFight && !inNoGoRoom && DcInGroundEffect(context))
+    {
+        DC_PULL_DEBUG("[DC:{}] hold-at-camp: {:.1f}yd out but standing in a ground "
+                      "effect -> yielding to the step-out rather than walking back "
+                      "into it", bot->GetName(), toCamp);
+        ownPull.campHoldBest = 0.0f;
+        return false;
+    }
+
     if (ScriptedPullLostGround(ownPull.campHoldBest, toCamp))
     {
         DcMovement::StopBot(bot, DcMovement::Stop::HardPin);

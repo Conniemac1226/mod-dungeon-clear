@@ -297,6 +297,37 @@ namespace DungeonClearMath
                           float distToCamp, float legStartDist,
                           std::uint32_t& plantTicks);
 
+    // Tag walk-in stop distance (pure), in yards from the target.
+    //
+    // The core only re-checks a pack's aggro on MOVEMENT, and its notice test is the
+    // plain centre-to-centre distance vs Creature::GetAggroRange. So the tank must
+    // GLIDE to a point strictly inside `aggroRange` — arriving is what crosses the
+    // threshold — and it stops 2yd in.
+    //
+    // `closingMs` is HOW LONG THE TANK HAS BEEN CLOSING, and the creep it drives is a
+    // backstop: a tank parked exactly at the edge is never re-evaluated (no relocation
+    // -> no MoveInLineOfSight), so after `graceMs` the stop point steps inward at
+    // `creepYardsPerSec` until something notices. It rarely runs at all.
+    //
+    // `creepFloor` bounds it — the closest the creep may bring the stop point. 0 lets
+    // it run to body contact, which is right for an ordinary pull: the pack it ends up
+    // touching is the pack it came for. A SCRIPTED stage passes a real floor, because
+    // it is standing in a room full of formations the plan has deliberately left up
+    // and the yards between the aggro edge and the pack's feet are the ones that reach
+    // them.
+    //
+    // `forceTagOut` comes back true when even the edge is inside melee reach — a
+    // much-higher-level tank against the core's 5yd minimum aggro, where closing can
+    // never cross the threshold and the caller must swing to start the fight instead.
+    //
+    // The game-state read (GetAggroRange, both combat reaches, and WHICH event
+    // `closingMs` is measured from — phase start for an ordinary pull, stand-spot
+    // arrival for a scripted stage) stays in DungeonClearPullAction.
+    float PullTagStopDistance(float aggroRange, float meleeReach,
+                              std::uint32_t closingMs, std::uint32_t graceMs,
+                              float creepYardsPerSec, float creepFloor,
+                              bool& forceTagOut);
+
     // Threat-lead follower-release gate (pure). After the leader tank enters
     // combat a real group gives it a beat to gather and establish AoE threat
     // before DPS pile in; this holds a follower's fight assist for `leadMs` after
@@ -336,6 +367,32 @@ namespace DungeonClearMath
                                 bool hasLegitimateHolder)
     {
         return inCombat && !hasAttacker && !hasVictim && !hasLegitimateHolder;
+    }
+
+    // Is a holder that PASSED the legitimacy test actually prosecuting the fight?
+    //
+    // Reachability alone says the holder COULD come; it does not say it IS coming. In
+    // an instance a creature never leashes (the dungeon short-circuit in
+    // CanCreatureAttack), so a mob that tagged the party and then stopped keeps its
+    // combat reference alive forever from wherever it stands — alive, non-evading,
+    // path-reachable, allowed to attack, and completely inert. That reads as a REAL
+    // fight to the legitimacy test, so the phantom hatch stands down, while every DC
+    // gate that keys off "someone is in combat" spins. Live in tr-20260804-153254-2:
+    // Ushkuk and Olanne held by a Sunblade Mage Guard 68-69yd back, 100% HP,
+    // attackers=0 victim=-, for the eight minutes until the run was stopped by hand.
+    //
+    // A holder is prosecuting the fight if it is either already INSIDE engage range
+    // (that is a fight whatever the numbers say) or CLOSING on us. `closing` comes
+    // from the caller's DcProgressWatchdog::TickClosing over the nearest holder's
+    // distance, so this cannot be fooled by the party moving: a chaser or a kited mob
+    // improves the closest-ever distance and keeps the hatch inert, while a party that
+    // walks away from a stationary holder only makes the distance WORSE. The first
+    // sample arms the watchdog and counts as closing, so the streak clock in
+    // ShouldBreakStuckCombat only starts once the holder has demonstrably stopped.
+    inline bool IsHolderProsecutingFight(bool haveHolder, float holderDist,
+                                         float engageRange, bool closing)
+    {
+        return haveHolder && (holderDist <= engageRange || closing);
     }
 
     // "Can this follower attack from where it stands?" for the camp-assist handoff,

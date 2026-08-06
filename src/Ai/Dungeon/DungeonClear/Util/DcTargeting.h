@@ -237,12 +237,19 @@ public:
     // the bot arrives (see ScriptedPullRegistry).
     // `exclude` drops one specific unit from the candidate set — for a caller that
     // has already given up on it and wants the next best, not the same answer again.
+    // `awayFrom` INVERTS the ranking: the winner is the qualifying candidate FURTHEST
+    // from that point, and `rankFrom` is ignored. For a pull whose pack has a
+    // neighbour it cannot avoid waking, "which member" stops being a question about
+    // reach and becomes one about how far the neighbour has to run — see
+    // ScriptedPullStage::avoidX. Filters are identical either way; this only decides
+    // which of the qualifying candidates wins.
     static Unit* NearestHostileNearPoint(Player* bot, AiObjectContext* ctx,
                                          float px, float py, float pz,
                                          float radius, float zBand = 20.0f,
                                          std::vector<uint32> const* entryFilter = nullptr,
                                          Position const* rankFrom = nullptr,
-                                         ObjectGuid exclude = ObjectGuid::Empty);
+                                         ObjectGuid exclude = ObjectGuid::Empty,
+                                         Position const* awayFrom = nullptr);
 
 };
 

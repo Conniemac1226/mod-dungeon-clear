@@ -88,6 +88,11 @@ namespace DcKey
         inline constexpr char const* SelfTarget        = "self target";
         inline constexpr char const* Health            = "health";
         inline constexpr char const* BagSpace          = "bag space";
+        // The negative dynamic-object aura the bot is standing in RIGHT NOW (null
+        // when it is on clean ground). AreaDebuffValue only returns an aura the bot
+        // actually has, so it is an "am I in it", not an "is one nearby" — which is
+        // exactly the question a camp leash has to ask before hauling anyone home.
+        inline constexpr char const* AreaDebuff        = "area debuff";
     }
 }
 

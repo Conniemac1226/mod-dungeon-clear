@@ -1584,15 +1584,41 @@ DungeonClear.TestRun.Plan.DriverWaitMs = 120000
 #    DungeonClear.TestRun.DriverCharacter
 #        Character name the harness logs in headlessly as the issuing "GM"
 #        when `.dc test ...` comes from the console or the dashboard (no
-#        in-game player to anchor the run). One-time setup: create a dedicated
-#        bot account, create this character on it (any class), done — the
-#        module logs it in on first use, self-masters its AI (so the party
-#        keeps the real-player-master fast path), parks it in GM mode and
-#        reuses it forever. The account must NOT be in
-#        AiPlayerbot.RandomBotAccounts and must not be an addclass pool
-#        account.
+#        in-game player to anchor the run). No setup needed: the module
+#        creates the character on first use (see DriverAccount below), logs
+#        it in, self-masters its AI (so the party keeps the
+#        real-player-master fast path), parks it in GM mode and reuses it
+#        forever.
+#
+#        The name is resolved by an exact, case-sensitive lookup, so it must
+#        be a properly capitalised character name ("Dcdriver", not
+#        "dcdriver"). A name that is not is refused rather than created,
+#        because the created character could never be found again.
 #
 #        Default: "Dcdriver"
 #
 
 DungeonClear.TestRun.DriverCharacter = "Dcdriver"
+
+#
+#    DungeonClear.TestRun.DriverAccount
+#        Account that owns DriverCharacter. The module creates the account
+#        (with a random password that is not recorded — use `account set
+#        password` if you ever need to log into it) and the character on it
+#        the first time a console/dashboard `.dc test` needs a driver.
+#
+#        Nothing needs a GM level here: the driver elevates its own session
+#        when it comes online, so the account stays a plain player account.
+#
+#        It must NOT be one of AiPlayerbot.RandomBotAccounts and must not be
+#        an addclass pool account — the bot rotation manages those characters
+#        and would log the driver out from under a live run. A random-bot
+#        account is refused rather than used.
+#
+#        Set to "" to turn auto-creation off and provide the character
+#        yourself.
+#
+#        Default: "dcdriver"
+#
+
+DungeonClear.TestRun.DriverAccount = "dcdriver"

@@ -181,6 +181,19 @@ namespace DcActionShared
     // Turn the bot to face `unit` if it is not already roughly facing it.
     void DcFaceIfNeeded(Player* bot, Unit* unit);
 
+    // Is the bot standing in a damaging ground effect right now?
+    //
+    // Every rung that RECALLS a bot to a fixed point has to ask this first, because a
+    // recall and a step-out are two correct rungs that can want incompatible places:
+    // the step-out has to leave the effect, the recall has to return to the camp, and
+    // when the effect is ON the camp neither can yield. The recall is the one that
+    // gives, on the simple grounds that the step-out is answering damage.
+    //
+    // Reads the stock "area debuff" value, which returns the negative dynamic-object
+    // aura the bot CURRENTLY HAS — so it is false the moment the bot is clear, and
+    // the recall re-arms by itself one tick later.
+    bool DcInGroundEffect(AiObjectContext* ctx);
+
     // A PULL MANEUVER OWNS THE TANK — the ACTION-side half of the stand-down the
     // route triggers (DungeonClearIdleTrigger / DungeonClearAtBossTrigger) already
     // perform. Call it at the top of any rung whose destination is the ROUTE (the

@@ -48,6 +48,16 @@ constexpr float DC_PI = 3.14159265358979323846f;
 // hand-off, so they must agree.
 constexpr float DC_ENGAGE_RANGE = 22.0f;
 
+// How many consecutive engage-trash ticks may hand a far, long-route pack to Advance
+// WITHOUT the gap closing before this action takes the tick back and walks in itself.
+// The hand-off is only sound while Advance is travelling toward the pack; for one
+// beside or behind the route to the next boss it is permanent, and the pack DC already
+// voted to fight is abandoned mid-tag (tr-20260804-153254-2). Sized in ticks, not
+// seconds, because it is a per-decision budget: ~20 think ticks is a few seconds of
+// "we are not getting any nearer" — long enough that a genuine ramp descent (which
+// improves the straight-line gap several times a second) never reaches it.
+constexpr uint32 DC_LONGROUTE_DEFER_LIMIT = 20;
+
 // Extra standoff added OUTSIDE a room-aggro boss's skirt sphere when computing
 // its (uncapped) boss-engage range — see DcEngageGeometry::BossEngageRange. The
 // engage hand-off for a room-aggro boss must trip while the tank is still clear
@@ -291,6 +301,12 @@ constexpr uint32 DC_STUCK_TICK_LIMIT = 5;
 // run). Riding out a brief trip costs at most this many ticks of extra travel
 // while a genuine wait — the party really is behind, or resting — trips every
 // tick and still halts almost immediately.
+//
+// "At most this many ticks of extra travel" is only true because TryBetweenPullsRest
+// rides out the debounce ONLY for a glide already in flight. Letting it fall through
+// with nothing running would let the ladder launch a fresh 35-38yd escort window on a
+// debounce tick — five seconds of committed travel bought with a three-tick grace, and
+// unbounded travel if the ready/not-ready flicker repeats. See the note there.
 constexpr uint32 DC_PARTY_YIELD_DEBOUNCE_TICKS = 3;
 
 // Consecutive Resnap recoveries allowed before the stuck ladder stops trusting
