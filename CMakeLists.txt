@@ -336,3 +336,6 @@ AC_ADD_CONFIG_FILE("${CMAKE_CURRENT_LIST_DIR}/conf/mod_dungeon_clear.conf.dist")
 #    engages and so a radius around the tank cannot express "will be locked out";
 #    plus a tank-anchored clump radius for the final approach, which is what makes
 #    the muster satisfiable without a long wait inside the boss's aggro range.)
+# Util/DcPullBrake.{h,cpp}
+#   (same-tick pull movement brake: stop a scripted walk-in as soon as combat is
+#   raised instead of waiting for the next AI update.)
