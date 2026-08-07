@@ -26,6 +26,7 @@
 #include "Ai/Dungeon/DungeonClear/Data/RoomAggroRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonWingRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Util/ChunkedPathfinder.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcPlayerbotCompat.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcRezRecovery.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearUtil.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonEventExecutor.h"
@@ -66,7 +67,7 @@ namespace
         // moment a player enables bot self mode they would be silently
         // locked out of every dc command.
         if (GET_PLAYERBOT_AI(owner))
-            if (!IsSelfBot(owner))
+            if (!DcPlayerbotCompat::IsSelfBot(owner))
                 return false;
         if (!bot || !bot->GetGroup())
             return false;

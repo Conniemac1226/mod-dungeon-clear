@@ -37,6 +37,7 @@
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcEngageGeometry.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcHazard.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcPlayerbotCompat.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearApproach.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearMath.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearApproachIo.h"
@@ -131,7 +132,7 @@ bool DungeonClearFollowTankAction::Execute(Event /*event*/)
             LOG_INFO("playerbots.dungeonclear",
                      "[DC:{}] follow-tank: released (DC tank gone) -> cleared "
                      "follow generator (selfRealPlayer={})",
-                     bot->GetName(), IsSelfBot(bot) ? 1 : 0);
+                     bot->GetName(), DcPlayerbotCompat::IsSelfBot(bot) ? 1 : 0);
             followedTank = ObjectGuid::Empty;
             // Cleanly torn down by us -> drop the orphan-reaper mark; there is no
             // longer a follow generator for it to chase down.

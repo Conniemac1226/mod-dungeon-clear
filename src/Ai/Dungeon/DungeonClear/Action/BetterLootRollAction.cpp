@@ -14,6 +14,7 @@
 #include "RandomItemMgr.h"
 #include "StatsWeightCalculator.h"
 #include "Ai/Dungeon/DungeonClear/Settings/DcSettings.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcPlayerbotCompat.h"
 
 namespace
 {
@@ -52,7 +53,7 @@ bool DungeonClearBetterLootRollAction::isUseful()
 {
     // Only intercept self-bots (master == bot). A bot driven for a separate
     // human master keeps stock rolling — its vote is its own GUID, no conflict.
-    if (IsSelfBot(bot) && DcSettings::GetBool(bot, "BetterLootRolling"))
+    if (DcPlayerbotCompat::IsSelfBot(bot) && DcSettings::GetBool(bot, "BetterLootRolling"))
         return false;  // bot-self: cast no vote so the human gets to roll
 
     return LootRollAction::isUseful();
@@ -67,7 +68,7 @@ bool DungeonClearBetterLootRollAction::Execute(Event event)
     // because the engine's queued basket outlives the trigger that filled it:
     // an action queued while it was useful still runs after isUseful() would
     // refuse it, so a gate that exists only in isUseful() is not a gate.
-    if (IsSelfBot(bot))
+    if (DcPlayerbotCompat::IsSelfBot(bot))
         return false;
 
     Group* group = bot->GetGroup();

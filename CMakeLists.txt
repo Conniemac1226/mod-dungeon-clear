@@ -336,3 +336,8 @@ AC_ADD_CONFIG_FILE("${CMAKE_CURRENT_LIST_DIR}/conf/mod_dungeon_clear.conf.dist")
 #    engages and so a radius around the tank cannot express "will be locked out";
 #    plus a tank-anchored clump radius for the final approach, which is what makes
 #    the muster satisfiable without a long wait inside the boss's aggro range.)
+# Util/DcPlayerbotCompat.h
+#   (header-only: IsSelfBot / IsRealPlayer / IsHumanControlled written against
+#    only the mod-playerbots API that is identical on master and test-staging,
+#    so this module builds on both across PR #2592. No .cpp, so no re-glob is
+#    needed for it — listed here to keep the file inventory complete.)

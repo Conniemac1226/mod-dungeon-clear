@@ -33,6 +33,7 @@
 #include "Ai/Dungeon/DungeonClear/Util/DcEngageGeometry.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcHazard.h"
 #include "Ai/Dungeon/DungeonClear/Data/DcHazardRegistry.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcPlayerbotCompat.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcRegroupDecision.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcRezRecovery.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcStrandedRecovery.h"
@@ -1810,7 +1811,7 @@ bool DungeonClearLootRollPendingTrigger::IsActive()
 
     // Self-bot: the vote is the human's to cast (BetterLootRollAction casts
     // none), so an open window must not keep the trigger hot.
-    if (IsSelfBot(bot))
+    if (DcPlayerbotCompat::IsSelfBot(bot))
         return false;
 
     Group* group = bot->GetGroup();

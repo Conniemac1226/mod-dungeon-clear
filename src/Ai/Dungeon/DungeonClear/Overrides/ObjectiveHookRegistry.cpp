@@ -29,6 +29,7 @@
 #include "Playerbots.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcFormGate.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcPlayerbotCompat.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTargeting.h"
 
 namespace
@@ -467,7 +468,7 @@ namespace
             // only the first half of it — no bot AI at all. The second half, the
             // self-bot, is IsSelfBot(). Writing IsRealPlayer(p) alone here would
             // compile and quietly stop counting the self-bot as human.
-            return IsRealPlayer(p) || IsSelfBot(p);
+            return DcPlayerbotCompat::IsHumanControlled(p);
         };
 
         Group* group = bot->GetGroup();
