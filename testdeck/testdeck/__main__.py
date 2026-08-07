@@ -202,8 +202,15 @@ def cmd_check(cfg, _args):
     print(f"  config    {cfg.source or '(none found — using derived defaults)'}")
     print(f"  toml      {tdconfig.TOML_IMPL}")
     print(f"  base      {cfg.base}")
+    print(f"  server    {cfg.server_root}  (worldserver working directory)")
     print(f"  log_dir   {cfg.log_dir}")
     print(f"  data_dir  {cfg.data_dir}")
+    # The one line that answers "why is the Live view empty?" — it names the
+    # file rather than the directory it was looked for in, and says outright
+    # when nothing has been found yet.
+    live = cfg.testrun_live_file
+    print(f"  sidecars  {live.parent}  "
+          f"({'found' if live.is_file() else 'no ' + live.name + ' yet'})")
     print(f"  mysql     {cfg.resolved_mysql() or '(not found)'}")
     print(f"  listen    {cfg.host}:{cfg.port}")
     print(f"  bridge    {cfg.bridge_type}" + (

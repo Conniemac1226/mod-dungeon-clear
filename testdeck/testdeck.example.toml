@@ -23,15 +23,36 @@ base = "/home/youruser/azerothcore"
 # Where the compiled server lives (bin/, etc/ inside it).
 #dist = "/home/youruser/azerothcore/env/dist"
 
-# Where worldserver writes its logs and the dc_* sidecar files (its working
-# directory).
+#worldserver_conf = "/home/youruser/azerothcore/env/dist/etc/worldserver.conf"
+
+# The directory the worldserver actually RUNS in — the one holding
+# worldserver(.exe). This is the key path on any install that is not the stock
+# Linux layout, because it is where the module writes the dc_* files the
+# launch, live and history panels read, and it is what the relative paths
+# inside worldserver.conf (LogsDir, DataDir) are relative to.
+#
+# Detected from the worldserver binary next to your config, so you only need
+# this if the server is started from somewhere else — a service with its own
+# working directory, or a launcher script that cd's first.
+#
+#   Linux (acore.sh):    /home/youruser/azerothcore/env/dist/bin
+#   Windows all-in-one:  C:/WoW/SingleCraft
+#server_root = "/home/youruser/azerothcore/env/dist/bin"
+
+# Where worldserver writes its *.log files. Follows LogsDir in
+# worldserver.conf, so a pack that ships LogsDir = "../logs/worldserver/"
+# needs nothing here.
 #log_dir = "/home/youruser/azerothcore/env/dist/bin"
 
-#worldserver_conf = "/home/youruser/azerothcore/env/dist/etc/worldserver.conf"
+# The module .conf files. Found beside worldserver.conf (etc/modules/), and on
+# Windows also under <server_root>/configs/modules/, which is where the core
+# hardcodes them.
 #playerbots_conf = "/home/youruser/azerothcore/env/dist/etc/modules/playerbots.conf"
+#dungeonclear_conf = "/home/youruser/azerothcore/env/dist/etc/modules/mod_dungeon_clear.conf"
 
 # Client DBC files (Talent.dbc, TalentTab.dbc) — used to show talent specs in
-# the roster picker. Optional; the picker works without specs.
+# the roster picker. Optional; the picker works without specs. Found via
+# DataDir in worldserver.conf.
 #dbc_dir = "/home/youruser/azerothcore/env/dist/bin/dbc"
 
 # Runtime state (saved rosters, session secret).
@@ -138,7 +159,9 @@ status_check = "auto"
 #process_name = "worldserver"
 
 #[dungeonclear]
-# Only needed if the module's sidecar files were renamed via DC_* env vars.
+# Only needed if the module's sidecar files were renamed or relocated via the
+# DC_* env vars. A bare name is looked for in [paths] server_root; give the
+# full path if you moved one out of the worldserver's working directory.
 #testruns_file = "dc_testruns.jsonl"
 #testplans_file = "dc_testplans.jsonl"
 #live_file = "dc_testrun_live.json"
