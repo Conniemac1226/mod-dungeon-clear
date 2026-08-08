@@ -355,3 +355,19 @@ AC_ADD_CONFIG_FILE("${CMAKE_CURRENT_LIST_DIR}/conf/mod_dungeon_clear.conf.dist")
 #    pull row. Built for the Magisters' Terrace rotunda, whose east/north-east
 #    and centre/north-east pairs are inside CreatureFamilyAssistanceRadius AT
 #    SPAWN — a T=0 bond no stand spot, opener or ordering can break.)
+# TestRun/DcTestAreaTriggers.{h,cpp}
+#   (AREATRIGGER RELAY for headless runs. An areatrigger is a client-side
+#    volume: the only thing that ever runs an at_* script is
+#    WorldSession::HandleAreaTriggerOpcode fed by a client's CMSG_AREATRIGGER,
+#    and stock playerbots only relays a HUMAN MASTER's packet
+#    (masterIncomingPacketHandlers) — its position-based WithinAreaTrigger
+#    returns false for anything without an areatrigger_teleport row. So a
+#    5-bot test party fires NO scripted areatriggers at all. The Underbog's
+#    Ghaz'an is the proof: at_underbog_ghazan (4302) is the only caller of his
+#    ACTION_MOVE_TO_PLATFORM, so without it he swims his underwater DB patrol
+#    (path 1383920, z 32-47) all run instead of climbing to his platform (path
+#    1383921, z 81.4). The job sends the packet for whichever member is
+#    standing in the volume, edge-triggered like a client. Scoped hard: test
+#    runs only, bot-only groups only (a human-controlled member's own client is
+#    already sending it — relaying would double-fire), and scripted
+#    NON-teleport triggers only (the instance exit is an areatrigger).)
