@@ -212,11 +212,30 @@ namespace
     // the forward camp's distance to south Sister of Torment 96843, which is also the
     // one pack it still has an open sight-line to. That is inside every reach that
     // matters, so a party standing there with the south pack alive is a party in a
-    // fight it did not choose. The first row that uses the forward camp is the EAST
-    // row, which by construction cannot arm until south and centre are both empty
+    // fight it did not choose. Every row that uses the forward camp is one that by
+    // construction cannot arm until the SOUTH row is empty
     // (ScriptedPullRegistry::SelectOrder), so the mobs it is inside the reach of are
-    // dead before anyone stands there. Move the forward camp onto an earlier row and
+    // dead before anyone stands there. Move the forward camp onto the south row and
     // that stops being true.
+    //
+    // THE CENTRE ROW MOVED FORWARD (was the back camp until tp-20260807-203840-1).
+    // South is the only row the forward camp's 27.0yd argument excludes, and centre
+    // runs after it — so centre was paying the back camp's haul for a constraint that
+    // did not apply to it. What that cost is the single largest number in the plan and
+    // it is a number about the TANK, not about aggro: on a body-pull row the tank
+    // walks to the stand spot ALONE, tags with its body, and runs the whole way home
+    // alone with the pack on it while the party holds at the camp. From the hall that
+    // is a 62.9yd solo run; from the forward camp it is 34.2. Live, across twenty
+    // heroic runs, "the puller died mid-pull" on THIS row seven times — more than
+    // every other row in the dungeon put together — and each of those killed the run,
+    // because a party parked at a camp nobody is dragging to meets the pack standing
+    // still.
+    //
+    // The forward camp clears the centre pack by 47.5yd (nearest member Mage Guard
+    // 96766 at (123.05,-133.24)), so the same two properties every other row's camp
+    // has still hold: outside a 21yd elite reach, and outside the 40yd a castFlags-64
+    // caster answers by planting instead of coming. TheForwardCampOnlyServesRowsWhose
+    // BlockersAreDead is what asserts that, for this row along with the other three.
     //
     // WHAT IT COSTS is elbow room. The chamber's east wall curves in south of Y -179,
     // so the camp has clear floor for about a yard in every direction and two to three
@@ -282,13 +301,15 @@ namespace
     //   stage  stand spot                target        body-tag point     nearest    drag
     //                                                  (18yd out)         live pack
     //   S      (125.50, -184.50, -21.27) 96843 26.0yd  (123.46, -176.75)  C  43.5yd  31.7yd
-    //   C      (111.50, -156.50, -20.92) 96766 26.0yd  (115.04, -149.36)  NW 35.3yd  62.9yd
+    //   C      (111.50, -156.50, -20.92) 96766 26.0yd  (115.04, -149.36)  NW 35.3yd  34.2yd
     //   E      (139.00, -160.00, -21.14) 96824 25.8yd  (143.16, -153.37)  NE 40.1yd  19.3yd
     //   NE     (141.50, -140.00, -21.20) 96808 26.0yd  (140.86, -132.05)  NW 32.2yd  39.5yd
     //   NW     (122.50, -137.50, -20.20) 96767 26.0yd  (120.26, -129.82)   —      —  44.2yd
     //
-    // (The drag column is stand spot to that row's OWN camp: back camp for S and C,
-    // forward camp for E, NE and NW.)
+    // (The drag column is stand spot to that row's OWN camp: the back camp for S, the
+    // forward camp for C, E, NE and NW. C's 34.2 was 62.9 while it hauled to the hall
+    // — see "THE CENTRE ROW MOVED FORWARD" above for why that number was the one that
+    // killed runs.)
     //
     // The "nearest live pack" column is the number the plan lives or dies on, and the
     // margin it carries is that distance minus the mob's reach: +23.5, +14.3, +19.1,
@@ -458,11 +479,11 @@ namespace
     uint32 constexpr MGT_ETHEREUM_SMUG  = 24698;
 
     // The rotunda's two camps and its arm anchor. The BACK camp is the hall below the
-    // south neck and serves the hall patrol, the south pack and the centre pack; the
-    // FORWARD camp is against the small room's east wall and serves the three rows that
-    // run once those are dead. See the dossier above for both numbers, why the forward
-    // one is only sound from the east row onward, and why it is at the WALL rather than
-    // in the middle of the room.
+    // south neck and serves the hall patrol and the south pack; the FORWARD camp is
+    // against the small room's east wall and serves the four rows that run once the
+    // south pack is dead. See the dossier above for both numbers, why the forward one
+    // is only sound once south is empty, and why it is at the WALL rather than in the
+    // middle of the room.
     float constexpr MGT_ROT_CAMP_X = 141.70f, MGT_ROT_CAMP_Y = -211.71f, MGT_ROT_CAMP_Z = -21.13f;
     float constexpr MGT_ROT_FWD_X  = 137.11f, MGT_ROT_FWD_Y  = -179.23f, MGT_ROT_FWD_Z  = -21.43f;
     float constexpr MGT_ROT_ARM_X  = 127.50f, MGT_ROT_ARM_Y  = -190.00f, MGT_ROT_ARM_Z  = -21.27f;
@@ -580,9 +601,15 @@ namespace
                 {3, "Magisters' Terrace — Delrissa rotunda, south pack",
                  125.50f, -184.50f, -21.27f, 117.24f, -155.37f, -21.15f,  7.0f,
                  MGT_ROT_CAMP_X, MGT_ROT_CAMP_Y, MGT_ROT_CAMP_Z, 0.0f, 0.0f, 0.0f, true},
+                // The centre row hauls to the FORWARD camp, not the hall. Its own
+                // blocker — the south pack, the one thing the forward camp is
+                // inside the reach of — is dead before this row can arm, which is
+                // the same argument the east row makes and the only one the
+                // forward camp ever needed. See "THE CENTRE ROW MOVED FORWARD" in
+                // the dossier for what the back camp was costing.
                 {4, "Magisters' Terrace — Delrissa rotunda, centre pack",
                  111.50f, -156.50f, -20.92f, 126.54f, -128.90f, -20.44f,  9.0f,
-                 MGT_ROT_CAMP_X, MGT_ROT_CAMP_Y, MGT_ROT_CAMP_Z, 0.0f, 0.0f, 0.0f, true},
+                 MGT_ROT_FWD_X, MGT_ROT_FWD_Y, MGT_ROT_FWD_Z, 0.0f, 0.0f, 0.0f, true},
                 // The east row tags away from the north-east pack's centroid: those two
                 // formations are inside each other's assistance radius and come as one,
                 // so the only thing left to choose is how far the second one has to run.

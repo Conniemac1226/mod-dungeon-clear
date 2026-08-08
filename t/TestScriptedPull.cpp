@@ -232,7 +232,7 @@ TEST(DcScriptedPullTest, MagistersTerraceCarriesTwoIndependentPlans)
 
     // EXACTLY TWO for the rotunda's, and which row gets which is the whole point of
     // the split: the back camp for the rows that run while the south pack is alive,
-    // the forward camp for the three that only run once it is dead. A third camp
+    // the forward camp for the four that only run once it is dead. A third camp
     // appearing here means someone authored one without the argument that justifies
     // it (see TheForwardCampOnlyServesRowsWhoseBlockersAreDead).
     std::vector<std::pair<float, float>> camps;
@@ -1435,7 +1435,7 @@ TEST(DcScriptedPullTest, RotundaForwardCampHasNoSightLineIntoTheRoom)
     // only while its target is in range AND in line of sight; take either away and it
     // has to run, which is what the drag-back needs. The back camp takes the RANGE away
     // at the cost of a 58-85yd haul. The forward camp takes the LINE OF SIGHT away
-    // instead, which is what lets it sit 27-44yd from the room.
+    // instead, which is what lets it sit 27-48yd from the room.
     //
     // It HAS to: the range margin here is four yards (43.97 to east Physician 96824
     // against a 40yd reach) where the back camp had seventeen. So the sight-line is

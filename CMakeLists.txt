@@ -341,3 +341,17 @@ AC_ADD_CONFIG_FILE("${CMAKE_CURRENT_LIST_DIR}/conf/mod_dungeon_clear.conf.dist")
 #    only the mod-playerbots API that is identical on master and test-staging,
 #    so this module builds on both across PR #2592. No .cpp, so no re-glob is
 #    needed for it — listed here to keep the file inventory complete.)
+# Data/DcSocialQuarantineRegistry.{h,cpp} + Util/DcSocialQuarantine.{h,cpp}
+#   (SOCIAL QUARANTINE — the fourth positional override, and the only one that
+#    changes the MOBS rather than the party. While a named boss is the run's
+#    objective, every pack the plan is not currently pulling is held at
+#    REACT_DEFENSIVE, which is the first thing Creature::CanAssistTo tests and
+#    the gate CreatureAI/SmartAI::MoveInLineOfSight passes before AttackStart —
+#    so a quarantined pack can be neither RECRUITED by a call for help nor woken
+#    by walking past it, while CreatureGroup::MemberEngagingTarget (which does
+#    not test react state) keeps it fighting as a formation the instant anything
+#    actually attacks it. Volumes come from the scripted-pull plan's own pack
+#    cylinders, minus the due stage, plus hand-authored zones for packs with no
+#    pull row. Built for the Magisters' Terrace rotunda, whose east/north-east
+#    and centre/north-east pairs are inside CreatureFamilyAssistanceRadius AT
+#    SPAWN — a T=0 bond no stand spot, opener or ordering can break.)

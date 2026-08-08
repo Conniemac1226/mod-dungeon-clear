@@ -51,6 +51,7 @@
 #include "Ai/Dungeon/DungeonClear/Util/NavmeshSnap.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcPathWorker.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTankForm.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcSocialQuarantine.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTargeting.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTickMemo.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearTuning.h"
@@ -505,6 +506,16 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
     DcPullPhase const phase = pull.phase;
 
     std::optional<DungeonBossInfo> next = AI_VALUE(std::optional<DungeonBossInfo>, DcKey::NextDungeonBoss);
+
+    // SOCIAL QUARANTINE upkeep. The advance rung does the same thing, and between
+    // them the leader re-asserts it in every state it can be in outside a boss
+    // fight — but THIS is the call that matters for a scripted plan, because a
+    // stage's release is keyed on it being the due stage and this rung is where
+    // the due stage is read and committed. Running it here, ahead of the phase
+    // switch, means the pack the tank is about to walk into is aggressive on the
+    // same tick the plan picks it, and its four neighbours are not.
+    // See DcSocialQuarantine.h.
+    DcSocialQuarantine::Update(bot, context);
 
     // A druid tank pulls as a BEAR. Every rung of this maneuver — commit, the
     // Forming dwell, the tag walk-in — runs on the NON-combat engine, and the

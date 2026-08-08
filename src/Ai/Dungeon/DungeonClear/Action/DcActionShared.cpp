@@ -56,6 +56,7 @@
 #include "Ai/Dungeon/DungeonClear/Util/DcDoorPolicy.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcMovement.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcPathWorker.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcSocialQuarantine.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTargeting.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTickMemo.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearTuning.h"
@@ -268,7 +269,16 @@ namespace DcActionShared
         // are deliberately separate (their pre-run lifetime differs).
         DcRun::Of(ctx).Reset();
         if (bot)
+        {
             DcStatusPublisher::UnmarkActiveTank(bot->GetGUID());
+            // Hand the room back. The social quarantine is the one piece of run
+            // state that lives OUTSIDE the bot — it is stored as react state on the
+            // creatures themselves — so a reset that only clears context values
+            // would leave a wing of the instance permanently unable to call for
+            // help behind a party that has stopped clearing it. See
+            // DcSocialQuarantine.h.
+            DcSocialQuarantine::ReleaseAll(bot);
+        }
         ctx->GetValue<ObjectGuid>(DcKey::EngageTrashTarget)->Set(ObjectGuid::Empty);
         ctx->GetValue<std::string&>(DcKey::StallReason)->Get().clear();
         ctx->GetValue<std::string&>(DcKey::LastSaidReason)->Get().clear();
