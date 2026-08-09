@@ -178,8 +178,9 @@ public:
     // pull pipeline that normally stand bosses down: the trigger's pull-mode
     // requirement (a pull-back is MANDATORY, so it runs even with the player's
     // pull setting Off) and its at-boss stand-down (which otherwise hands the boss
-    // to the walk-in engage — for Ghaz'an, a swim into a 47yd pit). Cheap: a
-    // registry Find plus the already-memoised at-boss probe.
+    // to the walk-in engage). Cheap: a registry Find plus the already-memoised
+    // at-boss probe — and the Find misses outright while the table is empty, which
+    // it has been since S1593.
     static bool IsPullbackBossDue(Player* bot, AiObjectContext* ctx);
 
     // --- Room-wide-aggro pre-clear (RoomAggroRegistry) --------------------

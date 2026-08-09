@@ -141,6 +141,14 @@ namespace
             // intro DoAction, which is meaningless from afar anyway (the Zum'rah
             // pattern verbatim).
             {540, 5},
+            // Underbog "Send Ghaz'an up to his platform": deliberately map-wide,
+            // and the one case where near-gating would be WRONG. Its hook fires
+            // the same DoAction areatrigger 4302 fires, and path 1383921 opens by
+            // swimming AWAY into deeper water — so he has to be sent up BEFORE he
+            // is the party's target, not once they have walked to him. It is also
+            // Repeatable and its condition re-reads his live position, so a
+            // completion with the tank far away latches nothing.
+            {546, 2},
         };
         for (Row const& r : kRows)
             if (r.mapId == mapId && r.eventId == eventId)
@@ -581,6 +589,38 @@ TEST(DungeonEventIntegrityTest, DrivesInCombatIsConfinedToVettedWaveEncounters)
     }
 }
 
+// The BRD Ring of Law, pinned to the two properties tr-20260808-150405-10 broke
+// on. Both look like tuning and are not.
+TEST(DungeonEventIntegrityTest, RingOfLawGarrisonsTheCentreAndCanRestartItself)
+{
+    DungeonEvent const* ev = DungeonEventRegistry::Find(/*map*/ 230, /*eventId*/ 1);
+    ASSERT_NE(ev, nullptr) << "Blackrock Depths (230) event 1 (Ring of Law) is missing";
+
+    EventStep const* hold = nullptr;
+    for (EventStep const& s : ev->steps)
+        if (s.kind == EventStepKind::MoveTo && s.instanceDataId >= 0)
+            hold = &s;
+    ASSERT_NE(hold, nullptr) << "the Ring of Law must hold on TYPE_RING_OF_LAW";
+
+    // A garrison radius is a LEASH, not a dead band. At 10yd the tank simply kept
+    // wherever the last wave died — 9.7yd out toward the mob gate, never
+    // re-centring, for the rest of the run.
+    EXPECT_LE(hold->radius, 5.0f)
+        << "the arena garrison must actually re-centre the tank between waves;"
+           " a radius this wide is a dead band the tank parks inside";
+
+    // TYPE_RING_OF_LAW is not monotonic: npc_grimstone's 30s no-victim watchdog
+    // SetData(FAIL)s it back to NOT_STARTED and despawns Grimstone and every
+    // summon. Without a hook running inside the hold, nothing ever notices — the
+    // Custom step that started it latched Done and the areatrigger relay is edge-
+    // triggered on a volume the party is standing in.
+    EXPECT_NE(hold->hookId, 0u)
+        << "the hold must re-run the start hook (.WhileHolding) or a Grimstone-side"
+           " reset stalls the party in an empty arena until the step times out";
+    EXPECT_TRUE(ObjectiveHookRegistry::Has(hold->hookId))
+        << "the Ring of Law hold references unregistered hook " << hold->hookId;
+}
+
 // The Black Morass wave driver, pinned to its exact shape. Every one of these
 // properties was a live failure before it was set, so a future edit that drops
 // one should fail loudly with intent rather than as a silent behaviour change.
@@ -778,6 +818,7 @@ TEST(DungeonEventIntegrityTest, EveryAuthoredObjectiveHookIdIsRegistered)
         { 7, "Sethekk Halls — DriveAnzuSummon" },
         { 8, "Black Morass — DriveBlackMorassEvent (BlackMorassDriver.cpp)" },
         { 9, "Shattered Halls — StartNethekurseIntro" },
+        { 10, "The Underbog — SendGhazanToPlatform" },
         { 12, "Black Morass — BmDriveWave (BlackMorassDriver.cpp)" },
     };
 
@@ -792,12 +833,11 @@ TEST(DungeonEventIntegrityTest, EveryAuthoredObjectiveHookIdIsRegistered)
     EXPECT_FALSE(ObjectiveHookRegistry::Has(0))
         << "id 0 is the 'no hook' sentinel and must never resolve";
 
-    // 10 and 11 (BmCampActivePortal / BmPullDrainers) were the old Black Morass
-    // wave pair, retired into hook 12. They are left unused rather than recycled so
-    // an old log line naming them stays legible — recycling them would silently
-    // re-point historic diagnostics at unrelated behaviour.
-    EXPECT_FALSE(ObjectiveHookRegistry::Has(10))
-        << "hook id 10 is RETIRED (old BmCampActivePortal) and must stay unused";
+    // 11 (BmPullDrainers) is half of the old Black Morass wave pair, retired into
+    // hook 12 and left unused rather than recycled so an old log line naming it
+    // stays legible. Its partner, 10 (BmCampActivePortal), WAS recycled in S1593
+    // for the Underbog — accepted then because the Black Morass rework predates
+    // any log a reader still consults.
     EXPECT_FALSE(ObjectiveHookRegistry::Has(11))
         << "hook id 11 is RETIRED (old BmPullDrainers) and must stay unused";
 }

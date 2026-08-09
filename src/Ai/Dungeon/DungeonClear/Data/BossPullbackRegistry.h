@@ -11,14 +11,18 @@
 // Static registry of PULL-BACK bosses: bosses that must never be fought where
 // they stand, because the ground they stand on kills the party.
 //
-// The canonical case is Ghaz'an (18105, The Underbog 546). He is a hydra whose
-// home is OPEN WATER: the areatrigger at (234.98, -379.28, 72.52) sends him down
-// waypoint path 1383920 to (193.74, -423.40, 43.58), where boss_ghazan stamps
-// that as his home position and does MoveRandom(12). The navmesh there is a water
-// SURFACE sheet at z ~= 50.8 over a floor at z ~= 3.6 — a ~47yd deep pit. Bots
-// routed at his live position snap to the surface sheet and SWIM: melee can't
-// reach him, healers lose line of sight, and his Tail Sweep (34267) knockback
-// puts whoever it hits into open water. That is the reported wipe.
+// THE TABLE IS CURRENTLY EMPTY — read BossPullbackRegistry.cpp before adding to
+// it. Its one and only row (Ghaz'an, 18105, The Underbog 546) was retired in
+// S1593 once the actual cause was fixed upstream: he was only ever in the water
+// because a headless party never fired areatrigger 4302, the sole caller of his
+// ACTION_MOVE_TO_PLATFORM. He climbs onto meshed, connected ground now and is
+// fought like any other boss. The machinery stays because the facility is
+// general and its invariants are pinned by tests.
+//
+// That history is the main thing to take from this file: a pull-back row is a
+// POSITIONAL WORKAROUND, and the first question for a new one is always whether
+// the boss is standing in a bad place because of an upstream defect that can be
+// fixed instead. This row spent a long time treating a symptom.
 //
 // The fix is positional and hand-authored, in the same spirit as
 // FightInPlaceRegistry (which forbids a pull) — this is its mirror image: it
@@ -61,10 +65,12 @@ struct BossPullback
     // SPECIFIC boss cannot be tagged normally at all — not a shortcut for one that
     // is merely awkward.
     //
-    // Ghaz'an is the case it exists for: his platform and the pipe to it are
-    // missing from the extracted navmesh and he does not reliably finish his
-    // waypoint lap, so there is no reachable spot inside his aggro bubble and the
-    // tag leg can only ever time out. See the row's own note.
+    // Ghaz'an was the case it was built for, on the belief that his platform was
+    // off-mesh and he never finished his lap — so no reachable spot existed
+    // inside his aggro bubble. Both were consequences of him being stuck in the
+    // water, and both went away with the areatrigger fix (S1593). No row uses
+    // this today, and "the tag leg keeps timing out" is a reason to find out WHY
+    // before it is a reason to set this.
     float  forceAggroRange{0.0f};
 
     // SUMMON-IF-STUCK opt-in, and like forceAggroRange it defaults OFF and should
@@ -77,12 +83,12 @@ struct BossPullback
     // for, and a boss that has climbed out onto dry ground is left alone to walk
     // the rest of the way himself.
     //
-    // Ghaz'an needs it because his route out of the lake is not something the
-    // server can reliably walk him along: the pipe he is scripted to climb is
-    // absent from the extracted navmesh, so his chase path off the water has no
-    // geometry to follow and he can hang at the water's edge indefinitely. Waiting
-    // longer does not help — nothing is going to change — so the choice is between
-    // relocating him and stalling the run.
+    // Ghaz'an was the case for this too: engaged from the water he had to chase
+    // the party up a climb his aggro path could not follow, and he would hang at
+    // the water's edge indefinitely. He is not engaged from the water any more —
+    // he walks up under his own script, before the fight — so nothing needs it.
+    // Kept because "the boss physically cannot reach the party" is a real class
+    // of failure, but a boss that is merely SLOW to arrive is not it.
     bool   summonWhenStuckBelow{false};
 };
 

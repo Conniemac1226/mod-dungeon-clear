@@ -303,6 +303,16 @@ StepResult DungeonEventExecutor::RunStep(Player* bot, AiObjectContext* context,
             // tick, a later tick that finds the bot displaced (combat pushed the
             // tank off the spot, e.g. chasing a wave down the ramp) re-moves it back.
             //
+            // A garrison may also carry a hook to run WHILE it holds (see
+            // EventBuilder::WhileHolding), for a gate that can go BACKWARDS behind
+            // the party's back. The hook's result is deliberately ignored: the gate
+            // below is still the only thing that ends the step.
+            if (step.hookId != 0)
+            {
+                DungeonBossInfo dummy;  // hooks key off bot/context, not info
+                ObjectiveHookRegistry::Run(step.hookId, bot, context, dummy);
+            }
+            //
             // Instance-data gate (preferred for a value killed mid-combat): hold
             // until the map's scripted phase counter reaches the threshold. This is
             // MONOTONIC, so unlike "boss alive" it can't be missed while the event
@@ -1044,6 +1054,19 @@ EventDriveOutcome DungeonEventExecutor::Drive(Player* bot, AiObjectContext* cont
                       bot->GetName(), ev.name, prog.stepIndex,
                       static_cast<uint32>(active.kind), static_cast<uint32>(result),
                       static_cast<uint32>(now - prog.stepStartMs), timeout);
+            // An instance-data gate is the one gate whose reason for not clearing
+            // is invisible from the line above — "result 0" for ten minutes reads
+            // the same whether the encounter is running or was silently reset under
+            // the party. Print what the step is actually reading.
+            if (active.instanceDataId >= 0 && result != StepResult::Done)
+            {
+                InstanceScript* inst = DcTargeting::GetInstanceScript(bot);
+                LOG_DEBUG("playerbots.dungeonclear",
+                          "[DC:{}] event '{}' step {} instance gate: data({})={} (need >= {})",
+                          bot->GetName(), ev.name, prog.stepIndex, active.instanceDataId,
+                          inst ? inst->GetData(static_cast<uint32>(active.instanceDataId)) : 0u,
+                          active.instanceDataMin);
+            }
             prog.lastLoggedStep = static_cast<int32>(prog.stepIndex);
             prog.lastLoggedResult = static_cast<int32>(result);
             prog.lastLogMs = now;

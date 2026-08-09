@@ -194,7 +194,9 @@ struct EventStep
 
     uint32 durationMs{0};    // Wait: dwell length
     uint32 timeoutMs{0};     // 0 => EventStepTimeout config default; else per-step
-    uint32 hookId{0};        // Custom -> ObjectiveHookRegistry
+    uint32 hookId{0};        // Custom -> ObjectiveHookRegistry; on a garrison MoveTo,
+                             // the hook to re-run each tick WHILE it holds (see
+                             // EventBuilder::WhileHolding). 0 => none.
 
     // --- EscortCreature only ----------------------------------------------
     // The escortee (creatureEntry) is the NPC to protect; `radius` is the grid
@@ -464,6 +466,23 @@ public:
     // bosses are already dead by the time the party drops combat).
     EventBuilder& MoveToHoldUntilInstanceData(float x, float y, float z, float radius,
                                               uint32 dataId, uint32 minValue);
+    // Run ObjectiveHookRegistry `hookId` every tick while the PRECEDING garrison
+    // step holds, in addition to its gate. The hook's result is ignored — the gate
+    // alone still ends the step. Chain it right after the step it arms:
+    //   .MoveToHoldUntilInstanceData(x, y, z, r, dataId, min).WhileHolding(hook)
+    //
+    // For a garrison whose gate can regress BEHIND THE PARTY'S BACK, where the
+    // usual "start it with a Custom step, then hold for the finish" pair silently
+    // stops being true. The Ring of Law is the case it exists for: npc_grimstone's
+    // own 30s "no summon has a victim" watchdog SetData(FAIL)s the arena, which
+    // despawns Grimstone and every wave and puts TYPE_RING_OF_LAW back to
+    // NOT_STARTED. Nothing then restarts it — the Custom step that fired the
+    // areatrigger latched Done minutes ago, and the test-run areatrigger relay is
+    // EDGE-triggered on a volume the party is already standing in — so the hold
+    // burns its whole timeout on an encounter that is no longer running. Re-running
+    // the start hook from inside the hold closes that: it is a no-op while the
+    // encounter is live and re-fires the real trigger once it isn't.
+    EventBuilder& WhileHolding(uint32 hookId);
     EventBuilder& UseGO(uint32 goEntry, float searchRadius = 0.0f,
                         float x = 0.0f, float y = 0.0f, float z = 0.0f);
     // Leader casts `spellId` on itself (triggered: no cost/cooldown/reagent/cast

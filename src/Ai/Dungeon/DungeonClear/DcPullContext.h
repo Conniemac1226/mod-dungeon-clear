@@ -72,9 +72,11 @@ struct DcPullContext
                                                  // debounce latch for
                                                  // DungeonClearMath::ShouldPlantEarly.
     bool        bossPullback = false;           // this pull is a BossPullbackRegistry
-                                                 // boss drag (Ghaz'an out of the
-                                                 // Underbog lake), not an ordinary
-                                                 // trash pull. Set at commit, cleared
+                                                 // boss drag, not an ordinary trash
+                                                 // pull. (No row uses it today — the
+                                                 // table is empty since S1593; see
+                                                 // BossPullbackRegistry.cpp.) Set at
+                                                 // commit, cleared
                                                  // by Reset(). Two things key on it:
                                                  // the drag legs get a distance-sized
                                                  // watchdog (the haul is ~150yd, far

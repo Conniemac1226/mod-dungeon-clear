@@ -45,6 +45,15 @@ namespace
     // at_ring_of_law for real (which itself honours the 2-minute post-wipe
     // cooldown and no-ops if already started). Done once the encounter is at
     // least IN_PROGRESS; Running (and re-fires, harmlessly idempotent) until then.
+    //
+    // It is ALSO the arena's RESTART: the event's garrison step re-runs it every
+    // tick while holding (.WhileHolding, see BlackrockDepthsEvents). The state is
+    // not monotonic — npc_grimstone's 30s "no summon has a victim" watchdog
+    // SetData(FAIL)s back to NOT_STARTED and despawns everything — and this is the
+    // only thing that notices. The re-fire during the core's 2-minute post-fail
+    // cooldown is a no-op it drops on the floor, which is what makes "just fire it
+    // every tick" the right shape here: no cooldown bookkeeping of our own to keep
+    // in step with the core's.
     constexpr uint32 BRD_TYPE_RING_OF_LAW = 1;  // DataTypes::TYPE_RING_OF_LAW
     constexpr uint32 BRD_RING_IN_PROGRESS = 1;  // EncounterState::IN_PROGRESS
     constexpr uint32 BRD_RING_OF_LAW_TRIGGER = 1526;
@@ -67,6 +76,16 @@ namespace
         p << uint32(BRD_RING_OF_LAW_TRIGGER);
         p.rpos(0);
         bot->GetSession()->HandleAreaTriggerOpcode(p);
+
+        // Log the fire that TOOK, not every fire: while the encounter refuses to
+        // start (out of the trigger radius, or inside the core's post-fail
+        // cooldown) this runs every tick, and one line per start is the whole
+        // signal — a second one in a run means the arena reset and was restarted.
+        if (inst->GetData(BRD_TYPE_RING_OF_LAW) >= BRD_RING_IN_PROGRESS)
+            LOG_INFO("playerbots.dungeonclear",
+                     "[DC:{}] Ring of Law started by forged areatrigger {} at ({:.1f},{:.1f},{:.1f})",
+                     bot->GetName(), BRD_RING_OF_LAW_TRIGGER, bot->GetPositionX(),
+                     bot->GetPositionY(), bot->GetPositionZ());
         return ObjectiveArriveResult::Running;
     }
 
@@ -399,6 +418,61 @@ namespace
         return ObjectiveArriveResult::Done;
     }
 
+    // --- The Underbog: SendGhazanToPlatform (hook id 10) ------------------
+    // Ghaz'an (18105) spawns in the lake and swims DB waypoint path 1383920 —
+    // every node between z 32 and z 47, i.e. underwater. The ONLY thing that
+    // moves him out is at_underbog_ghazan (areatrigger 4302), whose
+    // ACTION_MOVE_TO_PLATFORM starts path 1383921 up the ramp onto his platform
+    // at (256.28, -458.73, 81.37). Same class as the Ring of Law / Zum'rah /
+    // Nethekurse bugs: a bot never sends CMSG_AREATRIGGER on its own.
+    //
+    // DcTestAreaTriggers relays that packet now, so this is the BACKSTOP, not
+    // the primary path — 4302's radius is only 10yd and map 546 has no
+    // hand-authored route hints, so a party can path around the volume. If it
+    // does, the boss anchor points at an empty platform and the run stalls.
+    //
+    // Fire the same DoAction the areatrigger script fires. It carries its own
+    // `_movedToPlatform` guard, so when the relay already worked this is a
+    // no-op — and the event's predicate has usually already read him as up and
+    // never called us at all. Driven by the Conditional + Repeatable "Send
+    // Ghaz'an up to his platform" event (UnderbogEvents), whose predicate is the
+    // deadlock signature: alive and still below the ramp.
+    //
+    // Logged at INFO for the same reason WakeZumrah is: this is the one place an
+    // Underbog second-boss stall gets fixed silently, and it also tells us
+    // whether the relay is doing its job — a run that logs this fired the
+    // backstop, which means the route missed AT 4302.
+    constexpr uint32 UB_GHAZAN = 18105;
+    constexpr int32 UB_ACTION_MOVE_TO_PLATFORM = 1;  // boss_ghazan.cpp
+    // Matches the event predicate's band: his patrol tops out at z 46.8 and the
+    // ramp's first dry node is z 74.7, so the gap is unambiguous.
+    constexpr float UB_GHAZAN_WATER_Z = 60.0f;
+
+    ObjectiveArriveResult SendGhazanToPlatform(Player* bot, AiObjectContext* context,
+                                               DungeonBossInfo const& /*info*/)
+    {
+        // Map-wide and already resolved this tick by the event's own predicate —
+        // see UbGhazanStillInTheLake for why this is not a radius scan.
+        Creature* ghazan = DcTargeting::GetLiveBoss(bot, context, UB_GHAZAN);
+        if (!ghazan || !ghazan->IsAlive())
+            return ObjectiveArriveResult::Done;  // gone/dead — nothing to send
+
+        // Already climbing or up (the relay fired, or a human's client tripped
+        // AT 4302). Height, not a flag: the AI's own _movedToPlatform is private
+        // and his z is the thing we actually care about.
+        if (ghazan->GetPositionZ() >= UB_GHAZAN_WATER_Z)
+            return ObjectiveArriveResult::Done;
+
+        ghazan->AI()->DoAction(UB_ACTION_MOVE_TO_PLATFORM);
+        LOG_INFO("playerbots.dungeonclear",
+                 "DungeonClear: The Underbog — sent Ghaz'an ({}) up to his platform for {} "
+                 "(the route missed area trigger 4302, so he was still in the lake at z {:.1f})",
+                 UB_GHAZAN, bot->GetName(), ghazan->GetPositionZ());
+        // Done even if the action did not take: the Repeatable event's predicate
+        // still reads him below the ramp next tick and re-fires this hook.
+        return ObjectiveArriveResult::Done;
+    }
+
     // --- Old Hillsbrad: GrantIncendiaryBombs (hook id 3) ------------------
     // Brazen (18725) only offers his drake ride to Durnholde Keep when the player
     // HOLDS the Pack of Incendiary Bombs (item 25853) — gossip menu 7959 option 0
@@ -579,6 +653,7 @@ namespace
             Reg::AddHook(t, 6, &DriveMellicharWaves);    // Arcatraz — poke Mellichar, hold through the waves
             Reg::AddHook(t, 7, &DriveAnzuSummon);        // Sethekk Halls — force-summon Anzu (send-event 14797)
             Reg::AddHook(t, 9, &StartNethekurseIntro);   // Shattered Halls — fire Nethekurse's client-only intro
+            Reg::AddHook(t, 10, &SendGhazanToPlatform);  // The Underbog — send Ghaz'an up his ramp (AT 4302)
 
             // Controllers, one TU each. Called explicitly (not self-registering)
             // because this module is a static lib: a TU whose only output is

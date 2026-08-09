@@ -167,6 +167,13 @@ EventBuilder& EventBuilder::MoveToHoldUntilInstanceData(float x, float y, float 
     return *this;
 }
 
+EventBuilder& EventBuilder::WhileHolding(uint32 hookId)
+{
+    if (!_ev.steps.empty())
+        _ev.steps.back().hookId = hookId;
+    return *this;
+}
+
 EventBuilder& EventBuilder::UseGO(uint32 goEntry, float searchRadius,
                                   float x, float y, float z)
 {
