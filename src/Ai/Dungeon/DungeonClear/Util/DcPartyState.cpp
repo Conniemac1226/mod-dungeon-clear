@@ -5,8 +5,10 @@
 
 #include "DcPartyState.h"
 
+#include "DcTickMemo.h"
 #include "DungeonClearMath.h"
 #include "DungeonClearTuning.h"
+#include "DungeonClearUtil.h"   // DC_PULL_* log macros
 #include "Ai/Dungeon/DungeonClear/Settings/DcSettings.h"
 #include <algorithm>
 #include <cmath>
@@ -52,6 +54,7 @@
 #include "Timer.h"
 #include "World.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
+#include "Ai/Dungeon/DungeonClear/Data/ScriptedPullRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Data/SealedEncounterRegistry.h"
 #include "Ai/Dungeon/DungeonClear/DcPullContext.h"
 #include "Ai/Dungeon/DungeonClear/Util/ChunkedPathfinder.h"
@@ -294,6 +297,99 @@ bool DcPartyState::IsBetweenPullsReady(Player* bot, AiObjectContext* context, bo
     return IsPartyReady(bot, rest.minHp, rest.minMp, gate.maxSpread, gate.anchor,
                         gate.maxTankGap);
 }
+bool DcPartyState::IsScriptedStageMustering(Player* bot, AiObjectContext* context)
+{
+    if (!bot || !context)
+        return false;
+
+    DcPullContext& pull = context->GetValue<DcPullContext&>(DcKey::PullContext)->Get();
+
+    // Only ever gates the START of a stage. A maneuver already in flight has the
+    // pack tagged and is running it home; holding there would strand the tank
+    // mid-drag, which is the failure this whole pipeline is built to avoid.
+    bool const stagePending = pull.scriptedStage < 0 && pull.phase == DcPullPhase::Idle &&
+                              DcTickMemoAccess::ScriptedStage(bot, context) != nullptr;
+
+    // Phantom flag: nobody can eat or drink while flagged, so a floor waited on
+    // there can never be met. Same waiver, same reason, as GetRestGate's. (An
+    // ARMED muster still holds its substance floor first — see minMs below —
+    // which gives the phantom-recovery hatch a few seconds to clear the flag.)
+    //
+    // HP AND MANA ONLY. The spread limit is waived (0 would mean "everyone stands
+    // exactly on the tank" — IsPartyReady compares `spread > maxSpread` — not "no
+    // limit"), because spread is the business of IsBetweenPullsReady one rung
+    // earlier and has already passed by the time we are asked.
+    //
+    // A corpse on this map is NOT "topped up". IsPartyReady skips the dead by
+    // design (rez recovery holds the run), but when recovery is not pending — no
+    // viable rezzer, or the death is one tick old — the gate passed over the
+    // corpse and stages armed short-handed within 10s of a death
+    // (tr-20260806-172345-34: healer dies, "muster over after 1s", tank dead 8s
+    // into the stage). The muster budget still bounds the wait.
+    bool const toppedUp =
+        !stagePending || DcCombatFlag::IsPhantomFlag(bot, context) ||
+        (!HasDeadSameMapMember(bot) &&
+         IsPartyReady(bot, DC_SCRIPTED_PULL_MUSTER_HP, DC_SCRIPTED_PULL_MUSTER_MP,
+                      /*maxSpread*/ 100000.0f, /*spreadAnchor*/ nullptr,
+                      /*maxTankGap*/ 0.0f));
+
+    uint32 const now = getMSTime();
+    uint32 const prev = pull.scriptedMusterSince;
+    uint32 musterSince = prev;
+    bool const hold = DungeonClearMath::ShouldMusterForScriptedStage(
+        stagePending, toppedUp, musterSince, now, DC_SCRIPTED_PULL_MUSTER_MS,
+        DC_SCRIPTED_PULL_MUSTER_MIN_MS, musterSince);
+    pull.scriptedMusterSince = musterSince;
+
+    // Log the two EDGES only. The latch deliberately stays armed past the timeout
+    // (so one stage cannot muster twice), which means "latched and not holding" is
+    // the steady state after the budget is spent, not an event — deriving the old
+    // hold from the old stamp is what keeps this to two lines per muster instead of
+    // one per tick.
+    bool const wasHolding = prev != 0 && now >= prev && (now - prev) < DC_SCRIPTED_PULL_MUSTER_MS;
+    if (!wasHolding && hold)
+        DC_PULL_INFO("[DC:{}] scripted-pull: mustering before the next stage — the party "
+                     "is below {:.0f}% HP / {:.0f}% mana (up to {}s)", bot->GetName(),
+                     DC_SCRIPTED_PULL_MUSTER_HP, DC_SCRIPTED_PULL_MUSTER_MP,
+                     DC_SCRIPTED_PULL_MUSTER_MS / 1000);
+    else if (wasHolding && !hold)
+        DC_PULL_INFO("[DC:{}] scripted-pull: muster over after {}s ({})",
+                     bot->GetName(), (now - prev) / 1000,
+                     toppedUp ? "party topped up — arming the stage"
+                              : "budget spent — arming on the ordinary floors");
+    return hold;
+}
+
+bool DcPartyState::IsScriptedMusterHolding(Player* bot, AiObjectContext* context)
+{
+    if (!bot || !context)
+        return false;
+    DcPullContext const& pull = context->GetValue<DcPullContext&>(DcKey::PullContext)->Get();
+    if (pull.scriptedMusterSince == 0)
+        return false;  // no muster armed (or released topped-up)
+    uint32 const now = getMSTime();
+    // A stale stamp past the budget is the "armed forever so it never re-fires"
+    // steady state, not a hold.
+    return now >= pull.scriptedMusterSince &&
+           now - pull.scriptedMusterSince < DC_SCRIPTED_PULL_MUSTER_MS;
+}
+
+bool DcPartyState::HasDeadSameMapMember(Player* bot)
+{
+    if (!bot)
+        return false;
+    Group* group = bot->GetGroup();
+    if (!group)
+        return false;
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (member && member->GetMapId() == bot->GetMapId() && member->isDead())
+            return true;
+    }
+    return false;
+}
+
 bool DcPartyState::IsAnyPartyMemberLooting(Player* bot)
 {
     if (!bot)

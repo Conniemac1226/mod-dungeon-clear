@@ -391,6 +391,88 @@ bool DcLeaderSignal::IsDungeonClearLeader(Player* bot)
 {
     return bot && FindLeaderTank(bot) == bot;
 }
+Player* DcLeaderSignal::FindRunOwner(Player* bot)
+{
+    auto owns = [](Player* p) -> bool
+    {
+        if (!p)
+            return false;
+        PlayerbotAI* ai = GET_PLAYERBOT_AI(p);
+        return ai && DcRun::Of(ai).enabled;
+    };
+
+    // The living leader is the owner in every healthy case, and resolving it first
+    // keeps this on the leader cache's fast path rather than walking the group.
+    if (Player* leader = FindLeaderTank(bot))
+        if (owns(leader))
+            return leader;
+
+    if (!bot)
+        return nullptr;
+
+    Group* group = bot->GetGroup();
+    if (!group)
+        return owns(bot) ? bot : nullptr;
+
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (!member || member->GetMapId() != bot->GetMapId())
+            continue;
+        if (owns(member))
+            return member;
+    }
+    return nullptr;
+}
+
+Player* DcLeaderSignal::FindTerminalDriver(Player* bot)
+{
+    Player* owner = FindRunOwner(bot);
+    if (!owner)
+        return nullptr;
+
+    PlayerbotAI* ownerAI = GET_PLAYERBOT_AI(owner);
+    if (!ownerAI)
+        return nullptr;
+    DcRunState const& run = DcRun::Of(ownerAI);
+    if (!run.enabled || run.paused)
+        return nullptr;  // a pause holds the terminal rungs exactly as it holds the rest
+
+    // Healthy case first: an elected leader exists, so it drives, and this is
+    // byte-for-byte the old behaviour.
+    if (Player* leader = FindLeaderTank(owner))
+        return leader;
+
+    Group* group = owner->GetGroup();
+    if (!group)
+        return owner;  // solo tank: it is the only candidate either way
+
+    // No leader — the tank is dead. Elect deterministically so every member agrees
+    // and exactly one fires. Living members outrank corpses (a living member can
+    // actually act on the verdict); the all-dead pass is what lets a full wipe
+    // still reach the party-died bailout.
+    Player* bestAlive = nullptr;
+    Player* bestAny = nullptr;
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (!member || member->GetMapId() != owner->GetMapId())
+            continue;
+        if (!GET_PLAYERBOT_AI(member))
+            continue;  // a real player has no AI to run the rung
+        if (!bestAny || member->GetGUID() < bestAny->GetGUID())
+            bestAny = member;
+        if (member->IsAlive() && (!bestAlive || member->GetGUID() < bestAlive->GetGUID()))
+            bestAlive = member;
+    }
+    return bestAlive ? bestAlive : bestAny;
+}
+
+bool DcLeaderSignal::IsTerminalDriver(Player* bot)
+{
+    return bot && FindTerminalDriver(bot) == bot;
+}
+
 bool DcLeaderSignal::IsInPausedDungeonClearRun(Player* bot)
 {
     if (!bot)

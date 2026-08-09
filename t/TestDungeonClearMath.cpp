@@ -467,7 +467,7 @@ using DungeonClearMath::ShouldReleaseStandingPull;
 TEST(DungeonClearPullReleaseTest, ReleasesAPullLeftStandingWhenTheModeIsForcedOff)
 {
     EXPECT_TRUE(ShouldReleaseStandingPull(/*effectiveOn*/ false, /*standing*/ true,
-                                          /*inCombat*/ false, /*holdingPhase*/ false,
+                                          /*partyInCombat*/ false, /*holdingPhase*/ false,
                                           /*bossPullback*/ false));
 }
 
@@ -476,7 +476,7 @@ TEST(DungeonClearPullReleaseTest, ReleasesAPullLeftStandingWhenTheModeIsForcedOf
 TEST(DungeonClearPullReleaseTest, NeverReleasesWhileThePullModeIsOn)
 {
     EXPECT_FALSE(ShouldReleaseStandingPull(/*effectiveOn*/ true, /*standing*/ true,
-                                           /*inCombat*/ false, /*holdingPhase*/ false,
+                                           /*partyInCombat*/ false, /*holdingPhase*/ false,
                                            /*bossPullback*/ false));
 }
 
@@ -485,20 +485,34 @@ TEST(DungeonClearPullReleaseTest, NeverReleasesWhileThePullModeIsOn)
 TEST(DungeonClearPullReleaseTest, NoOpWhenNothingIsStanding)
 {
     EXPECT_FALSE(ShouldReleaseStandingPull(/*effectiveOn*/ false, /*standing*/ false,
-                                           /*inCombat*/ false, /*holdingPhase*/ false,
+                                           /*partyInCombat*/ false, /*holdingPhase*/ false,
                                            /*bossPullback*/ false));
 }
 
-// A maneuver in flight — in combat, or a holding phase (Forming/Advancing/
-// Returning) — must finish: clearing its camp mid-drag would dump the party out
-// of the hold and into the inbound pack.
+// A maneuver in flight — anyone in the party fighting, or a holding phase
+// (Forming/Advancing/Returning) — must finish: clearing its camp mid-drag would
+// dump the party out of the hold and into the inbound pack.
 TEST(DungeonClearPullReleaseTest, NeverReleasesAManeuverInFlight)
 {
     EXPECT_FALSE(ShouldReleaseStandingPull(/*effectiveOn*/ false, /*standing*/ true,
-                                           /*inCombat*/ true, /*holdingPhase*/ false,
+                                           /*partyInCombat*/ true, /*holdingPhase*/ false,
                                            /*bossPullback*/ false));
     EXPECT_FALSE(ShouldReleaseStandingPull(/*effectiveOn*/ false, /*standing*/ true,
-                                           /*inCombat*/ false, /*holdingPhase*/ true,
+                                           /*partyInCombat*/ false, /*holdingPhase*/ true,
+                                           /*bossPullback*/ false));
+}
+
+// THE CAMP-FIGHT CASE, and the reason the combat input is party-wide rather than
+// the leader's own flag. Phase Engage with a camp marked: the pack has been
+// dragged home and handed to the followers, and the TANK is flag-clear for a
+// stretch of that fight (a scripted stage tags at range, so the pack arrives
+// strung out and threat lands on whoever it reaches first). Releasing there
+// dismantles the camp underneath a live fight and frees the tank to go form the
+// next pull with the last pack still up — the rotunda's pack-stacking collapse.
+TEST(DungeonClearPullReleaseTest, NeverReleasesACampTheFollowersAreStillFightingAt)
+{
+    EXPECT_FALSE(ShouldReleaseStandingPull(/*effectiveOn*/ false, /*standing*/ true,
+                                           /*partyInCombat*/ true, /*holdingPhase*/ false,
                                            /*bossPullback*/ false));
 }
 
@@ -507,7 +521,7 @@ TEST(DungeonClearPullReleaseTest, NeverReleasesAManeuverInFlight)
 TEST(DungeonClearPullReleaseTest, NeverReleasesABossPullback)
 {
     EXPECT_FALSE(ShouldReleaseStandingPull(/*effectiveOn*/ false, /*standing*/ true,
-                                           /*inCombat*/ false, /*holdingPhase*/ false,
+                                           /*partyInCombat*/ false, /*holdingPhase*/ false,
                                            /*bossPullback*/ true));
 }
 
@@ -1000,6 +1014,95 @@ TEST(DungeonClearPatrolWaitTest, FormationPatrollerStaysInReducedPass)
     };
     EXPECT_EQ(Count(mobs, 0), 6u);
     EXPECT_EQ(CountReduced(mobs, 0), 6u);  // linked patroller survives
+}
+
+// --- ShouldMusterForScriptedStage (the scripted-stage muster latch) -------
+
+using DungeonClearMath::ShouldMusterForScriptedStage;
+
+// No stage due: never hold, latch cleared. This is every tick of every dungeon
+// without a plan, so it must be the cheap, quiet answer.
+TEST(DungeonClearMusterGateTest, NoStagePendingProceeds)
+{
+    uint32 since = 12345;  // stale latch from a previous stage
+    EXPECT_FALSE(ShouldMusterForScriptedStage(/*stagePending*/ false, /*toppedUp*/ false,
+                                              since, /*now*/ 20000, /*waitMs*/ 40000,
+                                              /*minMs*/ 8000, since));
+    EXPECT_EQ(since, 0u);
+}
+
+// Stage due and the party is already topped up: arm nothing, pull now. The
+// substance floor binds only once ARMED — a party that never fell below the
+// floors pays nothing.
+TEST(DungeonClearMusterGateTest, AToppedUpPartyProceedsImmediately)
+{
+    uint32 since = 0;
+    EXPECT_FALSE(ShouldMusterForScriptedStage(true, /*toppedUp*/ true, since, 20000, 40000,
+                                              8000, since));
+    EXPECT_EQ(since, 0u);
+}
+
+// Stage due, party short: hold, and latch the moment the muster began.
+TEST(DungeonClearMusterGateTest, AShortPartyHoldsAndLatches)
+{
+    uint32 since = 0;
+    EXPECT_TRUE(ShouldMusterForScriptedStage(true, /*toppedUp*/ false, since, 20000, 40000,
+                                             8000, since));
+    EXPECT_EQ(since, 20000u);
+    // Still short 10s later, still inside the budget: keep holding on the ORIGINAL
+    // stamp (a re-arm every tick would make the wait unbounded).
+    EXPECT_TRUE(ShouldMusterForScriptedStage(true, false, since, 30000, 40000, 8000, since));
+    EXPECT_EQ(since, 20000u);
+}
+
+// THE BOUND, and the reason it exists: the muster floors sit above what stock bots
+// eat and drink back up to, so a party that can never reach them must not be able to
+// stall the run forever. Once the budget is spent the stage arms on the ordinary
+// floors — a pull at 70% mana beats a run that never continues.
+TEST(DungeonClearMusterGateTest, TheWaitIsBounded)
+{
+    uint32 since = 0;
+    EXPECT_TRUE(ShouldMusterForScriptedStage(true, false, since, 1000, 40000, 8000, since));
+    EXPECT_FALSE(ShouldMusterForScriptedStage(true, false, since, 41000, 40000, 8000, since));
+    // ...and the latch STAYS armed past the timeout, so the same stage cannot
+    // muster a second time the next tick.
+    EXPECT_EQ(since, 1000u);
+    EXPECT_FALSE(ShouldMusterForScriptedStage(true, false, since, 41100, 40000, 8000, since));
+    EXPECT_EQ(since, 1000u);
+}
+
+// THE SUBSTANCE FLOOR. The release test is an instantaneous percentage over a
+// 5-point band: one AoE heal closed it in 1-5s and stages armed against parties
+// that never sat down (tp-20260806-212646-1, 115/184 musters <=5s the plan
+// before). An ARMED muster therefore holds through minMs even if the floors go
+// green first; only past the floor does topping up release and disarm — so the
+// NEXT stage still gets its own full budget rather than inheriting a spent one.
+TEST(DungeonClearMusterGateTest, AnArmedMusterHoldsTheSubstanceFloor)
+{
+    uint32 since = 0;
+    EXPECT_TRUE(ShouldMusterForScriptedStage(true, false, since, 5000, 40000, 8000, since));
+    EXPECT_EQ(since, 5000u);
+    // Percentages closed 4s in (an AoE heal): still inside the floor — hold.
+    EXPECT_TRUE(ShouldMusterForScriptedStage(true, /*toppedUp*/ true, since, 9000, 40000,
+                                             8000, since));
+    EXPECT_EQ(since, 5000u);
+    // Past the floor and topped up: release and disarm.
+    EXPECT_FALSE(ShouldMusterForScriptedStage(true, /*toppedUp*/ true, since, 14000, 40000,
+                                              8000, since));
+    EXPECT_EQ(since, 0u);
+}
+
+// waitMs == 0 disables the muster outright (proceed on the first tick, whatever
+// minMs says), and the now == 0 corner must not underflow into a colossal elapsed.
+TEST(DungeonClearMusterGateTest, DegenerateInputs)
+{
+    uint32 since = 0;
+    EXPECT_FALSE(ShouldMusterForScriptedStage(true, false, since, 20000, /*waitMs*/ 0,
+                                              /*minMs*/ 8000, since));
+
+    since = 0;
+    EXPECT_TRUE(ShouldMusterForScriptedStage(true, false, since, /*now*/ 0, 40000, 8000, since));
+    EXPECT_EQ(since, 1u);  // never stores 0 — that means "clear"
 }
 
 // --- ShouldWaitForPatrol (the patrol-wait latch gate) ---------------------

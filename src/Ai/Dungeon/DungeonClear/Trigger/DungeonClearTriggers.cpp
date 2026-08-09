@@ -6,7 +6,9 @@
 #include "DungeonClearTriggers.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcRun.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <optional>
 #include <string>
 #include <unordered_set>
@@ -33,6 +35,7 @@
 #include "Ai/Dungeon/DungeonClear/Util/DcEngageGeometry.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcHazard.h"
 #include "Ai/Dungeon/DungeonClear/Data/DcHazardRegistry.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcPartyState.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcPlayerbotCompat.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcRegroupDecision.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcRezRecovery.h"
@@ -80,6 +83,24 @@ namespace
         if (!DcRun::Of(context).enabled || DcRun::Of(context).paused)
             return false;
         return DcLeaderSignal::IsDungeonClearLeader(bot);
+    }
+
+    // The TERMINAL rungs' gate — the party-died bailout and the all-cleared
+    // completion. Deliberately NOT IsEnabled.
+    //
+    // IsEnabled reads the run state off `context`, which is the calling bot's own,
+    // and only the leader ever sets `enabled` — so it is doubly leader-bound: a
+    // follower fails the flag check and the leader fails the election once it is a
+    // corpse. Both terminal questions ("is this run over?" / "did we finish?")
+    // still have answers when the tank is dead, and with no rung left to ask them
+    // the run idles at its last pull phase until the 600s no-progress watchdog.
+    //
+    // See DcLeaderSignal::FindTerminalDriver for the election and the audit
+    // evidence. The run state is read from the OWNER, not from `context`, for the
+    // same reason.
+    bool IsTerminalDriver(Player* bot)
+    {
+        return DcLeaderSignal::IsTerminalDriver(bot);
     }
 
     // May the driving ladder run this tick? Replaces the raw `bot->IsInCombat()`
@@ -487,6 +508,14 @@ bool DungeonClearBlockingTrashTrigger::IsActive()
     if (!IsBetweenPullsReady(bot, context))
         return false;
 
+    // Scripted-stage muster: the pull trigger is deliberately standing down while
+    // the party drinks to the muster floors. The bystander fall-through below
+    // must not walk the tank in during that window — with the pull Idle it owned
+    // the tick and body-engaged the pack the stage was about to tag (the
+    // muster-window scout face-pull, tp-20260806-212646-1). Read-only latch view.
+    if (DcPartyState::IsScriptedMusterHolding(bot, context))
+        return false;
+
     // Prefer the wider DC-gated scan — packs at the far end of long
     // dungeon corridors fall outside the default 100yd sightDistance cap
     // that drives `possible targets`. Falls back to `possible targets`
@@ -684,9 +713,9 @@ bool DungeonClearRoomPreClearHoldTrigger::IsActive()
 
 bool DungeonClearPartyDiedTrigger::IsActive()
 {
-    if (!IsEnabled(context, bot))
-        return false;
     if (!bot)
+        return false;
+    if (!IsTerminalDriver(bot))
         return false;
 
     bool anyDead = bot->isDead();
@@ -732,6 +761,12 @@ bool DungeonClearRezPartyTrigger::IsActive()
     // follower, or the leader itself (a prot paladin raising its healer). No
     // IsEnabled leader gate: Evaluate resolves the run owner dead-tolerantly
     // (the leader may BE the corpse) and returns None for off/paused runs.
+    //
+    // KEEP IN STEP WITH DcRezRecovery::IsElectedRezzer, the read-only twin that
+    // stands the follower movers down for whoever this arms. It cannot simply
+    // call this (a trigger is per-bot state, and Evaluate here is one of the
+    // recovery clock's two update sites — the read-only twin must not mutate),
+    // so the conditions are stated twice on purpose. Change one, change both.
     if (!bot || bot->isDead() || bot->IsInCombat())
         return false;
     Map* map = bot->GetMap();
@@ -746,20 +781,35 @@ bool DungeonClearRezPartyTrigger::IsActive()
 
 bool DungeonClearAllClearedTrigger::IsActive()
 {
-    if (!IsEnabled(context, bot))
-        return false;
     if (!bot)
+        return false;
+    if (!IsTerminalDriver(bot))
         return false;
     Map* map = bot->GetMap();
     if (!map || !map->IsDungeon())
         return false;
 
-    auto const& bosses = AI_VALUE(std::vector<DungeonBossInfo>, DcKey::DungeonBosses);
+    // Read the roster and the next-boss cursor from the RUN OWNER's context, never
+    // from `bot`'s. With the leader alive these are the same context; with it dead
+    // the driver can be any member, and NextDungeonBossValue is not a pure function
+    // of the map — it folds in the owner-local ClearedAnchors set and
+    // DcRunState::selectedBossEntry (NextDungeonBossValue.cpp:99,128). A follower's
+    // copies of those are empty, so asking IT whether the dungeon is finished gets
+    // an answer about a run it was never keeping.
+    Player* const owner = DcLeaderSignal::FindRunOwner(bot);
+    PlayerbotAI* const ownerAI = owner ? GET_PLAYERBOT_AI(owner) : nullptr;
+    if (!ownerAI)
+        return false;
+    AiObjectContext* const ownerCtx = ownerAI->GetAiObjectContext();
+
+    auto const& bosses =
+        ownerCtx->GetValue<std::vector<DungeonBossInfo>>(DcKey::DungeonBosses)->Get();
     if (bosses.empty())
         return false;
 
-    std::optional<DungeonBossInfo> next = AI_VALUE(std::optional<DungeonBossInfo>, DcKey::NextDungeonBoss);
-    return !next.has_value();
+    return !ownerCtx->GetValue<std::optional<DungeonBossInfo>>(DcKey::NextDungeonBoss)
+                ->Get()
+                .has_value();
 }
 
 bool DungeonClearRecoverStrandedTrigger::IsActive()
@@ -941,7 +991,30 @@ namespace
         if (DcSettings::GetBool(bot, "SmartRest"))
             return DcSmartRest::IsLatched(tank) ? 100 : 0;
 
-        return DcSettings::GetUInt(bot, key);
+        uint32 const configured = DcSettings::GetUInt(bot, key);
+
+        // SCRIPTED-STAGE MUSTER: eat/drink to the muster floor, not merely to the
+        // configured rest target (0 by default, which hands the bot to the stock
+        // eat/drink that stops at AlmostFullHealth/HighMana — 85/65).
+        //
+        // Without this the muster is a demand with nothing behind it: the gate
+        // would ask for 90/80, the bots would top out at 85/65, and every stage
+        // would spend its whole budget waiting for mana no one was restoring. The
+        // gate and the restore have to name the same number or the gate is just a
+        // delay. Bounded either way — see DC_SCRIPTED_PULL_MUSTER_MS.
+        if (PlayerbotAI* tankAI = GET_PLAYERBOT_AI(tank))
+        {
+            DcPullContext const& tankPull =
+                tankAI->GetAiObjectContext()->GetValue<DcPullContext&>(DcKey::PullContext)->Get();
+            if (tankPull.scriptedMusterSince != 0)
+                return std::max<uint32>(
+                    configured,
+                    static_cast<uint32>(std::strcmp(key, "RestManaPct") == 0
+                                            ? DC_SCRIPTED_PULL_MUSTER_MP
+                                            : DC_SCRIPTED_PULL_MUSTER_HP));
+        }
+
+        return configured;
     }
 }
 
@@ -1066,6 +1139,16 @@ bool DungeonClearPullTrigger::IsActive()
         !DcTargeting::IsRoomClearActive(bot, context) && !pullback)
         return false;
     if (!IsBetweenPullsReady(bot, context))
+        return false;
+
+    // A SCRIPTED STAGE MUSTERS LIKE A BOSS PULL. The gate above is satisfied at
+    // 85% HP / 65% mana on stock config, which is sized for whatever the corridor
+    // scan turned up next — not for a hand-counted five-elite heroic pack with its
+    // own healer in it. Hold the plan until the party is genuinely topped up, on a
+    // bounded budget so a stage can never become unreachable. Separate from the gate
+    // above because it must also bind on the Smart Rest path, which passes 0/0
+    // floors by design. See DcPartyState::IsScriptedStageMustering.
+    if (DcPartyState::IsScriptedStageMustering(bot, context))
         return false;
 
     Unit* trash = DcTargeting::GetPullTarget(botAI);

@@ -2152,6 +2152,24 @@ bool DcRunEventAction::Execute(Event /*event*/)
     return true;
 }
 
+namespace
+{
+    // WHOSE run is being disabled. The terminal rungs may now be driven by a member
+    // that is NOT the run owner — with the leader dead there is no election left, so
+    // any living member can fire them (DcLeaderSignal::FindTerminalDriver) — and
+    // DisableDungeonClear resets whatever context it is handed. Handed a follower's,
+    // it would clear that follower's already-empty run state, leave the real run
+    // enabled, and skip the `.dc test` run-end observer inside it (keyed on the
+    // tank's GUID). Resolve the owner instead; identity in the healthy case, where
+    // the driver IS the owner.
+    PlayerbotAI* RunOwnerAI(Player* bot, PlayerbotAI* fallback)
+    {
+        Player* const owner = DcLeaderSignal::FindRunOwner(bot);
+        PlayerbotAI* const ownerAI = owner ? GET_PLAYERBOT_AI(owner) : nullptr;
+        return ownerAI ? ownerAI : fallback;
+    }
+}
+
 bool DungeonClearDisableOnDeathAction::Execute(Event /*event*/)
 {
     // Re-evaluate for the disable REASON (the kernel is deterministic, so this
@@ -2182,13 +2200,13 @@ bool DungeonClearDisableOnDeathAction::Execute(Event /*event*/)
             break;
     }
 
-    DisableDungeonClear(botAI, reason);
+    DisableDungeonClear(RunOwnerAI(bot, botAI), reason);
     return true;
 }
 
 bool DungeonClearDisableOnClearedAction::Execute(Event /*event*/)
 {
-    DisableDungeonClear(botAI, DcActionShared::kReasonAllCleared);
+    DisableDungeonClear(RunOwnerAI(bot, botAI), DcActionShared::kReasonAllCleared);
     return true;
 }
 

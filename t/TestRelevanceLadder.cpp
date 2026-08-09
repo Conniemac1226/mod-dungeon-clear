@@ -104,6 +104,36 @@ TEST(DungeonClearRelevanceTest, RezPartyOutranksEveryLadderItCanLandOn)
     EXPECT_LT(DcRel::RezParty, DcRel::PartyDied);
 }
 
+TEST(DungeonClearRelevanceTest, RezPartyRankAloneDoesNotProtectTheApproach)
+{
+    // A COMPANION WARNING TO THE TEST ABOVE, because reading that one on its own
+    // is what cost run tr-20260807-080834-115 its recovery: outranking the
+    // follower stack does NOT mean the follower stack cannot run during a
+    // recovery, and the rez approach is not safe merely because 31.5 > 25.
+    //
+    // Two holes, both real:
+    //
+    //  1. Engine::DoNextAction only stops walking the queue when an action
+    //     RETURNS TRUE. A rez rung that returns false — as it did on every tick
+    //     after the first, because DcMoveTo reports a duplicate destination while
+    //     its own glide is running — hands the tick straight down to scout-lag,
+    //     whose in-the-bubble branch stops the bot. Fix: the approach branch owns
+    //     the tick unconditionally (DcFollowerActions).
+    //
+    //  2. HealReposition sits ABOVE RezParty and is registered in the non-combat
+    //     engine too, so on a healer — the class the election PREFERS — it takes
+    //     the tick outright and walks toward the tank for line of sight while the
+    //     corpse lies the other way.
+    //
+    // This assertion pins hole 2 as a deliberate ordering rather than an
+    // oversight. Do not "fix" it by lifting RezParty over HealReposition: that
+    // ordering is load-bearing the rest of the time (a healer must reposition to
+    // heal), and StrandedRecovery/HazardVacate sit above it for the same reason.
+    // The stand-down gate — DcRezRecovery::IsElectedRezzer, consulted by the
+    // follower movers — is what makes the rez rung reachable, not the number.
+    EXPECT_GT(DcRel::HealReposition, DcRel::RezParty);
+}
+
 TEST(DungeonClearRelevanceTest, HakkarSuppressorOutranksFlameOutranksBlood)
 {
     EXPECT_GT(DcRel::HakkarSuppressor, DcRel::HakkarFlame);
@@ -204,6 +234,11 @@ TEST(DungeonClearRelevanceTest, HealRepositionAboveLeaderDriversIsRolePartitione
     // In BOTH engines heal-reposition (41, healer-only) sits above the leader-only
     // pull/hakkar/at-boss drivers. It never contends because of the healer-vs-leader
     // role split — asserted so a future non-healer trigger at 41 is caught.
+    //
+    // THE SPLIT DOES NOT COVER EVERYTHING BELOW 41. RezParty runs on ALL bots,
+    // healers first, so on the elected rezzer these two are the same bot and DO
+    // contend — see RezPartyRankAloneDoesNotProtectTheApproach. Role partitioning
+    // is a claim about the rungs listed here, not a general one.
     EXPECT_GT(DcRel::HealReposition, DcRel::Pull);
     EXPECT_GT(DcRel::HealReposition, DcRel::HakkarSuppressor);
     EXPECT_GT(DcRel::HealReposition, DcRel::AtBoss);

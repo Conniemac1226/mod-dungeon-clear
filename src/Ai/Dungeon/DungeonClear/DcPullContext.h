@@ -198,6 +198,19 @@ struct DcPullContext
                                                  // schedule however long the run has
                                                  // otherwise been going.
                                                  // 0 = no recall in flight.
+    uint32      scriptedMusterSince = 0;         // ms the MUSTER for the next stage
+                                                 // began — the party was short of
+                                                 // DC_SCRIPTED_PULL_MUSTER_HP/_MP
+                                                 // while a stage was due and not yet
+                                                 // armed. 0 = not mustering. Latched
+                                                 // rather than recomputed so the wait
+                                                 // is bounded (see
+                                                 // DC_SCRIPTED_PULL_MUSTER_MS) and so
+                                                 // one stage cannot muster twice: the
+                                                 // latch stays armed past the timeout
+                                                 // and is cleared only by the party
+                                                 // topping up or the stage going away.
+                                                 // Same contract as the patrol wait.
     bool        scriptedForced = false;          // the scripted stage RAISED the
                                                  // pull-mode bool (a plan runs at
                                                  // any pull setting, exactly like a

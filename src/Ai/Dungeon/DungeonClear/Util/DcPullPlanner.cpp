@@ -9,6 +9,7 @@
 #include "DungeonClearUtil.h"   // DC_PULL_* macros + DcTargeting::GetPullTarget (until DcTargeting moves)
 
 #include "DcBreadcrumb.h"
+#include "DcCombatFlag.h"
 #include "DcHazard.h"
 #include "DungeonClearMath.h"
 #include "DungeonClearTuning.h"
@@ -1200,9 +1201,18 @@ void DcPullPlanner::MaintainScoutCamp(PlayerbotAI* botAI, AiObjectContext* ctx)
         // camp here reverts the party to plain follow, which is exactly the posture
         // the persistent-event override asks for. See DungeonClearMath::
         // ShouldReleaseStandingPull for the guards (never mid-maneuver).
+        //
+        // PARTY-WIDE combat, not the tank's own flag. The tank in Engage is often
+        // flag-clear while the followers fight the pack it just dragged home — a
+        // scripted stage tags at range, so the pack arrives strung out and lands on
+        // whoever it reaches first. Asking only the tank tore the camp down mid
+        // camp-fight and sent it off to form the next pull with the last pack still
+        // standing. DcCombatFlag::AnyPartyEngagement is the module's one definition
+        // of "somebody is actually fighting" and already carries this exact warning.
         if (DungeonClearMath::ShouldReleaseStandingPull(
                 /*effectiveOn*/ false, /*standing*/ pull.phase != DcPullPhase::Idle || pull.HasCamp(),
-                bot->IsInCombat(), DcLeaderSignal::IsPullPhaseHolding(static_cast<uint32>(pull.phase)),
+                DcCombatFlag::AnyPartyEngagement(bot),
+                DcLeaderSignal::IsPullPhaseHolding(static_cast<uint32>(pull.phase)),
                 pull.bossPullback) &&
             DcLeaderSignal::IsDungeonClearLeader(bot))
         {

@@ -189,6 +189,57 @@ TEST(DcRezDecisionTest, NoRezClassAliveDisables)
     EXPECT_EQ(r.reason, Reason::NoRezzer);
 }
 
+// ...but NOT while the survivors are still swinging. The sole healer dying is the
+// normal shape of a hard heroic pull and the remaining four finishing the pack is a
+// normal way for it to end; disabling on the spot ends a run that is being won. Two
+// runs in tp-20260805-005412-1 died exactly this way, with four members alive.
+TEST(DcRezDecisionTest, NoRezClassAliveHoldsWhileThePartyIsStillFighting)
+{
+    auto party = BaseParty();
+    party[0].isDead = true;
+    party[1].isDead = true;
+    auto in = BaseInputs();
+    in.partyEngaged = true;
+    Result const r = Decide(in, party);
+    EXPECT_EQ(r.outcome, Outcome::Hold);
+    EXPECT_EQ(r.reason, Reason::NoRezzerInFight);
+    // A corpse is still named, so the hold can be announced against someone.
+    EXPECT_GE(r.targetIdx, 0);
+    // Nobody is elected to rez — there is nobody who can.
+    EXPECT_EQ(r.rezzerIdx, -1);
+}
+
+// And the hold is only a deferral: the instant the fight ends the verdict is the
+// classic disable again, so the run still terminates rather than idling to the
+// no-progress watchdog.
+TEST(DcRezDecisionTest, NoRezClassDisablesOnceTheFightEnds)
+{
+    auto party = BaseParty();
+    party[0].isDead = true;
+    party[1].isDead = true;
+    auto in = BaseInputs();
+    in.partyEngaged = true;
+    EXPECT_EQ(Decide(in, party).reason, Reason::NoRezzerInFight);
+    in.partyEngaged = false;
+    Result const r = Decide(in, party);
+    EXPECT_EQ(r.outcome, Outcome::Disable);
+    EXPECT_EQ(r.reason, Reason::NoRezzer);
+}
+
+// A full wipe outranks the in-fight hold: with nobody alive there is no fight to
+// finish, and Reason::Wipe is reached before the rezzer election either way.
+TEST(DcRezDecisionTest, AFullWipeStillDisablesEvenIfFlaggedEngaged)
+{
+    auto party = BaseParty();
+    for (auto& m : party)
+        m.isDead = true;
+    auto in = BaseInputs();
+    in.partyEngaged = true;
+    Result const r = Decide(in, party);
+    EXPECT_EQ(r.outcome, Outcome::Disable);
+    EXPECT_EQ(r.reason, Reason::Wipe);
+}
+
 // ---- the recovery clock ---------------------------------------------------------
 
 TEST(DcRezDecisionTest, TimeoutExpiryDisables)

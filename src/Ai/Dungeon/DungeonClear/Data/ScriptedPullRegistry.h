@@ -510,6 +510,44 @@ inline constexpr bool ScriptedPullEngageStalled(uint32 since, uint32 nowMs)
            (nowMs - since) > DC_SCRIPTED_PULL_ENGAGE_STALL_MS;
 }
 
+// --- The muster ------------------------------------------------------------------
+//
+// A stage is a PLANNED fight against a hand-counted pack, so the party should walk
+// into it the way it walks into a boss — topped up — and not merely "no longer
+// resting". The ordinary between-pulls floors are min(90, AlmostFullHealth) HP and
+// min(75, HighMana) mana, i.e. 85/65 on stock config, and they are sized for the
+// emergent case where the next pull is whatever the corridor scan found. For an
+// authored five-elite heroic pack that contains its own healer they are too low, and
+// the gap shows up as the tank dying in the fight's opening seconds.
+//
+// Live (tr-20260805-191834-3): "Waiting on Shannon (low mana), Erinerice (low HP)" at
+// 12:25, gate released 12:30, stage armed, tank dead at 12:52, party wiped by 13:14.
+// The floors were satisfied. They were satisfied at 65% healer mana.
+//
+// THESE SIT ABOVE WHAT STOCK BOTS RESTORE TO, which is deliberate and is why the wait
+// is bounded (see DC_SCRIPTED_PULL_MUSTER_MS). DungeonClearNeedsEat/DrinkTrigger is
+// raised to the same numbers while a stage is pending so the floors are reachable
+// rather than merely demanded; a bot with nothing to eat still has natural out-of-
+// combat regen, and the timeout covers the rest.
+inline constexpr float  DC_SCRIPTED_PULL_MUSTER_HP = 90.0f;
+inline constexpr float  DC_SCRIPTED_PULL_MUSTER_MP = 80.0f;
+
+// How long the muster may hold the plan. Bounded for the same reason every wait in
+// this pipeline is: a stage that can never arm is a run that never finishes, and that
+// is a strictly worse failure than a pull taken at 70% mana. Sized to a drink from
+// HighMana (65) to the floor above with a wide margin — a full drink cycle is ~10s —
+// so in practice the timeout is a backstop and not the usual exit.
+inline constexpr uint32 DC_SCRIPTED_PULL_MUSTER_MS = 40000;
+
+// The substance floor: once a muster has ARMED — the party was genuinely below the
+// floors — it holds at least this long even if the percentages close sooner. The
+// release test is an instantaneous percentage over a 5-point band, so one AoE heal
+// satisfied it in 1-5s and stages armed against parties that never sat down
+// (tp-20260806-212646-1: 115/184 musters ended <=5s the plan before). Sized to one
+// real drink cycle: sit latency plus 2-3 drink ticks. A party already at the floors
+// when the stage comes due never arms a muster and pays nothing.
+inline constexpr uint32 DC_SCRIPTED_PULL_MUSTER_MIN_MS = 8000;
+
 class ScriptedPullRegistry
 {
 public:

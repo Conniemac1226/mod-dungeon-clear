@@ -79,6 +79,7 @@ namespace DcRezDecision
         WaitingOnHuman,  // only a human can rez — hold and prompt
         Wipe,            // everyone on the map is dead
         NoRezzer,        // no living member's class can rez
+        NoRezzerInFight, // ditto, but the survivors are still swinging — hold
         TimedOut         // out-of-combat recovery clock expired
     };
 
@@ -164,6 +165,30 @@ namespace DcRezDecision
         int const botRezzer = botHealer >= 0 ? botHealer : botAny;
         if (botRezzer < 0 && humanAny < 0)
         {
+            // NO REZ CLASS LEFT — but not necessarily a lost run.
+            //
+            // This fires the instant the last rez-capable member dies, and it used
+            // to end the run on the spot regardless of what the survivors were
+            // doing. The sole healer dying is the NORMAL shape of a hard heroic
+            // pull, and the remaining four finishing the pack off is a normal way
+            // for it to end: twice in the MgT heroic audit (tp-20260805-005412-1)
+            // a run was disabled with four members alive and the fight already
+            // being won. NoRezzer is 7 of that plan's 12 disables.
+            //
+            // Nothing about the verdict is wrong, only its TIMING. Deciding "we
+            // cannot recover from this death" while the death is still being
+            // avenged reads a mid-fight snapshot as a final state. Hold while the
+            // party is engaged; the moment combat ends, partyEngaged goes false and
+            // this same branch returns the Disable it always did. A party that goes
+            // on to wipe reaches Reason::Wipe above instead, which is the more
+            // accurate verdict anyway.
+            if (in.partyEngaged)
+            {
+                r.outcome = Outcome::Hold;
+                r.reason = Reason::NoRezzerInFight;
+                r.targetIdx = PickTarget(members);
+                return r;
+            }
             r.outcome = Outcome::Disable;
             r.reason = Reason::NoRezzer;
             return r;

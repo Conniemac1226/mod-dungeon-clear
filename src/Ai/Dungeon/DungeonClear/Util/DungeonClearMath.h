@@ -221,10 +221,22 @@ namespace DungeonClearMath
     // standing pull (phase -> Idle, camp cleared) so the party reverts to plain
     // follow. `effectiveOn` is the current effective pull mode; `standing` is
     // "there is something to release" (non-Idle phase or a marked camp). Never
-    // releases mid-maneuver: `inCombat`, a holding phase (Forming/Advancing/
+    // releases mid-maneuver: `partyInCombat`, a holding phase (Forming/Advancing/
     // Returning — the drag must finish) and `bossPullback` (a pull-back drag runs
     // with pull mode off BY DESIGN) all hold it off.
-    bool ShouldReleaseStandingPull(bool effectiveOn, bool standing, bool inCombat,
+    //
+    // `partyInCombat` IS PARTY-WIDE, and used to be the leader's own flag. That was
+    // wrong in the one arrangement this release exists inside: a camp fight. The
+    // pack is dragged to the camp and handed to the followers, and the tank in
+    // Engage is routinely flag-clear for stretches of it — a scripted stage tags at
+    // range, so the pack arrives late and strung out, and threat lands on whoever it
+    // reaches first. Reading only the tank there dismantles the camp WHILE the
+    // followers are fighting at it: the hold releases, the party reverts to follow,
+    // and the tank walks off to form the next pull with the last pack still up. In
+    // the MgT rotunda that is the difference between a five-elite fight and a
+    // ten-elite one, and 8 of the 9 rotunda losses in tp-20260805-191829-1 died
+    // within a few yards of an authored camp.
+    bool ShouldReleaseStandingPull(bool effectiveOn, bool standing, bool partyInCombat,
                                    bool holdingPhase, bool bossPullback);
 
     // Dynamic-verdict drop grace gate (pure). A standing Leeroy/Advanced verdict
@@ -275,6 +287,40 @@ namespace DungeonClearMath
                              std::uint32_t ceiling, std::uint32_t waitSince,
                              std::uint32_t now, std::uint32_t waitMs,
                              std::uint32_t& waitSinceOut);
+
+    // Scripted-stage MUSTER gate (pure). A ScriptedPullRegistry stage is a planned
+    // fight against a hand-counted pack, and the party should arrive at it topped
+    // up — the way it arrives at a boss — rather than merely "not resting".
+    //
+    // The ordinary between-pulls floors do not deliver that. They are
+    // min(90, AiPlayerbot.AlmostFullHealth) HP and min(75, AiPlayerbot.HighMana)
+    // mana, which on stock config is 85/65, and 65% healer mana is thin for a
+    // five-elite heroic pack that contains its own healer. Live
+    // (tr-20260805-191834-3): the party reported "Shannon (low mana), Erinerice
+    // (low HP)" at 12:25, the gate released at 12:30, the stage armed, and the tank
+    // was dead 22 seconds into the fight with the whole party following inside 22
+    // more.
+    //
+    // Returns true to KEEP HOLDING (do not arm the stage), false to proceed.
+    // BOUNDED, and that bound is the point: the muster floors sit ABOVE what stock
+    // bots eat/drink back up to, so an unbounded wait on a bot with no water in
+    // its bags is a run that never continues. Arm/keep the `waitSince` latch while
+    // the party is short, proceed once `waitMs` elapses, and leave the latch armed
+    // so the same muster cannot re-fire. `toppedUp` (the caller's party read
+    // against the muster floors) or `!stagePending` clears the latch and proceeds
+    // at once; `waitMs` == 0 proceeds immediately. Same by-reference latch/clear
+    // contract as ShouldWaitForPatrol. The party read stays in DcPartyState.
+    //
+    // `minMs` is the substance floor: once the muster has ARMED (the party was
+    // genuinely below the floors for at least one tick), it holds for at least
+    // min(minMs, waitMs) even if the percentages close sooner. An instantaneous
+    // percentage test releases the tick one AoE heal crosses the line — live
+    // musters ran 1-5s and no one ever drank (tp-20260806-212646-1). A party
+    // already at the floors when the stage comes due still arms nothing.
+    bool ShouldMusterForScriptedStage(bool stagePending, bool toppedUp,
+                                      std::uint32_t waitSince, std::uint32_t now,
+                                      std::uint32_t waitMs, std::uint32_t minMs,
+                                      std::uint32_t& waitSinceOut);
 
     // Turn-and-plant gate (pure). A human tank dragging a pack back to camp turns
     // and fights the moment the pack is glued to it, rather than sprinting the

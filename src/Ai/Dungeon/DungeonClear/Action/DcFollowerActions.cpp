@@ -108,10 +108,52 @@ namespace
             window.emplace_back(p.GetPositionX(), p.GetPositionY(), p.GetPositionZ());
         return DcMovement::SplinePath(botAI, window);
     }
+
+    // THE ELECTED REZZER MUST BE ABLE TO WALK — every mover on this bot stands
+    // down for it. Call at the top of a follower rung; a true return means
+    // "return false, this tick is not yours".
+    //
+    // Relevance alone does not buy this. The rez rung outranks the follower stack
+    // (RezParty 31.5 > AssistCamp 29 > HoldAtCamp 28 > FollowTank 25), but a rung
+    // only keeps the tick while it succeeds, and heal-reposition (41) outranks the
+    // rez rung outright. So the follower stack still gets ticks during a recovery,
+    // and every one of them can undo the approach: scout-lag's in-the-bubble branch
+    // calls StopBot(Hold), which tears the approach spline down, and heal-reposition
+    // walks the healer BACK toward the tank for line of sight — in
+    // tr-20260807-080834-115 that carried the elected rezzer from 81.9yd to 87.0yd
+    // away from the body it was supposed to reach, and scout-lag then pinned it
+    // there for 99 seconds until the recovery timed out and killed a run with four
+    // members alive.
+    //
+    // Gated on IsElectedRezzer, which mirrors the rez trigger exactly — so this is
+    // one bot, out of combat, for the length of one recovery. Mid-fight the healer
+    // repositions normally; the rez rung is not armed then either.
+    bool StandDownForRezzer(Player* bot)
+    {
+        if (!bot || !DcRezRecovery::IsElectedRezzer(bot))
+            return false;
+
+        // One loose end the stand-down would otherwise leave running: follow-tank
+        // installs a PERSISTENT MoveFollow generator, and with follow-tank no longer
+        // executing there is nobody left to cancel it — it would keep driving the
+        // rezzer back to the tank underneath the rez rung's point moves. Clear it
+        // the once. Self-limiting: after this the active generator is the approach
+        // itself, so the guard is false on every later tick and an in-flight
+        // approach glide is never touched.
+        MotionMaster* mm = bot->GetMotionMaster();
+        if (mm && mm->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE)
+            DcMovement::StopBot(bot, DcMovement::Stop::Hold);
+        return true;
+    }
 }
 
 bool DungeonClearFollowTankAction::Execute(Event /*event*/)
 {
+    // A recovery in progress and this bot is the one walking to the corpse:
+    // following the tank is exactly the wrong thing to do. See StandDownForRezzer.
+    if (StandDownForRezzer(bot))
+        return false;
+
     ObjectGuid& followedTank =
         context->GetValue<ObjectGuid>(DcKey::FollowedTank)->RefGet();
 
@@ -558,6 +600,11 @@ bool DungeonClearFilterLootAction::Execute(Event /*event*/)
 }
 bool DungeonClearCampHoldActionBase::Execute(Event /*event*/)
 {
+    // The camp is not this bot's business while it owes the party a rez — a camp
+    // pin is one more mover cancelling the approach. See StandDownForRezzer.
+    if (StandDownForRezzer(bot))
+        return false;
+
     Position camp;
     bool passive = false;
     if (!DcLeaderSignal::GetLeaderCampHold(bot, camp, passive))
@@ -951,6 +998,23 @@ bool DungeonClearAssistCampActionBase::Execute(Event /*event*/)
     if (!leader || leader == bot)
         return false;
 
+    // A live, usable target the bot ALREADY has wins outright — an instance
+    // strategy's kill order (MgT's focus values) seeds one, and overwriting it
+    // with nearest-attacker-of-tank every tick made this action fight that
+    // strategy: the bot's target ping-ponged once per second and the rotation
+    // ran on neither pick (tp-20260806-212646-1, 39% of the focus churn). Bound
+    // to the tank's fight radius so a stale far-away target can't hijack the
+    // assist; anything outside falls through to the fresh pick below.
+    Unit* target = nullptr;
+    if (Unit* cur = context->GetValue<Unit*>(DcKey::Stock::CurrentTarget)->Get())
+    {
+        if (cur->IsAlive() && cur->GetMapId() == bot->GetMapId() &&
+            bot->IsValidAttackTarget(cur) &&
+            cur->GetExactDist2d(leader) <=
+                DcSettings::GetFloat(bot, "PartyMaxSpread") * 1.5f)
+            target = cur;
+    }
+
     // Resolve a REAL mob the party is fighting from the WHOLE group (see
     // PickPartyFightTarget). No concrete hostile resolves -> STAND DOWN. We
     // deliberately no longer fall back to "move onto the tank to gain LOS": that
@@ -958,17 +1022,20 @@ bool DungeonClearAssistCampActionBase::Execute(Event /*event*/)
     // looting tank at 0.0yd. When nothing resolves, follow-tank / the combat engine
     // own the bot; the fight target re-resolves within a tick or two once the tank's
     // attacker list populates.
-    Unit* target = PickPartyFightTarget(bot, leader);
     if (!target)
-        return false;
+    {
+        target = PickPartyFightTarget(bot, leader);
+        if (!target)
+            return false;
 
-    // Seed the fight target so BOTH engines have a valid "current target": select it,
-    // publish it, and open a combat window so the bot is in the fight the instant it
-    // reaches range/sight. This target is on the TANK — never on this bot's own
-    // attacker list — so without seeding, stock target-acquisition finds nothing
-    // while the pack is out of sight.
-    bot->SetSelection(target->GetGUID());
-    context->GetValue<Unit*>(DcKey::Stock::CurrentTarget)->Set(target);
+        // Seed the fight target so BOTH engines have a valid "current target":
+        // select it, publish it, and open a combat window so the bot is in the
+        // fight the instant it reaches range/sight. This target is on the TANK —
+        // never on this bot's own attacker list — so without seeding, stock
+        // target-acquisition finds nothing while the pack is out of sight.
+        bot->SetSelection(target->GetGUID());
+        context->GetValue<Unit*>(DcKey::Stock::CurrentTarget)->Set(target);
+    }
     if (!bot->IsInCombat())
         bot->SetInCombatWith(target);
 
@@ -1188,6 +1255,15 @@ bool DungeonClearRegroupCombatAction::Execute(Event /*event*/)
 
 bool DungeonClearHealRepositionAction::Execute(Event /*event*/)
 {
+    // The elected rezzer is usually the healer (the election prefers healers), and
+    // this rung outranks the rez rung — 41 vs 31.5 — so left ungated it takes the
+    // tick outright and walks toward the tank for line of sight while the corpse it
+    // is meant to reach lies the other way. Out of combat there is no heal worth
+    // that; the rez is the recovery. See StandDownForRezzer (which is false in
+    // combat, so the combat-engine copy of this rung is untouched).
+    if (StandDownForRezzer(bot))
+        return false;
+
     // The most-hurt heal target (LOS-blind, tank-biased). Stored as a GUID (like
     // the pull target), resolved live here. Re-read (trigger/action gap); bail if
     // it healed up or died in between.
@@ -1467,6 +1543,12 @@ namespace
     // Comfortably inside the 30yd rez spell range, so a corpse a step beyond
     // the exact edge (or a snap on approach) never leaves the cast flapping
     // in and out of range.
+    //
+    // Deliberately NOT raised to the spell's 30yd. A rezzer seen orbiting a corpse
+    // at 29-33yd is not a bot refusing a castable rez, it is a bot that failed to
+    // WALK — see the movement priority below, which is the actual fix. Widening the
+    // cast gate to the spell edge would only hide that, and would put the cast right
+    // on the boundary where a single snap flaps it in and out of range.
     constexpr float DC_REZ_CAST_RANGE = 20.0f;
 }
 
@@ -1489,28 +1571,112 @@ bool DungeonClearRezPartyAction::Execute(Event /*event*/)
     if (!target || !target->isDead() || target->GetMapId() != bot->GetMapId())
         return false;  // vanished between trigger and action — re-elect next tick
 
-    // Beyond cast range (or no line of sight): close on the body. Standard
-    // module pathing — never forced-destination — at NORMAL priority (out of
-    // combat by the trigger's gate; nothing to plow through).
+    // FINISH THE REZ WE ALREADY LANDED.
+    //
+    // A completed resurrection does not raise anyone — it sends the corpse an
+    // offer and waits for SMSG/CMSG_RESURRECT_RESPONSE. A bot has a session but no
+    // client to answer that packet, so nothing ever accepts, and the corpse is left
+    // holding a permanent offer. That is not merely a rez that did not land: it also
+    // BLACKLISTS the corpse for good, because the stock target value filters on
+    // `!player->isResurrectRequested()` (PartyMemberToResurrect.cpp:36). The rezzer
+    // then stands over a body it can no longer see as a target, re-casting into a
+    // refusal — "rez party: cast 'resurrection' ... not possible yet", four times a
+    // second for 98 seconds in run tr-…-62 of the MgT audit — until the recovery
+    // timeout disables the run.
+    //
+    // Accepting on the corpse's behalf is exactly what the client would have done,
+    // and this is the right rung to do it from: we are the caster, so the offer is
+    // ours, and we are already standing here every tick waiting on it.
+    if (target->isResurrectRequestedBy(bot->GetGUID()))
+    {
+        LOG_INFO("playerbots.dungeonclear",
+                 "[DC:{}] rez party: {} has our resurrect offer standing — accepting it "
+                 "for them (a bot has no client to answer the prompt)",
+                 bot->GetName(), target->GetName());
+        target->ResurectUsingRequestData();
+        return true;
+    }
+
+    // Beyond cast range (or no line of sight): close on the body.
+    //
+    // COMBAT priority, though the rezzer is out of combat by the trigger's gate.
+    // The priority here is not a claim about combat, it is who wins the movement
+    // arbitration: MovementAction::IsWaitingForLastMove refuses any move whose
+    // priority is not STRICTLY GREATER than the last one's, for up to 5 seconds. At
+    // NORMAL this rung ties with follow-tank, scout-lag and hold-at-camp — which
+    // move constantly — so the approach was refused over and over while the corpse
+    // sat there: 259 consecutive "move REFUSED" in run -52 with the rezzer stranded
+    // at 84yd, and 29-40yd orbits in runs -1 and -14.
+    //
+    // THE PRIORITY ALONE WAS NOT ENOUGH.
+    // A rung outranking the follower stack in RELEVANCE (31.5 vs hold-at-camp 28 /
+    // follow-tank 25) only gets the tick to itself while it RETURNS TRUE — Engine::
+    // DoNextAction breaks out of the queue on a successful action and keeps walking
+    // down it on a failed one. This branch used to return DcMoveTo's bool, and
+    // DcMoveTo returns FALSE for a duplicate destination, which is the ordinary
+    // every-tick case while a glide is already running. So every tick after the
+    // first, the rez rung "failed", the engine fell through to scout-lag, and
+    // scout-lag's inside-the-lag-bubble branch (StopBot(Hold)) tore the approach
+    // spline down a few hundred ms in. The rezzer then could not re-issue either,
+    // because its OWN cancelled leg had recorded a MOVEMENT_COMBAT wait sized to
+    // the whole leg and IsWaitingForLastMove will not let an equal priority through.
+    //
+    // Live: tr-20260807-080834-115, 301 consecutive "approaching Rederen's body"
+    // over 99 seconds with the distance pinned at 86.1 -> 85.8yd — 0.3yd of net
+    // progress across an open, unblocked corridor — until the 90s budget expired
+    // and the run was disabled with four members alive at 100% HP.
     float const dist = bot->GetExactDist(target);
     if (dist > DC_REZ_CAST_RANGE || !bot->IsWithinLOSInMap(target))
     {
         DC_PULL_TRACE("[DC:{}] rez party: approaching {}'s body ({:.1f}yd)",
                       bot->GetName(), target->GetName(), dist);
-        return DcMoveTo(target->GetMapId(), target->GetPositionX(),
-                        target->GetPositionY(), target->GetPositionZ(),
-                        /*idle*/ false, /*react*/ false, /*normal_only*/ false,
-                        /*exact_waypoint*/ false,
-                        MovementPriority::MOVEMENT_NORMAL);
+        // Standing still with a walk owed means the recorded wait is stale — the
+        // leg it was sized for is not running any more (cancelled by whatever last
+        // stopped us, or refused outright). Drop it so the replacement leg can go
+        // out NOW instead of serving out the dead leg's remaining seconds. Does not
+        // stop the bot and does not touch any generator, so an in-flight approach
+        // glide is left alone: the isMoving() guard is what keeps this to the
+        // replace-the-leg case the seam exists for.
+        if (!bot->isMoving())
+            DcMovement::ClearMovementWait(bot);
+
+        DcMoveTo(target->GetMapId(), target->GetPositionX(), target->GetPositionY(),
+                 target->GetPositionZ(), /*idle*/ false, /*react*/ false,
+                 /*normal_only*/ false, /*exact_waypoint*/ false,
+                 MovementPriority::MOVEMENT_COMBAT);
+
+        // OWN THE TICK whatever MoveTo returned — a duplicate-destination refusal
+        // means the glide we want is already running, not that we have nothing to
+        // do. Same reason the pull's drag-back leg returns true unconditionally
+        // (DcPullActions, "Own the tick ... so stock combat chase/attack can't grab
+        // the tank"). Bounded by the recovery timeout, which is what stops a rezzer
+        // that genuinely cannot reach the body from spinning here forever.
+        return true;
     }
 
-    // In range: settle (a cast can't start mid-glide), then fire the stock
-    // class rez through DoSpecificAction. A false return (out of mana, target
-    // acquired an in-flight rez from the stock backup pairing) yields the tick
-    // so the lower rungs — drink/eat at 26.5 — run; the recovery timeout
-    // backstops a rezzer that never affords the cast.
+    // In range: settle (a cast can't start mid-glide), then fire the class rez AT
+    // THE ELECTED CORPSE.
+    //
+    // Deliberately a direct cast rather than DoSpecificAction. The stock action
+    // resolves its own target through the "party member to resurrect" value, which
+    // walks the party in group order — so with two corpses down it would cast on
+    // whichever one that walk reached first while we had walked to the one DcRez
+    // Decision::PickTarget chose (healer, then tank, then group order). The two
+    // agreeing was luck, and when they disagreed the cast simply failed the range
+    // check on a body we were nowhere near, silently, every tick.
+    //
+    // A false return (out of mana, LOS lost on the settle) yields the tick so the
+    // lower rungs — drink/eat at 26.5 — run; the recovery timeout backstops a rezzer
+    // that never affords the cast.
     DcMovement::StopBot(bot, DcMovement::Stop::Soft);
-    bool const cast = botAI->DoSpecificAction(rezAction, Event(), /*silent*/ true);
+    // The one prerequisite the stock action carried that a direct cast would
+    // otherwise drop: a druid's feral forms are CAN_ONLY_CAST_SHAPESHIFT_SPELLS, so
+    // Revive fails CheckShapeshift before it reaches the corpse. Shift back exactly
+    // as CastReviveAction::getPrerequisites does. No-op for everyone else. (Same
+    // mechanism as DcFormGate, which gates items rather than spells.)
+    if (bot->GetShapeshiftForm() != FORM_NONE)
+        botAI->DoSpecificAction("caster form", Event(), /*silent*/ true);
+    bool const cast = botAI->CastSpell(rezAction, target);
     DC_PULL_TRACE("[DC:{}] rez party: cast '{}' on {} -> {}",
                   bot->GetName(), rezAction, target->GetName(),
                   cast ? "started" : "not possible yet");
