@@ -62,6 +62,21 @@ namespace DcRezDecision
         std::uint32_t pendingSinceMs = 0;     // recovery clock; 0 = not running
         std::uint32_t timeoutMs = 90000;      // PostCombatRezTimeoutSecs * 1000
         bool          partyEngaged = false;  // freezes the timeout
+
+        // --- the NoRezzer floor (see the branch below) ------------------------
+        // Is any LIVING survivor still carrying the core combat flag? Deliberately
+        // the flag and not engagement: the case this exists for is a boss that has
+        // stopped fighting but not yet released the party.
+        bool          anySurvivorCombatFlagged = false;
+        // getMSTime() the survivors first read BOTH unengaged and unflagged, with
+        // no rezzer left; 0 = not quiet. Owned by the glue, cleared by any tick
+        // that is not quiet.
+        std::uint32_t noRezzerQuietSinceMs = 0;
+        std::uint32_t noRezzerQuietGraceMs = 0;   // quiet must hold this long
+        // getMSTime() the party first had no rezzer at all; 0 = not yet. Bounds
+        // the flag-only hold so a flag nothing ever clears cannot hang the run.
+        std::uint32_t noRezzerSinceMs = 0;
+        std::uint32_t noRezzerHoldMaxMs = 0;      // 0 = no ceiling
     };
 
     enum class Outcome
@@ -182,7 +197,37 @@ namespace DcRezDecision
             // this same branch returns the Disable it always did. A party that goes
             // on to wipe reaches Reason::Wipe above instead, which is the more
             // accurate verdict anyway.
-            if (in.partyEngaged)
+            //
+            // THAT HOLD WAS STILL ONE TICK WIDE, and one tick is not a fight ending.
+            // partyEngaged is `victim || attackers`, which goes false in the gap
+            // between a mob's swings — and, decisively, for the ELEVEN SECONDS
+            // Magisters' Terrace's Kael'thas spends immune, passive and summonless
+            // at 1 HP playing his defeat sequence before KillSelf. In
+            // tp-20260808-162331-1 that ended two runs that had already won:
+            // tr-20260808-162337-13 was disabled two seconds after its tank was
+            // logged kiting him through gravity lapse, tr-20260808-165249-40 eight
+            // seconds after, both with four members alive and all four still
+            // carrying his combat flag. Eight of that plan's twenty failures were
+            // this branch, and EVERY ONE had 2-4 members standing.
+            //
+            // So three gates now, not one:
+            //   * engaged            — a fight is visibly in progress (unchanged);
+            //   * still FLAGGED      — something has us and has not let go, which is
+            //                          exactly the defeat-sequence shape;
+            //   * quiet not yet held — even with both clear, the silence has to last
+            //                          noRezzerQuietGraceMs before it counts as over.
+            // The flag hold is capped by noRezzerHoldMaxMs so a flag nothing ever
+            // clears degrades to the old behaviour instead of hanging the run.
+            bool const holdCapped =
+                in.noRezzerHoldMaxMs != 0 && in.noRezzerSinceMs != 0 &&
+                in.nowMs >= in.noRezzerSinceMs &&
+                (in.nowMs - in.noRezzerSinceMs) >= in.noRezzerHoldMaxMs;
+            bool const quietHeld =
+                in.noRezzerQuietGraceMs == 0 ||
+                (in.noRezzerQuietSinceMs != 0 && in.nowMs >= in.noRezzerQuietSinceMs &&
+                 (in.nowMs - in.noRezzerQuietSinceMs) >= in.noRezzerQuietGraceMs);
+            if (!holdCapped &&
+                (in.partyEngaged || in.anySurvivorCombatFlagged || !quietHeld))
             {
                 r.outcome = Outcome::Hold;
                 r.reason = Reason::NoRezzerInFight;

@@ -58,6 +58,42 @@ namespace DcCombatFlag
     // in combat cannot eat or drink, and the gate waits for every member.
     bool AnyPartyCombatFlag(Player* bot);
 
+    // What a walk of a player's PvE combat references found.
+    //
+    // `opaque` means there were no references at all — script-forced or otherwise
+    // unattributable combat, which the phantom hatch treats as legitimate by
+    // default and callers asking "is a live enemy on us" must treat as "cannot
+    // say". Kept separate from `found` precisely because those two callers want
+    // opposite answers for it.
+    struct HolderScan
+    {
+        bool  opaque = false;
+        bool  found = false;        // >=1 live, same-map, non-evading, reachable
+                                    // holder its own AI allows to attack us
+        float nearestDist = 0.0f;   // distance to the closest such holder
+    };
+
+    // The one walk of a player's PvE combat refs, shared by the phantom-combat
+    // hatch (which wants opaque || found) and by IsHeldByLiveEnemy (which does
+    // not). Costs a pathfind per reference — call it behind the cheap reads.
+    HolderScan ScanCombatHolders(Player* p);
+
+    // Is a live enemy still on this player, close enough to keep swinging?
+    //
+    // The question IsEngaged cannot answer. IsEngaged is `victim || attackers`,
+    // which is a snapshot of who is mid-swing THIS INSTANT: it goes false in the
+    // gap between a mob's swings, while a caster is casting, while a pack walks
+    // back into range, and — the case that cost two finished runs — for the 11
+    // seconds Kael'thas spends immune and passive at 1 HP playing his defeat
+    // sequence before KillSelf. Anything that ends a run, or sends a lone bot
+    // walking across a room, has to ask this instead.
+    //
+    // `radius` keeps it honest about the case DcCombatFlag was built for: a
+    // hostile AREA AURA holds the flag from 45yd with nothing on us, and no
+    // radius a fight actually happens at will admit it.
+    bool IsHeldByLiveEnemy(Player* p, float radius);
+    bool AnyPartyHeldByLiveEnemy(Player* bot, float radius);
+
     // May a DC rung own this tick? True when not flagged at all, and true again
     // once the flag has had no engagement behind it continuously for
     // DC_FLAGGED_NO_ENGAGE_GRACE_MS. False while a real fight owns the bot.

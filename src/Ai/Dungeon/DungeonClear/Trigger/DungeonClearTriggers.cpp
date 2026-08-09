@@ -1109,6 +1109,12 @@ bool DungeonClearPullTrigger::IsActive()
     // Mid-pull pre-combat (Forming/Advancing) and the post-fight Engage cleanup
     // run on this non-combat engine, but only while out of combat — the instant
     // the tank aggros, control passes to the combat maneuver trigger.
+    //
+    // Deliberately still the TANK'S OWN flag. The cleanup is the only path that
+    // retires a finished camp fight, and gating it on the party would let one
+    // follower with a stale victim wedge the phase — the residue that
+    // "the puller died mid-pull" exists to sweep up. Starting something NEW is a
+    // separate decision on the Idle branch below, which makes its own test.
     if (phase != static_cast<uint32>(DcPullPhase::Idle))
         return !bot->IsInCombat();
 
@@ -1533,46 +1539,23 @@ namespace
     // holder actually coming for us (DungeonClearMath::IsHolderProsecutingFight)? Left
     // untouched when the verdict is false, and set to 0 for the opaque no-reference
     // case — that one is script-forced and must stay legitimate unconditionally.
+    //
+    // The walk itself now lives in DcCombatFlag::ScanCombatHolders — the rez
+    // release and the NoRezzer disable ask the same question of the same refs,
+    // and three copies of a guard list this delicate is how they drift. This
+    // wrapper keeps the shape THIS caller needs: opaque (no refs at all) is
+    // legitimate-by-default here, and only here.
     bool HasLegitimateCombatHolder(Player* bot, float& nearestDist)
     {
-        auto const& refs = bot->GetCombatManager().GetPvECombatRefs();
-        if (refs.empty())
+        DcCombatFlag::HolderScan const scan = DcCombatFlag::ScanCombatHolders(bot);
+        if (scan.opaque)
         {
             nearestDist = 0.0f;
             return true;  // no unit to blame -> opaque/forced combat, leave it alone
         }
-
-        Map* const map = bot->GetMap();
-        bool found = false;
-        float best = 0.0f;
-        for (auto const& kv : refs)
-        {
-            CombatReference* const ref = kv.second;
-            if (!ref)
-                continue;
-            Unit* const other = ref->GetOther(bot);
-            if (!other || !other->IsAlive() || other->GetMap() != map)
-                continue;
-            if (other->GetCombatManager().IsInEvadeMode())
-                continue;  // holder is bailing home -> not a real threat
-            if (!DcEngageGeometry::IsReachable(bot, other->GetPositionX(),
-                                               other->GetPositionY(), other->GetPositionZ()))
-                continue;  // unreachable -> the phantom holder
-            if (Creature* const c = other->ToCreature())
-                if (c->AI() && !c->AI()->CanAIAttack(bot))
-                    continue;  // its own script forbids it touching us -> phantom too
-            // A reachable, live, non-evading holder: a REAL fight. Keep scanning so
-            // `nearestDist` is the closest one — the closing test must track whichever
-            // holder is most nearly on top of us, not whichever the map happened to
-            // enumerate first.
-            float const dist = bot->GetExactDist(other);
-            if (!found || dist < best)
-                best = dist;
-            found = true;
-        }
-        if (found)
-            nearestDist = best;
-        return found;
+        if (scan.found)
+            nearestDist = scan.nearestDist;
+        return scan.found;
     }
 }
 

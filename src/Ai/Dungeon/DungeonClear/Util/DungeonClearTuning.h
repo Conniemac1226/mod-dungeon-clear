@@ -208,6 +208,29 @@ constexpr float DC_PULL_AVOID_PROGRESS_YD = 1.0f;
 // fight is ever abandoned mid-pack, this is the number to raise.
 constexpr uint32 DC_FLAGGED_NO_ENGAGE_GRACE_MS = 5000;
 
+// --- the NoRezzer floor ----------------------------------------------------
+// How long the silence after the last rezzer died has to last before "no one can
+// resurrect" is allowed to END THE RUN, and how long a bare combat flag may hold
+// that decision off on its own. Sized off the thing that broke: Magisters'
+// Terrace's Kael'thas is immune, passive and summonless at 1 HP for 11 seconds
+// before he kills himself, and for all 11 the party reads unengaged while still
+// carrying his flag. 12s clears that with margin.
+//
+// The ceiling is what keeps the flag hold from becoming a hang: a flag with
+// nothing behind it is the phantom-combat case, which has its own hatch
+// (DungeonClearBreakStuckCombatTrigger, 15s) and its own force-clear. Past 60s
+// neither has resolved it and holding a run open on it buys nothing — fall back
+// to the verdict the branch always gave.
+constexpr uint32 DC_NO_REZZER_QUIET_GRACE_MS = 12000;
+constexpr uint32 DC_NO_REZZER_HOLD_MAX_MS    = 60000;
+
+// How close a live combat holder has to be to count as "still fighting us" for
+// the rez release. A hostile AREA AURA holds the flag from 45yd with nothing on
+// the party — the freeze DcCombatFlag exists for — so any radius used to decide
+// "the fight is not over" has to sit clear underneath that reach while still
+// covering a camp fight the party is strung out across.
+constexpr float DC_FIGHT_HOLDER_RADIUS = 40.0f;
+
 // The max party-spread default lives in DcSettingsRegistry ("PartyMaxSpread");
 // the trigger, the advance gate, and the status publisher all read it through
 // DcSettings so per-run addon overrides apply. The HP/mana recovery thresholds

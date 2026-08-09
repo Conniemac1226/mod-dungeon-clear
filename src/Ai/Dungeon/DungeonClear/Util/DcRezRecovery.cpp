@@ -12,6 +12,7 @@
 #include "Ai/Dungeon/DungeonClear/Util/DcLeaderSignal.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcRun.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcStatusPublisher.h"
+#include "Ai/Dungeon/DungeonClear/Util/DungeonClearTuning.h"
 
 #include <string>
 #include <vector>
@@ -224,14 +225,57 @@ namespace
                 run.rezPendingSinceMs = now ? now : 1;
         }
 
+        // The NoRezzer floor's other input: is any LIVING survivor still carrying
+        // the core combat flag? Deliberately the raw flag rather than engagement —
+        // the shape it exists to catch is a boss that has stopped fighting and not
+        // yet released the party (Kael'thas' 11s defeat sequence), where every
+        // survivor is flagged and nothing is swinging.
+        bool anySurvivorCombatFlagged = false;
+        for (Player* p : players)
+            if (p && p->IsAlive() && p->IsInCombat())
+            {
+                anySurvivorCombatFlagged = true;
+                break;
+            }
+
         DcRezDecision::Inputs in;
         in.enabled = true;
         in.nowMs = now;
         in.pendingSinceMs = run.rezPendingSinceMs;
         in.timeoutMs = DcSettings::GetUInt(bot, "PostCombatRezTimeoutSecs") * 1000;
         in.partyEngaged = partyEngaged;
+        in.anySurvivorCombatFlagged = anySurvivorCombatFlagged;
+        in.noRezzerSinceMs = run.noRezzerSinceMs;
+        in.noRezzerQuietSinceMs = run.noRezzerQuietSinceMs;
+        in.noRezzerQuietGraceMs = DC_NO_REZZER_QUIET_GRACE_MS;
+        in.noRezzerHoldMaxMs = DC_NO_REZZER_HOLD_MAX_MS;
 
         plan.verdict = DcRezDecision::Decide(in, members);
+
+        // Advance the floor's clocks from the verdict we just got. They can only be
+        // stamped after the fact — whether a rezzer is left is precisely what the
+        // kernel decides — so both run a tick behind, which is immaterial against
+        // graces measured in seconds. A verdict that is not the no-rezzer branch
+        // clears them, so a rezzer coming back up (or a fresh episode) starts clean.
+        if (mutate)
+        {
+            bool const noRezzer = plan.verdict.reason == DcRezDecision::Reason::NoRezzer ||
+                                  plan.verdict.reason == DcRezDecision::Reason::NoRezzerInFight;
+            if (!noRezzer)
+            {
+                run.noRezzerSinceMs = 0;
+                run.noRezzerQuietSinceMs = 0;
+            }
+            else
+            {
+                if (run.noRezzerSinceMs == 0)
+                    run.noRezzerSinceMs = now ? now : 1;
+                if (partyEngaged || anySurvivorCombatFlagged)
+                    run.noRezzerQuietSinceMs = 0;
+                else if (run.noRezzerQuietSinceMs == 0)
+                    run.noRezzerQuietSinceMs = now ? now : 1;
+            }
+        }
 
         if (plan.verdict.rezzerIdx >= 0 &&
             plan.verdict.rezzerIdx < static_cast<int>(players.size()))
@@ -356,9 +400,28 @@ namespace DcRezRecovery
         // mutate=false: see the header. The trigger owns the clock; this is the
         // same verdict read without the side effects.
         Plan const plan = EvaluateImpl(bot, /*mutate*/ false);
-        return plan.verdict.outcome == DcRezDecision::Outcome::Hold &&
-               plan.verdict.reason == DcRezDecision::Reason::Recovering &&
-               plan.rezzer == bot->GetGUID();
+        if (plan.verdict.outcome != DcRezDecision::Outcome::Hold ||
+            plan.verdict.reason != DcRezDecision::Reason::Recovering ||
+            plan.rezzer != bot->GetGUID())
+            return false;
+
+        // ...AND NOTHING ALIVE IS STILL ON THE PARTY. The engagement test above is
+        // `victim || attackers`, a snapshot of who is mid-swing this instant: it
+        // goes false in the gap between a pack's swings, and this predicate then
+        // hands the rezzer's movement to the corpse walk — out of the camp, across
+        // the room, alone, into mobs that are still very much alive.
+        //
+        // Six of the 45 rez approaches in tp-20260808-162331-1 killed the rezzer
+        // within 40s and four of those ended the run. tr-20260808-162337-8 is the
+        // clean read: the tank died at 10:41 mid-pack, the healer was released the
+        // same second, and was dead at 10:45 to a Sunblade Blood Knight — with the
+        // healer the only rez class in the group, that was the run.
+        //
+        // Placed LAST on purpose. The scan costs a pathfind per combat reference,
+        // and everything above already narrows this to the elected rezzer of a
+        // pending recovery, which is rare. Radius-bounded so a hostile area aura
+        // (45yd, nothing actually on us) cannot stall recovery forever.
+        return !DcCombatFlag::AnyPartyHeldByLiveEnemy(bot, DC_FIGHT_HOLDER_RADIUS);
     }
 
     std::string DescribeWait(Player* bot)

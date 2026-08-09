@@ -226,6 +226,105 @@ TEST(DcRezDecisionTest, NoRezClassDisablesOnceTheFightEnds)
     EXPECT_EQ(r.reason, Reason::NoRezzer);
 }
 
+// ---- the NoRezzer floor ---------------------------------------------------------
+//
+// The hold above was still one tick wide, and one tick of quiet is not a fight
+// ending. Three shapes, all from tp-20260808-162331-1, where 8 of 20 failures were
+// this branch and every one had 2-4 members alive.
+
+namespace
+{
+    // The party from the two thrown-away Kael'thas runs: sole rezzer dead, four
+    // alive, nothing swinging, everyone still carrying the boss's combat flag.
+    Inputs FloorInputs()
+    {
+        Inputs in = BaseInputs();
+        in.noRezzerQuietGraceMs = 12000;
+        in.noRezzerHoldMaxMs = 60000;
+        in.noRezzerSinceMs = in.nowMs;
+        return in;
+    }
+
+    std::vector<Member> NoRezzerParty()
+    {
+        auto party = BaseParty();
+        party[0].isDead = true;  // the rez-class tank
+        party[1].isDead = true;  // the rez-class healer
+        return party;
+    }
+}
+
+// Kael'thas spends 11 seconds immune, passive and summonless at 1 HP before he
+// kills himself. For all 11 the party reads unengaged while still flagged by him —
+// and tr-20260808-162337-13 was disabled two seconds after its tank was logged
+// kiting him through gravity lapse, four members alive, three bosses down.
+TEST(DcRezDecisionTest, NoRezClassHoldsWhileSurvivorsAreStillCombatFlagged)
+{
+    auto in = FloorInputs();
+    in.partyEngaged = false;
+    in.anySurvivorCombatFlagged = true;
+    Result const r = Decide(in, NoRezzerParty());
+    EXPECT_EQ(r.outcome, Outcome::Hold);
+    EXPECT_EQ(r.reason, Reason::NoRezzerInFight);
+}
+
+// Unflagged too, but only just: the silence has to LAST before it counts as the
+// fight being over.
+TEST(DcRezDecisionTest, NoRezClassHoldsUntilTheQuietHasHeldItsGrace)
+{
+    auto in = FloorInputs();
+    in.noRezzerQuietSinceMs = in.nowMs - 11999;
+    EXPECT_EQ(Decide(in, NoRezzerParty()).reason, Reason::NoRezzerInFight);
+
+    in.noRezzerQuietSinceMs = in.nowMs - 12000;
+    Result const r = Decide(in, NoRezzerParty());
+    EXPECT_EQ(r.outcome, Outcome::Disable);
+    EXPECT_EQ(r.reason, Reason::NoRezzer);
+}
+
+// A quiet clock that never started (the glue only stamps it once the party reads
+// both unengaged and unflagged) must not read as "quiet for long enough".
+TEST(DcRezDecisionTest, NoRezClassHoldsWhileTheQuietClockIsUnarmed)
+{
+    auto in = FloorInputs();
+    in.noRezzerQuietSinceMs = 0;
+    EXPECT_EQ(Decide(in, NoRezzerParty()).reason, Reason::NoRezzerInFight);
+}
+
+// ...and the flag hold is CAPPED, so a flag nothing ever clears degrades to the
+// old verdict instead of hanging the run open forever.
+TEST(DcRezDecisionTest, NoRezClassDisablesOnceTheFlagHoldHitsItsCeiling)
+{
+    auto in = FloorInputs();
+    in.anySurvivorCombatFlagged = true;
+    in.noRezzerSinceMs = in.nowMs - 59999;
+    EXPECT_EQ(Decide(in, NoRezzerParty()).reason, Reason::NoRezzerInFight);
+
+    in.noRezzerSinceMs = in.nowMs - 60000;
+    Result const r = Decide(in, NoRezzerParty());
+    EXPECT_EQ(r.outcome, Outcome::Disable);
+    EXPECT_EQ(r.reason, Reason::NoRezzer);
+}
+
+// The ceiling outranks an active fight too — otherwise a party permanently pinned
+// by something it cannot kill would hold a dead run open indefinitely.
+TEST(DcRezDecisionTest, TheFlagHoldCeilingOutranksEngagement)
+{
+    auto in = FloorInputs();
+    in.partyEngaged = true;
+    in.noRezzerSinceMs = in.nowMs - 60000;
+    EXPECT_EQ(Decide(in, NoRezzerParty()).reason, Reason::NoRezzer);
+}
+
+// With the floor left at its defaults (both graces 0) the branch behaves exactly
+// as it did before it existed — the property every pre-floor test above relies on.
+TEST(DcRezDecisionTest, TheFloorIsInertAtItsDefaults)
+{
+    auto in = BaseInputs();
+    in.partyEngaged = false;
+    EXPECT_EQ(Decide(in, NoRezzerParty()).reason, Reason::NoRezzer);
+}
+
 // A full wipe outranks the in-fight hold: with nobody alive there is no fight to
 // finish, and Reason::Wipe is reached before the rezzer election either way.
 TEST(DcRezDecisionTest, AFullWipeStillDisablesEvenIfFlaggedEngaged)
