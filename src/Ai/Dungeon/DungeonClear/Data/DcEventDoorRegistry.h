@@ -110,14 +110,94 @@ namespace DcEventDoorRegistry
     // Graveyard/Library side, not an encounter lock).
     //
     // Keyed by GO ENTRY, not by lock id, for the same reason as the lists
-    // above: lock 299 is shared with the Stratholme Scarlet-side doors, which
-    // keep their key requirement.
+    // above: a lock id is shared across dungeons (299 covers both the SM wing
+    // gates and the Stratholme Scarlet-side doors), so only an entry list can
+    // waive one door without waiving another that happens to share its lock.
+    //
+    // The same argument extends to Dire Maul North, Scholomance and Stratholme
+    // (added 2026-08-08): every entry below is a plain traversal gate whose key
+    // is a farmed convenience item, not an encounter lock. Each was verified in
+    // the world DB before being listed, against the checklist this list demands:
+    //
+    //   * GAMEOBJECT_TYPE_DOOR with a real lock whose only slots are a key item
+    //     and/or lockpicking — never a lock-free script seal (see the
+    //     IsLockFreeClickable note for why lock-free is the dangerous shape).
+    //   * gameobject_template_addon.flags == 34 (GO_FLAG_LOCKED | NODESPAWN):
+    //     no GO_FLAG_NOT_SELECTABLE and no GO_FLAG_INTERACT_COND, so a player
+    //     at the keyboard really can click them. (GO_FLAG_LOCKED is exactly
+    //     what DcDoorPolicy suppresses bare-hands opening on, which is why
+    //     these needed an exemption rather than just working.)
+    //   * No ScriptName. Where an AIName exists it is SmartGameObjectAI whose
+    //     only action is a gossip-hello SET_INST_DATA recording wing progress —
+    //     and GameObject::Use() runs that GossipHello BEFORE the lock check, so
+    //     the door-blocked action's Use() drives the identical sequence a keyed
+    //     player does. Nothing is skipped or desynced.
+    //   * The instance script, where it mentions the door at all, only calls
+    //     AllowSaveToDB(true) on it (instance_stratholme / instance_scholomance)
+    //     so a player-opened gate persists across a relog. It never reads or
+    //     drives the GO state, so no encounter can be desynced by opening one.
+    //
+    // Deliberately NOT listed: keyed objects that are not doors (Stratholme's
+    // postboxes and Scarlet Cannons, Scholomance's Brazier of the Herald), and
+    // the script-driven lock-free gates of both dungeons (Scholomance's Kirtonos
+    // gate 175570 and the seven Gandling gates, Stratholme's ziggurat doors) —
+    // those are instance-script GO-state territory and stay untouched.
     inline bool IsKeyExempt(uint32 goEntry)
     {
         switch (goEntry)
         {
             case 101854:  // Scarlet Monastery — Herod's Door (Armory, lock 299)
             case 104591:  // Scarlet Monastery — Chapel Door (Cathedral, lock 299)
+
+            // --- Scholomance (map 289) -----------------------------------
+            // The only keyed door inside the instance; every other Scholomance
+            // door/gate is lock-free (handled by IsLockFreeClickable or by the
+            // instance script). Viewing Room Key (13873) drops from Doctor
+            // Theolen Krastinov, i.e. from behind a boss the run may not have
+            // reached yet, so a keyless party could never open it.
+            case 175167:  // Viewing Room Door (lock 1199, Viewing Room Key)
+            // Caer Darrow's outdoor entrance door (map 0), the door INTO
+            // Scholomance. Not inside the instance, so DC only meets it on a
+            // walk-in rather than a teleport-in run; listed for completeness
+            // since it is a keyed Scholomance door. Autocloses after 3s, which
+            // the door-blocked action's re-click cooldown already handles.
+            case 174626:  // Scholomance Door (lock 1159, Skeleton Key 13704)
+
+            // --- Stratholme (map 329) ------------------------------------
+            // Scarlet side — lock 299, The Scarlet Key (7146). This is the same
+            // lock as the SM wing gates above; both dungeons are now exempt, but
+            // still one entry at a time.
+            case 175967:  // The Bastion Door
+            case 175968:  // Hoard Door
+            case 176194:  // Hall of the High Command
+            // Undead side — lock 879, Key to the City (12382) or lockpicking
+            // 300. The two King's Square Gates carry door.autoCloseTime 3000, so
+            // they re-shut ~3s after opening; the door-blocked action re-clicks
+            // on its per-door cooldown rather than latching once (that latch bug
+            // was found on exactly this gate).
+            case 175352:  // King's Square Gate
+            case 175353:  // King's Square Gate
+            case 175356:  // Gauntlet Gate
+            case 175357:  // Gauntlet Gate (SmartAI: gossip-hello SET_INST_DATA)
+            case 175368:  // Service Entrance Gate (SmartAI: gossip-hello set data)
+
+            // --- Dire Maul North (map 429) -------------------------------
+            // The two Gordok doors already open via the map-429 events 2 and 3
+            // (a conditional UseGO — see DireMaulEvents.cpp). Listing them here
+            // is the belt to that braces: the events are Optional, and if one
+            // misfires the run used to fall through to the door-blocked
+            // auto-pause because DcDoorPolicy suppresses bare-hands opening on
+            // GO_FLAG_LOCKED. Both paths end in the same GameObject::Use(), so
+            // whichever fires first wins and the second is a no-op (a Use() on
+            // an already-activated door returns early on lootState).
+            case 177219:  // Gordok Courtyard Door (lock 1563, Gordok Courtyard Key)
+            case 177217:  // Gordok Inner Door (lock 1564, Gordok Inner Door Key)
+            // The North wing's Crescent Key door, in the lower corridor among
+            // the Gordok Brute/Mastiff/Mage-Lord packs. Dire Maul's other two
+            // lock-1562 doors (177221, 179550) are West-wing and already open
+            // via map-429 events 9 and 10; this one has no event because it sits
+            // off the West boss path — the exemption is its only opener.
+            case 179549:  // Dire Maul North — Door (lock 1562, Crescent Key)
                 return true;
             default:
                 return false;

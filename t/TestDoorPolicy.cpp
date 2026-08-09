@@ -139,8 +139,7 @@ TEST(DcDoorPolicyTest, ZeroItemIndexStillARequirement)
 //
 // SM's Armory (Herod's Door) and Cathedral (Chapel Door) both ride lock 299,
 // which the policy above correctly refuses for a keyless, non-rogue tank. The
-// registry waives that requirement per GO ENTRY so those wings stay clearable;
-// the Stratholme doors sharing lock 299 must keep theirs.
+// registry waives that requirement per GO ENTRY so those wings stay clearable.
 TEST(DcDoorPolicyTest, ScarletMonasteryWingDoorsAreKeyExempt)
 {
     EXPECT_TRUE(DcEventDoorRegistry::IsKeyExempt(101854));   // Herod's Door
@@ -151,6 +150,47 @@ TEST(DcDoorPolicyTest, ScarletMonasteryWingDoorsAreKeyExempt)
     EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(18895));   // SFK courtyard (script-only)
     EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(175611));  // Scholomance Iron Gate
     EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(0));
+}
+
+// Every keyed DOOR in Dire Maul North, Scholomance and Stratholme is exempt too
+// (2026-08-08). All are plain traversal gates on a key/lockpicking lock with
+// GO_FLAG_LOCKED set — which is precisely what CanOpenSlots refuses — and none
+// is driven by an instance script; see the registry header for the per-door
+// verification. Without the waiver a keyless party auto-paused at each of them.
+TEST(DcDoorPolicyTest, ScholomanceStratholmeAndDireMaulNorthKeyedDoorsAreExempt)
+{
+    // Scholomance: the one keyed door inside, plus Caer Darrow's entrance door.
+    EXPECT_TRUE(DcEventDoorRegistry::IsKeyExempt(175167));   // Viewing Room Door
+    EXPECT_TRUE(DcEventDoorRegistry::IsKeyExempt(174626));   // Scholomance Door (map 0)
+
+    // Stratholme, Scarlet side (lock 299, The Scarlet Key) — these used to be
+    // the reason the exemption was kept per-entry rather than per-lock.
+    EXPECT_TRUE(DcEventDoorRegistry::IsKeyExempt(175967));   // The Bastion Door
+    EXPECT_TRUE(DcEventDoorRegistry::IsKeyExempt(175968));   // Hoard Door
+    EXPECT_TRUE(DcEventDoorRegistry::IsKeyExempt(176194));   // Hall of the High Command
+
+    // Stratholme, undead side (lock 879, Key to the City).
+    EXPECT_TRUE(DcEventDoorRegistry::IsKeyExempt(175352));   // King's Square Gate
+    EXPECT_TRUE(DcEventDoorRegistry::IsKeyExempt(175353));   // King's Square Gate
+    EXPECT_TRUE(DcEventDoorRegistry::IsKeyExempt(175356));   // Gauntlet Gate
+    EXPECT_TRUE(DcEventDoorRegistry::IsKeyExempt(175357));   // Gauntlet Gate
+    EXPECT_TRUE(DcEventDoorRegistry::IsKeyExempt(175368));   // Service Entrance Gate
+
+    // Dire Maul North: the two Gordok doors (also covered by map-429 events 2/3)
+    // and the North wing's Crescent Key door, which has no event.
+    EXPECT_TRUE(DcEventDoorRegistry::IsKeyExempt(177219));   // Gordok Courtyard Door
+    EXPECT_TRUE(DcEventDoorRegistry::IsKeyExempt(177217));   // Gordok Inner Door
+    EXPECT_TRUE(DcEventDoorRegistry::IsKeyExempt(179549));   // DM North Crescent Key door
+
+    // Still scoped to DOORS in those dungeons, and still not a lock-level rule:
+    // the script-driven gates and the keyed non-door objects stay untouched.
+    EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(175570));  // Scholo Kirtonos gate (script)
+    EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(177371));  // Scholo Gandling gate (script)
+    EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(175564));  // Scholo Brazier of the Herald (button)
+    EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(175380));  // Strat ziggurat door (instance script)
+    EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(176346));  // Strat Market Row Postbox (button)
+    EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(176216));  // Strat Scarlet Cannon (goober)
+    EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(124372));  // Uldaman Ironaya seal
 }
 
 // --- Script-only denylist ---------------------------------------------------

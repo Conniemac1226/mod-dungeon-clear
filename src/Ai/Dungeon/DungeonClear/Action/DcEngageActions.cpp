@@ -165,13 +165,15 @@ namespace
     //     anyone — these were wrongly refused before, which is why the tank
     //     paused at every plain Deadmines door.
     //   - Key items (Scarlet Key, Key to the City) and lockpicking open their
-    //     locks exactly as a player would — EXCEPT for the handful of doors on
-    //     DcEventDoorRegistry::IsKeyExempt (the SM Armory/Cathedral wing
-    //     gates), where the key requirement is deliberately waived so a
-    //     keyless tank can still clear the wing.
+    //     locks exactly as a player would — EXCEPT for the doors on
+    //     DcEventDoorRegistry::IsKeyExempt (the SM Armory/Cathedral wing gates
+    //     plus every keyed door in Scholomance, Stratholme and Dire Maul
+    //     North), where the key requirement is deliberately waived so a keyless
+    //     tank can still clear the dungeon.
     //   - GO_FLAG_LOCKED suppresses the bare-hands slots: flagged gates demand
     //     the real key/skill (Strat's King's Square Gate carries a Quick Open
-    //     slot yet requires the Key to the City).
+    //     slot yet requires the Key to the City — that gate is now key-exempt,
+    //     but the rule still governs every flagged gate not on the list).
     //
     // This remains the gate that keeps the tank from force-opening doors it
     // has no business opening: GameObject::Use's door branch toggles the GO
