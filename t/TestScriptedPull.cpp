@@ -727,6 +727,35 @@ TEST(DcScriptedPullTest, FollowerLeashIsTighterThanTheTanks)
     EXPECT_GT(DC_SCRIPTED_PULL_FOLLOWER_LEASH, 2.0f + 5.0f);
 }
 
+TEST(DcScriptedPullTest, TheSeedGateOpensExactlyWhereTheFollowerMayAlreadyStand)
+{
+    // The non-combat assist's scripted-stage exception. A follower the pack never
+    // touches has no rung left that can make it attack (the DC multiplier zeroes the
+    // stock proactive pickers, the combat-side assist is stood down, and an instance
+    // kill order is combat-engine only), so the seed has to be allowed back in — but
+    // ONLY for a mob it would not have to leave the camp to reach.
+    //
+    // That makes the follower leash the whole specification: the gate must open at
+    // exactly the radius the follower is already permitted to occupy. A yard wider and
+    // the seed points at ground the leash will pull the bot back off, which is the
+    // in-out shuffle; a yard tighter and a mob standing legitimately on the far edge of
+    // the party's own footprint reads as "not arrived" and the stall survives.
+    EXPECT_TRUE(ScriptedCampFightHasReachedCamp(0.0f)) << "on the camp is arrived";
+    EXPECT_TRUE(ScriptedCampFightHasReachedCamp(DC_SCRIPTED_PULL_FOLLOWER_LEASH));
+    EXPECT_FALSE(ScriptedCampFightHasReachedCamp(DC_SCRIPTED_PULL_FOLLOWER_LEASH + 0.1f));
+
+    // The mobs that stranded the party in tr-20260808-191202-9 were still crossing the
+    // rotunda when the tank reached camp — 41 to 50 yards from their own spawns and
+    // nowhere near it. Those ticks must stay closed, or the seed becomes the walk.
+    EXPECT_FALSE(ScriptedCampFightHasReachedCamp(19.7f)) << "the aggro-confirm distance";
+    EXPECT_FALSE(ScriptedCampFightHasReachedCamp(29.7f)) << "the east row's ranged tag";
+
+    // And the gate must sit inside the standoff the whole plan is built on: every
+    // rotunda row keeps 40yd of caster range between its camp and the packs still
+    // standing, so an "arrived" mob can never be one of theirs.
+    EXPECT_LT(DC_SCRIPTED_PULL_FOLLOWER_LEASH, 40.0f);
+}
+
 TEST(DcScriptedPullTest, LosingGroundIsARatchetNotATickDelta)
 {
     // Three legs re-issue one unchanged destination every tick — the tank's drag-back,
@@ -859,6 +888,104 @@ TEST(DcScriptedPullTest, TheCampFightIsBoundedByProgressNotByAWallClock)
     // most of it left.
     EXPECT_GT(DC_SCRIPTED_PULL_ENGAGE_STALL_MS, 30u * 1000u);
     EXPECT_LT(DC_SCRIPTED_PULL_ENGAGE_STALL_MS, 137u * 1000u);
+}
+
+TEST(DcScriptedPullTest, TheCampWalksAtAStandoffLongBeforeTheStageIsRetired)
+{
+    // Two answers to the same evidence at different confidence, so the order they
+    // fire in is the property: eight seconds of a pack taking nothing while something
+    // sits outside the leash means TRY MOVING UP; forty-five means the stage is over.
+    // If these ever crossed, the stage would retire before the camp had walked once
+    // and the standoff rung would be dead code.
+    EXPECT_LT(DC_SCRIPTED_PULL_STANDOFF_MS, DC_SCRIPTED_PULL_ENGAGE_STALL_MS);
+
+    // Enough of a gap to fit several steps in before the retirement, since a 35yd
+    // stand-off needs more than one.
+    EXPECT_GE(DC_SCRIPTED_PULL_ENGAGE_STALL_MS / DC_SCRIPTED_PULL_STANDOFF_MS, 3u);
+
+    // Same latch contract as the retirement's, including the underflow corner.
+    uint32 constexpr kStart = 100000;
+    EXPECT_FALSE(ScriptedPullStandoffStalled(0, 10u * 60u * 1000u));
+    EXPECT_FALSE(ScriptedPullStandoffStalled(kStart, kStart));
+    EXPECT_FALSE(ScriptedPullStandoffStalled(kStart,
+                                             kStart + DC_SCRIPTED_PULL_STANDOFF_MS));
+    EXPECT_TRUE(ScriptedPullStandoffStalled(
+        kStart, kStart + DC_SCRIPTED_PULL_STANDOFF_MS + 1));
+    EXPECT_FALSE(ScriptedPullStandoffStalled(kStart, kStart - 1));
+
+    // A step has to be worth taking against the leash it exists to escape — anything
+    // at or under it would leave the camp inside the same standoff it just walked at.
+    EXPECT_GT(DC_SCRIPTED_PULL_CAMP_STEP, DC_SCRIPTED_PULL_LEASH - DC_SCRIPTED_PULL_RECALL_HOME);
+    // ...and small enough that one bad sample cannot move the party a whole room. The
+    // rotunda's longest camp-to-stand segment is ~34yd (the centre row from the
+    // forward camp), so a step must be a fraction of a segment, not a segment.
+    EXPECT_LT(DC_SCRIPTED_PULL_CAMP_STEP, 20.0f);
+}
+
+TEST(DcScriptedPullTest, TheFollowerLeashStretchesExactlyFarEnoughToShoot)
+{
+    // A SmartAI range-mode caster holds station at spellMaxRange - NOMINAL_MELEE_RANGE
+    // from its victim and neither closes nor backs off: Sunblade Magister (Frostbolt,
+    // 40yd) at 35, Warlock (Immolate, 30) and Coilskar Witch (Forked Lightning, 30) at
+    // 25. Sitting on a camp the tank is planted on, that is 40-45yd of camp-to-mob
+    // against a 28.5yd spellDistance — so the plain leash and the shot are mutually
+    // exclusive and the follower ping-pongs between them.
+    float constexpr kSpell = 28.5f;   // sPlayerbotAIConfig.spellDistance
+    float constexpr kMelee = 4.0f;    // reach sum + 1
+
+    // Anything the follower can already hit from inside the leash changes nothing.
+    EXPECT_FLOAT_EQ(ScriptedFollowerReachLeash(10.0f, kSpell),
+                    DC_SCRIPTED_PULL_FOLLOWER_LEASH);
+    EXPECT_FLOAT_EQ(ScriptedFollowerReachLeash(30.0f, kSpell),
+                    DC_SCRIPTED_PULL_FOLLOWER_LEASH);
+
+    // The measured cases both fit, and both stretch by yards rather than tens of them.
+    // The live hunter cycle: target 40.3yd off the camp.
+    float const hunter = ScriptedFollowerReachLeash(40.3f, kSpell);
+    EXPECT_GT(hunter, DC_SCRIPTED_PULL_FOLLOWER_LEASH);
+    EXPECT_LT(hunter, DC_SCRIPTED_PULL_FOLLOWER_REACH_CAP);
+    // A Magister standing off 35yd from a tank 10yd out from the camp.
+    float const magister = ScriptedFollowerReachLeash(45.0f, kSpell);
+    EXPECT_GT(magister, hunter);
+    EXPECT_LT(magister, DC_SCRIPTED_PULL_FOLLOWER_REACH_CAP);
+
+    // What the stretch has to BUY is the shot, and with margin. Spending it along the
+    // camp->mob line — which is where the follower's own reach action walks it — the
+    // residual gap must be inside range, and must stop short of the range edge so one
+    // step of the mob's movement cannot put it back out. Same reason the tank's recall
+    // releases in a band rather than on a point.
+    EXPECT_LT(40.3f - hunter, kSpell);
+    EXPECT_LE(40.3f - hunter, kSpell * 0.9f + 0.01f);
+    EXPECT_LT(45.0f - magister, kSpell);
+
+    // Monotone in the gap, and hard-capped however far the mob runs.
+    EXPECT_GE(ScriptedFollowerReachLeash(200.0f, kSpell),
+              ScriptedFollowerReachLeash(60.0f, kSpell));
+    EXPECT_FLOAT_EQ(ScriptedFollowerReachLeash(200.0f, kSpell),
+                    DC_SCRIPTED_PULL_FOLLOWER_REACH_CAP);
+    EXPECT_FLOAT_EQ(ScriptedFollowerReachLeash(200.0f, kMelee),
+                    DC_SCRIPTED_PULL_FOLLOWER_REACH_CAP);
+
+    // Degenerate inputs never widen anything.
+    EXPECT_FLOAT_EQ(ScriptedFollowerReachLeash(0.0f, kSpell),
+                    DC_SCRIPTED_PULL_FOLLOWER_LEASH);
+    EXPECT_FLOAT_EQ(ScriptedFollowerReachLeash(50.0f, 0.0f),
+                    DC_SCRIPTED_PULL_FOLLOWER_LEASH);
+
+    // THE CAP IS THE SAFETY ARGUMENT and it is measured off the tightest camp any row
+    // uses: the rotunda's forward camp clears the nearest LIVE pack member by 47.5yd
+    // (centre Mage Guard 96766) against a ~21.5yd level-71 elite reach. A follower may
+    // therefore stand 26yd off that camp without waking anything, and the cap must
+    // leave real margin under it rather than sitting on it.
+    float constexpr kForwardCampToNearestLivePack = 47.5f;
+    float constexpr kEliteReach = 21.5f;
+    EXPECT_LT(DC_SCRIPTED_PULL_FOLLOWER_REACH_CAP,
+              kForwardCampToNearestLivePack - kEliteReach - 3.0f)
+        << "a stretched follower must still be outside every live pack's aggro";
+    // And it may never exceed the ground the TANK is allowed to fight on plus its own
+    // standing leash — past that the party is ahead of its own tank.
+    EXPECT_LT(DC_SCRIPTED_PULL_FOLLOWER_REACH_CAP,
+              DC_SCRIPTED_PULL_LEASH + DC_SCRIPTED_PULL_FOLLOWER_LEASH);
 }
 
 TEST(DcScriptedPullTest, SelectOrderRunsTheLowestLiveStage)

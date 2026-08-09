@@ -1331,6 +1331,42 @@ bool DungeonClearHoldAtCampCombatTrigger::IsActive()
 
 namespace
 {
+    // Is something the tank is fighting already standing at the camp?
+    //
+    // The NON-combat assist's scripted-stage exception. See
+    // ScriptedCampFightHasReachedCamp for the measurement that made this necessary
+    // and for why the follower leash is the right radius to ask it at.
+    //
+    // Deliberately the LEADER's fight only, never a groupmate's: the question is
+    // whether the pack the plan pulled has arrived, and a straggler somebody else
+    // woke is not that.
+    bool ScriptedCampFightIsAtCamp(Player* bot)
+    {
+        Player* const leader = DcLeaderSignal::FindLeaderTank(bot);
+        if (!leader || leader == bot)
+            return false;
+
+        Position camp;
+        bool passive = false;
+        if (!DcLeaderSignal::GetLeaderCampHold(bot, camp, passive))
+            return false;
+
+        auto const atCamp = [&](Unit* u)
+        {
+            return u && u->IsAlive() && u->GetMapId() == bot->GetMapId() &&
+                   bot->IsValidAttackTarget(u) &&
+                   ScriptedCampFightHasReachedCamp(
+                       u->GetExactDist2d(camp.GetPositionX(), camp.GetPositionY()));
+        };
+
+        if (atCamp(leader->GetVictim()))
+            return true;
+        for (Unit* attacker : leader->getAttackers())
+            if (atCamp(attacker))
+                return true;
+        return false;
+    }
+
     // Gate for the COMBAT-side fight assist: this follower's leader is mid
     // fight AND the bot currently has NO line-of-sight target of its own. The
     // empty-attackers test is what makes the combat assist self-limiting: the
@@ -1364,6 +1400,11 @@ namespace
         // logged moved=false from 13.6yd out to 21.1yd and it walked into the room
         // and woke Selin. There is nothing for assist to fix here anyway — the camp
         // is in the open with line of sight to everything that arrives.
+        //
+        // UNCONDITIONAL, unlike the non-combat side's. That side was narrowed to
+        // "unless the fight is already at the camp" because its half of the action
+        // only seeds and flips the engine; this side's is the close-on-mob leg, and
+        // there is no arrival test that makes walking out of the camp acceptable.
         if (DcLeaderSignal::IsLeaderScriptedCampFight(bot))
             return false;
 
@@ -1429,10 +1470,27 @@ bool DungeonClearAssistCampTrigger::IsActive()
     // target, not the pack); keep assist for DPS that must be driven into the fight.
     if (PlayerbotAI::IsHeal(bot))
         return false;
-    // A scripted camp fight owns its followers — same stand-down as the combat
-    // side (ShouldAssistCampFight), for the same reason: the cure here is "walk at
-    // the pack", which is the one thing the plan forbids.
-    if (DcLeaderSignal::IsLeaderScriptedCampFight(bot))
+    // A scripted camp fight owns its followers — but only the WALK, which is the
+    // one thing the plan forbids. This half of the action does not walk: it seeds
+    // `current target`, SetInCombatWith()s the bot and flips it to the combat
+    // engine, then returns. The walking that the stand-down was written against
+    // (tr-20260802-233048-11, the hunter that woke Selin) is all on the COMBAT
+    // side's close-on-mob leg and in the recall it starved — ShouldAssistCampFight
+    // still stands that down unconditionally, and must keep doing so.
+    //
+    // Closing the seed along with the walk left a follower the pack has not
+    // personally touched with nothing at all that could make it attack, because
+    // every other rung is shut for its own good reason: DungeonClearMultiplier
+    // zeroes the stock proactive pickers for any active-run member (and again for a
+    // camp-held one), and an instance strategy's kill order is combat-engine only
+    // (MgT's focus triggers all test IsInCombat). Hold-at-camp logs "in bounds
+    // mid-fight -> yielding to the rotation" the whole time, so the trace reads
+    // healthy while the bot does nothing. See ScriptedCampFightHasReachedCamp for
+    // the numbers.
+    //
+    // So: fire, but only once the fight is at the camp. A seed pointing at a mob
+    // already inside the follower leash cannot invite anyone anywhere.
+    if (DcLeaderSignal::IsLeaderScriptedCampFight(bot) && !ScriptedCampFightIsAtCamp(bot))
         return false;
     return DcLeaderSignal::IsLeaderFightAssistWanted(bot);
 }

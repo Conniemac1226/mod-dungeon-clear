@@ -795,8 +795,43 @@ bool DungeonClearCampHoldActionBase::Execute(Event /*event*/)
     // "inside the radius" as "settled and waiting" is wrong here, because the bot is
     // mid-fight.
     bool const campFight = scriptedCamp && !passive;
-    float const parkRadius = campFight ? DC_SCRIPTED_PULL_FOLLOWER_LEASH
-                                       : DC_PULL_SLOT_RADIUS;
+
+    // AND STRETCHED, WHEN THE LEASH AND THE SHOT ARE MUTUALLY EXCLUSIVE. A camp fight
+    // whose live target stands further from the camp than this follower can reach from
+    // inside the leash is a fight the follower is forbidden to take part in: it walks
+    // out, gets in range, is recalled, and is out of range again on arrival. See
+    // ScriptedFollowerReachLeash for the measurement and for what bounds the stretch.
+    //
+    // Off the follower's OWN current target rather than anything global: that is the
+    // mob its rotation is actually pointed at (the assist rung seeds it, an instance
+    // kill order may have overridden it), so it is the only distance that decides
+    // whether standing at the camp means fighting or watching. No target, a dead one,
+    // or a keep-out room -> the plain leash, unchanged.
+    float followerLeash = DC_SCRIPTED_PULL_FOLLOWER_LEASH;
+    if (campFight && !inNoGoRoom)
+    {
+        if (Unit* const fightTarget =
+                context->GetValue<Unit*>(DcKey::Stock::CurrentTarget)->Get())
+        {
+            if (fightTarget->IsAlive() && fightTarget->GetMapId() == bot->GetMapId() &&
+                bot->IsValidAttackTarget(fightTarget))
+            {
+                float const reach =
+                    botAI->IsMelee(bot)
+                        ? (bot->GetCombatReach() + fightTarget->GetCombatReach() + 1.0f)
+                        : botAI->GetRange("spell");
+                followerLeash = ScriptedFollowerReachLeash(
+                    fightTarget->GetExactDist(&camp), reach);
+                if (followerLeash > DC_SCRIPTED_PULL_FOLLOWER_LEASH)
+                    DC_PULL_TRACE("[DC:{}] hold-at-camp: leash stretched to {:.1f}yd — "
+                                  "{} is {:.1f}yd off the camp and our reach is {:.1f}",
+                                  bot->GetName(), followerLeash,
+                                  fightTarget->GetGUID().ToString(),
+                                  fightTarget->GetExactDist(&camp), reach);
+            }
+        }
+    }
+    float const parkRadius = campFight ? followerLeash : DC_PULL_SLOT_RADIUS;
     if (toCamp <= parkRadius && !inNoGoRoom)
     {
         // IN BOUNDS DURING A CAMP FIGHT IS NOT "PARKED". The stop-and-face pair below
