@@ -81,6 +81,7 @@
 #include "Ai/Dungeon/DungeonClear/DungeonClearTriggerContext.h"
 #include "Ai/Dungeon/DungeonClear/DungeonClearValueContext.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcPathWorker.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcFirstContact.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcPullBrake.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearUtil.h"
 #include "TestRun/DcTestDriver.h"
@@ -311,9 +312,13 @@ public:
             PLAYERHOOK_ON_PLAYER_ENTER_COMBAT
         }) {}
 
-    void OnPlayerEnterCombat(Player* player, Unit* /*enemy*/) override
+    void OnPlayerEnterCombat(Player* player, Unit* enemy) override
     {
         DcPullBrake::OnEnterCombat(player);
+        // Same hook, second reader: `enemy` was discarded here for as long as this
+        // script has existed, and it is the only record anywhere of what STARTED a
+        // fight. See DcFirstContact.h for what that cost.
+        DcFirstContact::OnEnterCombat(player, enemy);
     }
 };
 

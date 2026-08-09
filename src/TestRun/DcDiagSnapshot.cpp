@@ -151,6 +151,12 @@ namespace
             // whole time printing the answer next to a LEGITIMATE verdict
             // (tr-20260803-211838-7, 334s wedged) before it was wired into one.
             h.canAttackMe = canAttackMe;
+            // Scripted-out-of-the-fight state. See the header: a boss playing a
+            // defeat sequence is alive, reachable and attack-permitted, and the
+            // row said exactly that for eleven seconds while a run was thrown away.
+            h.immune = other->IsImmuneToAll();
+            h.passive = asCreature && asCreature->GetReactState() == REACT_PASSIVE;
+            h.atOneHp = other->GetHealth() == 1;
             h.legitimate = legitimate;
             m.combatHolders.push_back(std::move(h));
         };
@@ -624,6 +630,9 @@ namespace DcDiag
                     AppendBool(s, "reachable", c.reachable);
                     AppendBool(s, "reachChecked", c.reachChecked);
                     AppendBool(s, "canAttackMe", c.canAttackMe);
+                    AppendBool(s, "immune", c.immune);
+                    AppendBool(s, "passive", c.passive);
+                    AppendBool(s, "atOneHp", c.atOneHp);
                     AppendBool(s, "legitimate", c.legitimate);
                     s << ",\"victim\":";
                     AppendEscaped(s, c.victim);
@@ -762,6 +771,9 @@ namespace DcDiag
                   << (c.sameMap ? "" : " OTHER-MAP")
                   << (c.evading ? " EVADING" : "")
                   << (c.suppressed ? " SUPPRESSED" : "")
+                  << (c.immune ? " IMMUNE" : "")
+                  << (c.passive ? " PASSIVE" : "")
+                  << (c.atOneHp ? " AT-1-HP" : "")
                   << (!c.reachChecked ? " path-not-tested"
                                       : (c.reachable ? " reachable" : " UNREACHABLE"))
                   << (c.canAttackMe ? "" : " CANNOT-ATTACK-ME")

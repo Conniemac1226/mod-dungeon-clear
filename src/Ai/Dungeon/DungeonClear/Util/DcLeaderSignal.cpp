@@ -49,6 +49,7 @@
 #include "PlayerbotAI.h"
 #include "Chat.h"
 #include "ServerFacade.h"
+#include "StringFormat.h"
 #include "Timer.h"
 #include "World.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
@@ -837,14 +838,34 @@ bool DcLeaderSignal::IsLeaderFightAssistWanted(Player* bot)
         uint32 const latchMs =
             uint32(DcSettings::GetFloat(leader, "PartyCombatLatch") * 1000.0f);
         bool const groupInCombat = IsPartyEngagedLatched(leader, latchMs);
-        // Diagnostic for the spiral death: fires only in the exact divergence we
-        // are fixing — a party fight is live but the elected leader's own flag reads
-        // out of combat. With the old leader-only gate this returned false here and
-        // the party stayed passive; this line proves the new path now engages.
+        // Diagnostic for the spiral death: fires in the divergence this gate fixes —
+        // a party fight reads live while the elected leader's own flag reads out of
+        // combat. With the old leader-only gate this returned false here and the
+        // party stayed passive; this line proves the new path engages.
+        //
+        // IT PRINTS ITS OWN INPUTS, AND IT HAS TO. The two terms are sampled on
+        // DIFFERENT CLOCKS — `group` is latched for PartyCombatLatch seconds past
+        // the last positive read, `leader` is instantaneous — so this fires for the
+        // whole latch tail after EVERY fight ends, when the leader has legitimately
+        // dropped combat. Read as a state ("the tank walked off mid-fight") it is
+        // pure artifact: across tp-20260808-162331-1 it covered 2173 seconds in 621
+        // episodes, 93% of them <= 4s, piled on the 3.0s latch value. That reading
+        // cost a designed, tested and merged feature that then had to be reverted.
+        // The stale-ms and the latch window below are what stop the next reader
+        // making the same mistake.
         if (groupInCombat && !leaderInCombat)
             DC_PULL_DEBUG("[DC:{}] assist: groupmate in combat while leader reads "
-                          "out-of-combat -> assisting (was the no-pull-state stall)",
-                          bot->GetName());
+                          "out-of-combat -> assisting (was the no-pull-state stall) "
+                          "[leader flag=0 instant | group=1 {} | latch {:.1f}s]",
+                          bot->GetName(),
+                          AnyGroupMemberInCombat(leader)
+                              ? "live"
+                              : Acore::StringFormat(
+                                    "LATCH TAIL, {}ms since live",
+                                    getMSTimeDiff(DcRun::Of(GET_PLAYERBOT_AI(leader))
+                                                      .partyEngagedLatchMs,
+                                                  getMSTime())),
+                          latchMs / 1000.0f);
         wanted = groupInCombat;
     }
 
