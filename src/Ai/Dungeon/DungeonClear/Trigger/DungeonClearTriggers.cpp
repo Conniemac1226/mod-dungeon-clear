@@ -537,6 +537,15 @@ bool DungeonClearBlockingTrashTrigger::IsActive()
         {
             trash = DcTargeting::FindBlockingTrashOnPath(
                 bot, path.segments, DC_CORRIDOR_LOOKAHEAD, DC_CORRIDOR_WIDTH, candidates);
+            // En-route sweep — pull the room the walk is about to wake instead of
+            // the mob standing on the centre line. Returns null in heroics.
+            // An already-in-combat corridor pick outranks it; see the twin comment
+            // in DcTargeting::FindPullTarget for why the two scans disagree about
+            // in-combat units and which disagreement wins.
+            if (Unit* const swept = DcTargeting::FindEnRouteAggroPack(
+                    bot, context, path.segments, DC_CORRIDOR_LOOKAHEAD))
+                if (!trash || !trash->IsInCombat())
+                    trash = swept;
         }
         // No usable long-path cache — fall back to a single-shot corridor
         // computed inline so the trigger stays live in degraded conditions.

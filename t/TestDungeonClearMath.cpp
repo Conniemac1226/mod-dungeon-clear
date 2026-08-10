@@ -2056,3 +2056,78 @@ TEST(DcPullTagStopTest, ForceTagOnlyWhenClosingCannotCrossTheThreshold)
                     kMelee);
     EXPECT_TRUE(force);
 }
+
+// ===========================================================================
+// NearestPointOnPolyline2D — the point on a walk a mob comes closest to. Backs
+// the en-route sweep's "would it actually see us" veto (DcTargeting::
+// FindEnRouteAggroPack), which shoots one LOS ray from the mob to this point.
+// ===========================================================================
+
+TEST(DungeonClearMathTest, NearestPointOnPolylineNeedsTwoPoints)
+{
+    G3D::Vector3 out(-1.0f, -1.0f, -1.0f);
+    EXPECT_FALSE(DungeonClearMath::NearestPointOnPolyline2D({}, 0.0f, 0.0f, out));
+    EXPECT_FALSE(DungeonClearMath::NearestPointOnPolyline2D(
+        {G3D::Vector3(1.0f, 2.0f, 3.0f)}, 0.0f, 0.0f, out));
+    // Untouched on failure — a caller must never shoot a ray at a stale point.
+    EXPECT_FLOAT_EQ(out.x, -1.0f);
+}
+
+TEST(DungeonClearMathTest, NearestPointOnPolylineProjectsOntoTheNearestLeg)
+{
+    // An L: out along +X, then up along +Y.
+    std::vector<G3D::Vector3> const route{G3D::Vector3(0.0f, 0.0f, 0.0f),
+                                          G3D::Vector3(20.0f, 0.0f, 0.0f),
+                                          G3D::Vector3(20.0f, 20.0f, 0.0f)};
+    G3D::Vector3 out;
+
+    // Beside the first leg.
+    ASSERT_TRUE(DungeonClearMath::NearestPointOnPolyline2D(route, 8.0f, 5.0f, out));
+    EXPECT_FLOAT_EQ(out.x, 8.0f);
+    EXPECT_FLOAT_EQ(out.y, 0.0f);
+
+    // Beside the second.
+    ASSERT_TRUE(DungeonClearMath::NearestPointOnPolyline2D(route, 26.0f, 12.0f, out));
+    EXPECT_FLOAT_EQ(out.x, 20.0f);
+    EXPECT_FLOAT_EQ(out.y, 12.0f);
+}
+
+TEST(DungeonClearMathTest, NearestPointOnPolylineClampsToTheEnds)
+{
+    std::vector<G3D::Vector3> const route{G3D::Vector3(0.0f, 0.0f, 0.0f),
+                                          G3D::Vector3(20.0f, 0.0f, 0.0f)};
+    G3D::Vector3 out;
+
+    // Behind the start and past the end both clamp to a real endpoint rather
+    // than running off the infinite line.
+    ASSERT_TRUE(DungeonClearMath::NearestPointOnPolyline2D(route, -30.0f, 4.0f, out));
+    EXPECT_FLOAT_EQ(out.x, 0.0f);
+    ASSERT_TRUE(DungeonClearMath::NearestPointOnPolyline2D(route, 55.0f, 4.0f, out));
+    EXPECT_FLOAT_EQ(out.x, 20.0f);
+}
+
+TEST(DungeonClearMathTest, NearestPointOnPolylineInterpolatesZ)
+{
+    // A ramp climbing 10yd over 20yd of run. The Z matters: the LOS ray is shot
+    // from this point + eye height, and snapping to a vertex instead would aim
+    // the ray 5yd under (or over) the floor the walker is actually on.
+    std::vector<G3D::Vector3> const route{G3D::Vector3(0.0f, 0.0f, 0.0f),
+                                          G3D::Vector3(20.0f, 0.0f, 10.0f)};
+    G3D::Vector3 out;
+    ASSERT_TRUE(DungeonClearMath::NearestPointOnPolyline2D(route, 10.0f, 3.0f, out));
+    EXPECT_FLOAT_EQ(out.x, 10.0f);
+    EXPECT_FLOAT_EQ(out.z, 5.0f);
+}
+
+TEST(DungeonClearMathTest, NearestPointOnPolylineToleratesDegenerateLegs)
+{
+    // The route smoother emits coincident points at anchor joins; a zero-length
+    // leg must not divide by zero, it collapses to its own start point.
+    std::vector<G3D::Vector3> const route{G3D::Vector3(0.0f, 0.0f, 0.0f),
+                                          G3D::Vector3(0.0f, 0.0f, 0.0f),
+                                          G3D::Vector3(20.0f, 0.0f, 0.0f)};
+    G3D::Vector3 out;
+    ASSERT_TRUE(DungeonClearMath::NearestPointOnPolyline2D(route, 6.0f, 2.0f, out));
+    EXPECT_FLOAT_EQ(out.x, 6.0f);
+    EXPECT_FLOAT_EQ(out.y, 0.0f);
+}

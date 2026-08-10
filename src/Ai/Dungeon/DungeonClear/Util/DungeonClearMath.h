@@ -692,6 +692,22 @@ namespace DungeonClearMath
                             float ax, float ay,
                             float bx, float by);
 
+    // The point on polyline `route` whose XY projection is nearest (px,py), with
+    // Z linearly interpolated along the winning segment. False (and `out`
+    // untouched) when the polyline holds fewer than two points.
+    //
+    // 2D on purpose, unlike PathProgressCursor below: the caller is asking
+    // "where on this walk do I come closest to that mob", and a mob standing in
+    // a side room off a corridor is on the corridor's floor by construction —
+    // the consumer (the en-route sweep in DcTargeting) has already restricted
+    // candidates to the bot's own Z level via BystanderSpheres, so the storey
+    // ambiguity a 3D cursor exists to resolve cannot arise here. Interpolating Z
+    // rather than snapping to a vertex matters for the line-of-sight ray the
+    // caller then shoots from `out`: a ramp leg's endpoints can sit several
+    // yards above and below the point actually nearest the mob.
+    bool NearestPointOnPolyline2D(std::vector<G3D::Vector3> const& route,
+                                  float px, float py, G3D::Vector3& out);
+
     // True if the 2D segment (A,B) intersects the axis-aligned box
     // [minX,maxX] x [minY,maxY]. Liang-Barsky slab clip: returns true even
     // when BOTH endpoints lie outside the box but the segment passes through
