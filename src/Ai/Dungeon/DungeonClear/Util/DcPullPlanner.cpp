@@ -671,7 +671,44 @@ void DcPullPlanner::UpdateDynamicPullMode(PlayerbotAI* botAI, AiObjectContext* c
     // measuring "always Advanced" against the tuned ceiling (off by default on
     // both difficulties — see the registry row). Same direction as the room-clear
     // force, so they simply OR together.
+    // THIRD force: the target is standing inside ANOTHER pack's aggro, so there is
+    // no way to fight it where it stands without that pack joining. Leeroy means
+    // "walk in and tank in place", and in that geometry tanking in place is the
+    // bug — the estimate sizes who joins a fight that STAYS PUT at the target, and
+    // the neighbour joins precisely because the fight stays put.
+    //
+    // Stormwind Stockade (issue #17) is the case this was written for, and the
+    // numbers are what make it not a tuning question. Its central corridor is
+    // flanked by cells on BOTH sides at 10-21yd against ~29yd of real aggro reach,
+    // so every fight spot in that hall is inside two neighbours at once. Live run
+    // tr-20260809-201248-2: 35 LEEROY verdicts to 4 ADVANCED, and the one pull the
+    // harness sized predicted 3 mobs and fought 7. The pack weighed 9 thirds
+    // against the 15 ceiling — comfortably under, and correctly so, because the
+    // ceiling is asking about the PACK and the problem is the ROOM.
+    //
+    // Advanced is what fixes it: the maneuver drags the pack BACK down the
+    // corridor to a camp placed in ground the party already cleared, where no
+    // neighbour reaches. That is how a human clears the Stockade. Same direction
+    // as the other two forces, so all three simply OR together.
+    //
+    // SWEEP MAPS ONLY (RouteSweepRegistry), and the gate is explicit rather than
+    // inherited. TargetInsideBystanderPack is armed on heroic by PullEnRouteAvoid
+    // (default on there), so without this line the force would fire on every
+    // heroic map — and on nearly every pack, because a heroic room's formations
+    // sit 12-23yd apart against ~30yd spheres. That is PullForceAdvanced in all
+    // but name, which the registry row says must never ship on: it costs the full
+    // pull FSM on every single-mob pack.
+    //
+    // The same caution is why the scope is a map list rather than "all normal
+    // dungeons": forcing Advanced reshapes how every fight in a dungeon happens,
+    // and only the Stockade has the run data to justify it so far. See
+    // RouteSweepRegistry.h.
+    bool const insideNeighbour =
+        DcEngageGeometry::EnRouteSweepApplies(bot) &&
+        DcEngageGeometry::TargetInsideBystanderPack(bot, target);
+
     bool const forceAdv = DcTargeting::RoomClearForcesAdvanced(bot, context) ||
+                          insideNeighbour ||
                           DcSettings::GetBool(bot, "PullForceAdvanced");
 
     // Per-pack latch, UPGRADE-ONLY while approaching the SAME pack.

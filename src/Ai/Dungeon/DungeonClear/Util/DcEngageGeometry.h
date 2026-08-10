@@ -327,8 +327,15 @@ public:
     // dead / non-hostile / critter / totem / already-in-combat / other-floor), so
     // "inside aggro" means one thing across the module. One grid search around the
     // TARGET (not the leg), so it is cheaper than a full BystanderSpheres build.
-    // Gated by PullEnRouteAvoid — returns false when avoidance is off.
+    // Armed by PullEnRouteAvoid (heroic) or EnRouteSweepApplies (normal); false
+    // when neither owns the difficulty.
     static bool TargetInsideBystanderPack(Player* bot, Unit* target);
+
+    // Is the en-route pack SWEEP in force for this bot? A non-heroic dungeon on
+    // the RouteSweepRegistry allow-list — see that header for why the scope is a
+    // per-map table rather than a difficulty or a config key, and
+    // DcTargeting::FindEnRouteAggroPack for what the sweep does.
+    static bool EnRouteSweepApplies(Player* bot);
 
     // Chase-leash gate: what the walk toward a live trash target should do this
     // tick. Resolves the game state — the per-approach anchor (DcApproachState::

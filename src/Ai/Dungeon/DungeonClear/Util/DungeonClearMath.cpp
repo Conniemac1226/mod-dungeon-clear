@@ -462,6 +462,45 @@ float DungeonClearMath::DistSqToSegment2D(float px, float py,
     return dx * dx + dy * dy;
 }
 
+bool DungeonClearMath::NearestPointOnPolyline2D(std::vector<G3D::Vector3> const& route,
+                                                float px, float py, G3D::Vector3& out)
+{
+    if (route.size() < 2)
+        return false;
+
+    float bestDist2 = std::numeric_limits<float>::max();
+    for (std::size_t i = 0; i + 1 < route.size(); ++i)
+    {
+        G3D::Vector3 const& a = route[i];
+        G3D::Vector3 const& b = route[i + 1];
+        float const ex = b.x - a.x;
+        float const ey = b.y - a.y;
+        float const len2 = ex * ex + ey * ey;
+
+        // Degenerate leg (two coincident route points — the smoother emits them
+        // at anchor joins): the whole leg IS point `a`.
+        float t = 0.0f;
+        if (len2 > 1e-6f)
+        {
+            t = ((px - a.x) * ex + (py - a.y) * ey) / len2;
+            if (t < 0.0f) t = 0.0f;
+            else if (t > 1.0f) t = 1.0f;
+        }
+
+        float const cx = a.x + t * ex;
+        float const cy = a.y + t * ey;
+        float const dx = px - cx;
+        float const dy = py - cy;
+        float const d2 = dx * dx + dy * dy;
+        if (d2 < bestDist2)
+        {
+            bestDist2 = d2;
+            out = G3D::Vector3(cx, cy, a.z + t * (b.z - a.z));
+        }
+    }
+    return true;
+}
+
 std::size_t DungeonClearMath::PathProgressCursor(std::vector<G3D::Vector3> const& route,
                                                  float botX, float botY, float botZ)
 {

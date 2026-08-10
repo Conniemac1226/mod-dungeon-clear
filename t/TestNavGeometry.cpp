@@ -520,3 +520,142 @@ TEST(DcOrbitRingTest, BystanderBoundsTheChordNotTheAngle)
         OrbitProfile::RoomAggroBoss, 50.0f, 60.0f, 10.0f, 12.0f);
     EXPECT_GT(boss.radius * boss.step, 12.0f);
 }
+
+// ===========================================================================
+// STORMWIND STOCKADE (map 34) — the geometry behind issue #17, pinned from the
+// live `creature` rows so a future tuning change has to face the real numbers.
+//
+// The first boss (Targorr, 159.6/1.3) sits 105yd dead ahead of the entrance
+// (54.2/0.3) up the central axis. The cells flanking that axis hold lvl 23-25
+// ELITES 10-21yd off the route line. Effective aggro reach for them is
+// GetAggroRange(~20) + both combat reaches + AggroRangeMargin(2) ~= 25yd, and
+// the avoidance sphere adds PullEnRouteMargin(4) on top -> ~29yd.
+//
+// These two tests establish, in pure geometry, why the answer had to be a
+// TARGETING change (DcTargeting::FindEnRouteAggroPack) and not an avoidance
+// one: the corridor is inside the cells' aggro, and there is nowhere else to
+// walk. See the SweepApplies / FindEnRouteAggroPack comments.
+// ===========================================================================
+
+namespace
+{
+    // Live spawn positions, `creature` rows on map 34. Y grows WEST, so the
+    // signs are which side of the central corridor a cell sits on.
+    constexpr float kStockadeSphereR = 29.0f;   // aggro reach + party margin
+
+    AvoidSphere StockadeCell(float x, float y) { return Sphere(x, y, kStockadeSphereR); }
+}
+
+// The premise. Walking the central axis violates cell after cell — the tank
+// cannot traverse it without waking them, whatever it is aiming at.
+TEST(DcPolylineAvoidTest, StockadeCentralAxisRunsInsideTheFlankingCellsAggro)
+{
+    // Entrance -> Targorr, sampled every ~21yd along the axis.
+    std::vector<G3D::Vector3> const axis{
+        G3D::Vector3(54.2f, 0.3f, -18.3f),  G3D::Vector3(75.3f, 0.5f, -25.5f),
+        G3D::Vector3(96.4f, 0.7f, -25.5f),  G3D::Vector3(117.5f, 0.9f, -25.5f),
+        G3D::Vector3(138.6f, 1.1f, -25.6f), G3D::Vector3(159.6f, 1.3f, -25.6f)};
+
+    // Every one of these is a cell mob OFF the centre line — none of them would
+    // ever be "standing on the path". (The DEEP bank, at |y| ~ 29-30, sits a
+    // hair outside 29yd and is pinned as a non-violation below: the sweep's
+    // reach really does stop, and it stops right about where this dungeon's
+    // second rank of cells begins.)
+    std::vector<AvoidSphere> const cells{
+        StockadeCell(80.7f, 16.8f), StockadeCell(82.3f, -10.6f),
+        StockadeCell(86.8f, 21.1f), StockadeCell(103.2f, 12.9f),
+        StockadeCell(108.7f, 21.5f)};
+
+    // Each cell, on its own, is violated by the walk.
+    for (size_t i = 0; i < cells.size(); ++i)
+    {
+        size_t leg = 999;
+        std::vector<AvoidSphere> const one{cells[i]};
+        EXPECT_GE(DcEngageGeometry::FirstViolatedSphereOnPolyline(axis, one, leg), 0)
+            << "cell " << i << " should be inside aggro of the central axis";
+    }
+}
+
+// And avoidance has no answer for it. Standing where the first corridor mob
+// died (76.2/0.3), the east cell's sphere already covers the tank, so the
+// truncation is correctly DECLINED and the glide runs straight through it.
+// That is the whole argument for pulling the cell instead of dodging it.
+TEST(DcPolylineAvoidTest, StockadeCellCannotBeAvoidedOnlyPulled)
+{
+    std::vector<G3D::Vector3> window{
+        G3D::Vector3(76.2f, 0.3f, -25.5f), G3D::Vector3(96.4f, 0.7f, -25.5f),
+        G3D::Vector3(117.5f, 0.9f, -25.5f)};
+    // 12.5yd from the tank — well inside its own 29yd sphere.
+    std::vector<AvoidSphere> const spheres{StockadeCell(82.3f, -10.6f)};
+
+    size_t leg = 999;
+    int idx = -1;
+    EXPECT_FALSE(DcEngageGeometry::TruncateWindowAtSphere(
+        window, spheres, 6.0f, 1.0f, leg, idx));
+    EXPECT_EQ(window.size(), 3u);   // untouched: the tank walks through it
+    EXPECT_EQ(idx, 0);              // the violation is real, just unavoidable
+}
+
+// Route order picks the cell BESIDE the walk over the mob further along the
+// centre line — the substitution FindEnRouteAggroPack makes. Both are hostile
+// and both are within the lookahead; the corridor band answers "what is on my
+// path" and would reach past the cell to the on-line mob whenever the cell is
+// LOS-shadowed by its own doorway. The sphere scan cannot be shadowed.
+TEST(DcPolylineAvoidTest, StockadeSweepTakesTheCellBesideTheWalk)
+{
+    // 35yd of route (DC_CORRIDOR_LOOKAHEAD) from where the first corridor mob
+    // stood, heading for Targorr.
+    std::vector<G3D::Vector3> const window{
+        G3D::Vector3(76.2f, 0.3f, -25.5f), G3D::Vector3(111.2f, 0.7f, -25.5f)};
+
+    // Index 0 is the on-line mob 34.5yd further up the corridor; index 1 is the
+    // east cell 12.5yd away and 10.6yd off the line.
+    std::vector<AvoidSphere> const spheres{StockadeCell(110.7f, -0.8f),
+                                           StockadeCell(82.3f, -10.6f)};
+
+    size_t leg = 999;
+    EXPECT_EQ(DcEngageGeometry::FirstViolatedSphereOnPolyline(window, spheres, leg), 1);
+    EXPECT_EQ(leg, 0u);
+}
+
+// The reach is not unbounded — and in this dungeon the boundary is genuinely
+// close-run, which is worth knowing before anyone retunes PullEnRouteMargin.
+// The deep cell at (87.7, -29.0) is 29.62yd from the walk against a 29yd
+// sphere: a 0.62yd miss. It is left alone, so the sweep pulls what the walk
+// would wake and not the whole dungeon — but a yard more margin would sweep the
+// second rank of cells too, and a yard less would drop part of the first.
+TEST(DcPolylineAvoidTest, StockadeSweepReachStopsAtTheDeepCellBank)
+{
+    std::vector<G3D::Vector3> const window{
+        G3D::Vector3(75.3f, 0.5f, -25.5f), G3D::Vector3(96.4f, 0.7f, -25.5f)};
+
+    size_t leg = 999;
+    std::vector<AvoidSphere> const outside{StockadeCell(87.7f, -29.0f)};
+    EXPECT_EQ(DcEngageGeometry::FirstViolatedSphereOnPolyline(window, outside, leg), -1);
+
+    // Pinning the margin itself: one more yard of reach and it is swept.
+    std::vector<AvoidSphere> const inside{Sphere(87.7f, -29.0f, 30.0f)};
+    EXPECT_EQ(DcEngageGeometry::FirstViolatedSphereOnPolyline(window, inside, leg), 0);
+}
+
+// ---------------------------------------------------------------------------
+// RouteSweepRegistry — the scope of the whole en-route sweep, pinned so widening
+// it is a deliberate act with a test to update rather than a silent table edit.
+// ---------------------------------------------------------------------------
+
+#include "Ai/Dungeon/DungeonClear/Data/RouteSweepRegistry.h"
+
+TEST(DcRouteSweepRegistryTest, OnlyTheStockadeSweepsForNow)
+{
+    EXPECT_TRUE(RouteSweepRegistry::SweepsRoute(34));    // The Stockade
+
+    // Every other dungeon keeps the historical corridor-band pick AND the
+    // untouched Dynamic verdict. Forcing Advanced reshapes how every fight in a
+    // dungeon happens, so a map earns its row on its own run data — adding one
+    // here means the evidence exists for it.
+    EXPECT_FALSE(RouteSweepRegistry::SweepsRoute(36));   // Deadmines
+    EXPECT_FALSE(RouteSweepRegistry::SweepsRoute(33));   // Shadowfang Keep
+    EXPECT_FALSE(RouteSweepRegistry::SweepsRoute(109));  // Sunken Temple
+    EXPECT_FALSE(RouteSweepRegistry::SweepsRoute(585));  // Magisters' Terrace
+    EXPECT_FALSE(RouteSweepRegistry::SweepsRoute(0));    // not a dungeon at all
+}

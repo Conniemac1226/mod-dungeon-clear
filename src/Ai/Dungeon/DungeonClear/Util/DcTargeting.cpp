@@ -287,6 +287,123 @@ namespace
                           bestDistFromBot);
         return best;
     }
+
+    // The next `maxLookAhead` yards of the smoothed route as a polyline whose
+    // [0] IS the bot's live position. Truncated at the first closed door, for
+    // the reason FindBlockingTrashOnPath documents at length: the mesh is baked
+    // without doors, so the corridor otherwise runs straight through them.
+    //
+    // CRITICAL: chain each segment's `polyline` points, NOT the segment endpoints
+    // (`seg.ex/ey`). The primary producer (LongRangePathfinder) emits the ENTIRE
+    // winding route as ONE PathSegment whose ex/ey is only the final endpoint, so
+    // chaining endpoints collapses the window to a bee-line through walls that
+    // ignores maxLookAhead entirely.
+    //
+    // The last leg may overshoot maxLookAhead — the accumulator is checked after
+    // the point is appended, so the window always ends on a real route vertex
+    // rather than mid-leg. Both consumers treat the window as a threshold test,
+    // so a few yards of overshoot cost nothing and a truncated final leg would
+    // cost a whole point of geometry.
+    std::vector<G3D::Vector3> BuildRouteWindow(Player* bot,
+                                               std::vector<PathSegment> const& segments,
+                                               float maxLookAhead)
+    {
+        std::vector<G3D::Vector3> window;
+        if (!bot || segments.empty())
+            return window;
+
+        auto const doors =
+            CollectClosedDoors(bot->GetMap(), bot->GetPositionX(), bot->GetPositionY(),
+                               maxLookAhead + DC_DOOR_BAND);
+
+        window.reserve(segments.size() + 1);
+        window.emplace_back(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+
+        float accumulated = 0.0f;
+        bool stop = false;
+        for (PathSegment const& seg : segments)
+        {
+            // Anchored segments collapse to a single polyline point; non-anchored
+            // segments carry the full smoothed corridor. Fall back to the endpoint
+            // only if a segment somehow has no polyline at all — built lazily so
+            // the common (populated) case allocates nothing per segment.
+            std::vector<G3D::Vector3> fallback;
+            if (seg.polyline.empty())
+                fallback.emplace_back(seg.ex, seg.ey, seg.ez);
+            std::vector<G3D::Vector3> const& pts = seg.polyline.empty() ? fallback : seg.polyline;
+
+            for (G3D::Vector3 const& pt : pts)
+            {
+                // By VALUE: push_back below reallocates, and a reference into
+                // the vector would dangle the moment it does.
+                G3D::Vector3 const prev = window.back();
+                Seg2D const s{prev.x, prev.y, prev.z, pt.x, pt.y, pt.z};
+                if (!doors.empty() && SegmentHitsClosedDoor(s, doors))
+                {
+                    stop = true;
+                    break;
+                }
+                float const dx = pt.x - prev.x;
+                float const dy = pt.y - prev.y;
+                accumulated += std::sqrt(dx * dx + dy * dy);
+                window.push_back(pt);
+                if (accumulated >= maxLookAhead)
+                {
+                    stop = true;
+                    break;
+                }
+            }
+            if (stop)
+                break;
+        }
+        return window;
+    }
+
+    // Consecutive polyline points as corridor legs. Trivial, but it keeps the
+    // "window[i] -> window[i+1]" pairing in one place now that two scanners
+    // consume the same window.
+    std::vector<Seg2D> WindowSegments(std::vector<G3D::Vector3> const& window)
+    {
+        std::vector<Seg2D> segs;
+        if (window.size() < 2)
+            return segs;
+        segs.reserve(window.size() - 1);
+        for (size_t i = 0; i + 1 < window.size(); ++i)
+            segs.push_back(Seg2D{window[i].x, window[i].y, window[i].z,
+                                 window[i + 1].x, window[i + 1].y, window[i + 1].z});
+        return segs;
+    }
+
+    // How many swept candidates may be probed (reachability + LOS) in one scan
+    // before the sweep gives up and hands the tick to the corridor band. Each
+    // rejected candidate costs a PathGenerator probe and a VMap ray, so this is
+    // the scan's real cost ceiling. Four is well past the observed need — in a
+    // hall with rooms the FIRST violated sphere is the answer, and the retries
+    // only exist so one unreachable straggler cannot blind the sweep entirely.
+    constexpr int kSweepProbeBudget = 4;
+
+    // Would `u` actually notice us walking this window? The sphere set is
+    // LOS-blind (right for avoidance, wrong for targeting — see
+    // DcTargeting::FindEnRouteAggroPack), so this is the veto that keeps the
+    // sweep from walking off to pull a room on the far side of a wall that would
+    // never have woken. One ray, from the mob to the point on the walk it comes
+    // closest to: the sphere is violated, so that point is inside its aggro
+    // reach by construction.
+    //
+    // The +2yd on Z is the walker's eye height. A ray to the floor point clips
+    // the lip of a doorway or a ramp crest that the mob can plainly see over,
+    // and a false "it can't see us" here is the exact over-pull this whole
+    // change exists to remove.
+    bool SeesTheWalk(Unit* u, std::vector<G3D::Vector3> const& window)
+    {
+        // NOT named `near` — windef.h defines that as a macro (see
+        // tools/check_msvc_portability.py).
+        G3D::Vector3 nearest;
+        if (!DungeonClearMath::NearestPointOnPolyline2D(window, u->GetPositionX(),
+                                                        u->GetPositionY(), nearest))
+            return false;
+        return u->IsWithinLOS(nearest.x, nearest.y, nearest.z + 2.0f);
+    }
 }
 
 Unit* DcTargeting::FindBlockingTrash(Player* bot,
@@ -392,84 +509,114 @@ Unit* DcTargeting::FindBlockingTrashOnPath(Player* bot,
     if (!bot || segments.empty() || candidates.empty())
         return nullptr;
 
-    // Walk the smoothed route starting from the bot's current position. Stop
-    // accumulating once we've traveled `maxLookAhead` yards along it — anything
-    // past that isn't blocking our immediate next pull.
+    // The scanned corridor is the first `maxLookAhead` yards of the smoothed
+    // route, truncated at the first closed door — see BuildRouteWindow for why
+    // both of those matter and why it chains polyline points rather than
+    // segment endpoints.
+    return PickBlockingTrash(bot, WindowSegments(BuildRouteWindow(bot, segments, maxLookAhead)),
+                             corridorWidth, candidates);
+}
+Unit* DcTargeting::FindEnRouteAggroPack(Player* bot, AiObjectContext* ctx,
+                                        std::vector<PathSegment> const& segments,
+                                        float maxLookAhead)
+{
+    if (!bot || !ctx || segments.empty())
+        return nullptr;
+    if (!DcEngageGeometry::EnRouteSweepApplies(bot))
+        return nullptr;
+
+    std::vector<G3D::Vector3> const window = BuildRouteWindow(bot, segments, maxLookAhead);
+    if (window.size() < 2)
+        return nullptr;
+
+    // The leg the spheres are gathered around. BystanderSpheres searches out to
+    // this endpoint's distance plus a full aggro reach, so a pack beside the far
+    // end of the window is still collected.
+    G3D::Vector3 const& end = window.back();
+    Position const legEnd(end.x, end.y, end.z, 0.0f);
+    std::vector<DcEngageGeometry::AvoidSphere> spheres =
+        DcEngageGeometry::BystanderSpheres(bot, legEnd, /*exclude*/ nullptr);
+    if (spheres.empty())
+        return nullptr;
+
+    // Cheap vetoes first, over the whole set, so the route-order loop below never
+    // spends a probe on a candidate that was never eligible.
     //
-    // CRITICAL: chain each segment's `polyline` points, NOT the segment
-    // endpoints (`seg.ex/ey`). The primary producer (LongRangePathfinder) emits
-    // the ENTIRE winding route as a single PathSegment whose ex/ey is only the
-    // final endpoint (the boss). Chaining endpoints would collapse the corridor
-    // to one straight bee-line from the bot to the boss — a cylinder that cuts
-    // through walls and rooms, runs the whole route in one segment, and ignores
-    // maxLookAhead. The polyline is the real smoothed corridor geometry. (Same
-    // fix already applied in DungeonClearBlockingDoorValue::Calculate.)
-    std::vector<Seg2D> segs;
-    segs.reserve(segments.size());
+    // A boss is not sweepable in either sense: the encounter bosses have their own
+    // engage path (range gate, anchor checks, party-ready gate), and a room-aggro
+    // boss is precisely the thing the pre-clear works AROUND. BystanderSpheres has
+    // no reason to exclude either — it only ever walks around them — so this
+    // mirrors what NearestHostileNearPoint already does for the point-radius clear.
+    // IsPossibleTarget comes along for the same reason: the sphere set only has to
+    // decide what to keep AWAY from, and an unattackable trigger creature is worth
+    // avoiding but can never be pulled.
+    //
+    // The distance cap is the load-bearing one. A sphere is violated when the mob
+    // is within its OWN reach of the walk, so a candidate can legitimately sit a
+    // full aggro radius beyond the far end of the window — ~64yd out. Everything
+    // downstream promises otherwise: the pull action's Idle branch is written
+    // around "the scan already caps the look-ahead at ~35yd", and
+    // IsStickyPullTargetValid releases a latch past 45yd, so an over-range pick
+    // would re-scan every single tick instead of latching. Capping the swept pack
+    // at the same look-ahead the corridor scan uses keeps one envelope for both,
+    // and costs nothing: a room further up the route is swept as soon as the tank
+    // has walked into range of it.
+    uint32 const mapId = bot->GetMapId();
+    spheres.erase(std::remove_if(spheres.begin(), spheres.end(),
+                                 [&](DcEngageGeometry::AvoidSphere const& s)
+                                 {
+                                     Unit* const u = ObjectAccessor::GetUnit(*bot, s.guid);
+                                     if (!u || !u->IsAlive())
+                                         return true;
+                                     if (bot->GetExactDist2d(u) > maxLookAhead)
+                                         return true;
+                                     if (!AttackersValue::IsPossibleTarget(u, bot))
+                                         return true;
+                                     if (IsDungeonBossEntry(ctx, u->GetEntry()))
+                                         return true;
+                                     return RoomAggroRegistry::Find(mapId, u->GetEntry()) != nullptr;
+                                 }),
+                  spheres.end());
+    if (spheres.empty())
+        return nullptr;
 
-    // Truncate the scanned corridor at the first closed door so trash on the FAR
-    // side is never picked: door-blind, the corridor runs straight through doors
-    // the navmesh doesn't model as solid, and engage-trash (25) would beat
-    // door-blocked (22) and walk the tank through to the pack. Computed fresh from
-    // the live door state here (not the 500ms-cached blocking-door value), so it
-    // holds even on the tick a scan first sees the pack.
-    auto const doors =
-        CollectClosedDoors(bot->GetMap(), bot->GetPositionX(), bot->GetPositionY(),
-                           maxLookAhead + DC_DOOR_BAND);
-
-    float prevX = bot->GetPositionX();
-    float prevY = bot->GetPositionY();
-    float prevZ = bot->GetPositionZ();
-    float accumulated = 0.0f;
-    bool stop = false;
-    for (PathSegment const& seg : segments)
+    // Route order, not nearest-the-bot: the pack to pull is the one the WALK
+    // reaches first, which on a route that doubles back is not the one closest in
+    // straight-line terms. Each rejected candidate is dropped and the question
+    // re-asked, so one unreachable straggler beside the corridor cannot blind the
+    // sweep to the room behind it — bounded by kSweepProbeBudget because every
+    // rejection costs a pathfinder probe and a VMap ray.
+    for (int probes = 0; probes < kSweepProbeBudget && !spheres.empty(); ++probes)
     {
-        // Anchored segments collapse to a single polyline point; non-anchored
-        // segments carry the full smoothed corridor. Fall back to the endpoint
-        // only if a segment somehow has no polyline at all.
-        if (seg.polyline.empty())
-        {
-            Seg2D const s{prevX, prevY, prevZ, seg.ex, seg.ey, seg.ez};
-            if (!doors.empty() && SegmentHitsClosedDoor(s, doors))
-                break;
-            float const dx = seg.ex - prevX;
-            float const dy = seg.ey - prevY;
-            segs.push_back(s);
-            accumulated += std::sqrt(dx * dx + dy * dy);
-            prevX = seg.ex;
-            prevY = seg.ey;
-            prevZ = seg.ez;
-            if (accumulated >= maxLookAhead)
-                break;
+        size_t leg = 0;
+        int const idx = DcEngageGeometry::FirstViolatedSphereOnPolyline(window, spheres, leg);
+        if (idx < 0)
+            return nullptr;                 // the whole walk is clear of aggro
+
+        DcEngageGeometry::AvoidSphere const violated = spheres[idx];
+        spheres.erase(spheres.begin() + idx);
+
+        Unit* const u = ObjectAccessor::GetUnit(*bot, violated.guid);
+        if (!u || !u->IsAlive())
             continue;
-        }
+        // Does it actually see the walk? The sphere set is LOS-blind on purpose;
+        // without this the sweep trades "rooms we wake in passing" for "rooms we
+        // never would have woken at all".
+        if (!SeesTheWalk(u, window))
+            continue;
+        if (!DcEngageGeometry::IsLevelReachable(bot, u))
+            continue;
+        if (DcEngageGeometry::ClosedDoorBetween(bot, u->GetPositionX(),
+                                                u->GetPositionY(), u->GetPositionZ()))
+            continue;
 
-        for (G3D::Vector3 const& pt : seg.polyline)
-        {
-            Seg2D const s{prevX, prevY, prevZ, pt.x, pt.y, pt.z};
-            if (!doors.empty() && SegmentHitsClosedDoor(s, doors))
-            {
-                stop = true;
-                break;
-            }
-            float const dx = pt.x - prevX;
-            float const dy = pt.y - prevY;
-            segs.push_back(s);
-            accumulated += std::sqrt(dx * dx + dy * dy);
-            prevX = pt.x;
-            prevY = pt.y;
-            prevZ = pt.z;
-            if (accumulated >= maxLookAhead)
-            {
-                stop = true;
-                break;
-            }
-        }
-        if (stop)
-            break;
+        DC_PULL_DEBUG("[DC:{}] en-route sweep: {} at {:.1f}yd — route enters its "
+                      "{:.1f}yd aggro sphere on leg {}",
+                      bot->GetName(), u->GetGUID().ToString(), bot->GetExactDist2d(u),
+                      violated.r, static_cast<uint32>(leg));
+        return u;
     }
-
-    return PickBlockingTrash(bot, segs, corridorWidth, candidates);
+    return nullptr;
 }
 Unit* DcTargeting::FindPullTarget(PlayerbotAI* botAI, DungeonBossInfo const& next)
 {
@@ -549,6 +696,20 @@ Unit* DcTargeting::FindPullTarget(PlayerbotAI* botAI, DungeonBossInfo const& nex
     if (path.reachable && !path.segments.empty())
     {
         trash = FindBlockingTrashOnPath(bot, path.segments, kLookAhead, kWidth, candidates);
+        // En-route sweep: prefer the pack the route's aggro reaches FIRST over the
+        // one merely standing on the centre line. Returns null in heroics, so
+        // this is the historical pick unless swept.
+        //
+        // A corridor pick that is ALREADY IN COMBAT keeps the tick, though: the
+        // corridor scan deliberately does not skip in-combat units ("a hostile in
+        // our forward corridor already engaged on another party member is MORE
+        // reason to engage, not less"), while BystanderSpheres deliberately does
+        // (its aggro is spent — nothing to avoid). Letting a fresh sweep pick
+        // outrank it would walk the tank off toward a quiet room while a follower
+        // is being clawed behind it.
+        if (Unit* const swept = FindEnRouteAggroPack(bot, context, path.segments, kLookAhead))
+            if (!trash || !trash->IsInCombat())
+                trash = swept;
     }
     else
     {

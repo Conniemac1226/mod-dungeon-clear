@@ -60,6 +60,44 @@ public:
                                          float corridorWidth,
                                          GuidVector const& candidates);
 
+    // EN-ROUTE PACK SWEEP. The pack whose aggro sphere the next `maxLookAhead`
+    // yards of route ENTERS FIRST, or nullptr.
+    //
+    // The companion to FindBlockingTrashOnPath, and deliberately a different
+    // question. That one asks what is standing ON the path — a corridor band,
+    // nearest in-LOS candidate wins — which in a hall with rooms off it targets the
+    // mob on the centre line and walks the tank through the aggro of everything
+    // flanking it. This one asks whose aggro the walk is about to enter, in ROUTE
+    // ORDER, so a room gets pulled from its threshold instead of woken in passing.
+    //
+    // The reference geometry is Stormwind Stockade (34), issue #17: the first boss
+    // sits 105yd dead ahead of the entrance up the central axis, and the cells
+    // flanking that axis hold elites 10-21yd off the route line against a ~25yd
+    // aggro reach — every one of them inside aggro of the corridor itself. The tank
+    // targeted the mob ON the line, walked to it, and arrived with three cells in
+    // tow. En-route AVOIDANCE cannot fix that: there is no clear line to detour to,
+    // so TruncateWindowAtSphere correctly declines and the tank walks through
+    // anyway. The pack has to be pulled, not dodged.
+    //
+    // Shares BystanderSpheres / FirstViolatedSphereOnPolyline with that avoidance,
+    // so detection and evasion can never disagree about what "inside aggro" means.
+    // Adds vetoes the avoidance has no need of, because a sphere it merely walks
+    // around is one this WALKS TO: encounter and room-aggro bosses (the dedicated
+    // at-boss / pre-clear paths own those), a closed door in between,
+    // level-reachability — and, most importantly, an en-route LINE OF SIGHT test.
+    // The sphere set is LOS-blind by design; a mob behind a solid wall never aggros
+    // no matter how far its sphere reaches over the corridor, so it must be shown
+    // to see some point on the walk before it is worth walking to.
+    //
+    // NORMAL difficulty only (DcEngageGeometry::EnRouteSweepApplies — heroic is
+    // the avoidance's job, not this one), and nullptr there — so callers may call
+    // unconditionally. Costs one grid search plus at most kSweepProbeBudget
+    // reachability/LOS probes; leader-only call sites, and the pull side sits
+    // behind the 250ms sticky value.
+    static Unit* FindEnRouteAggroPack(Player* bot, AiObjectContext* ctx,
+                                      std::vector<PathSegment> const& segments,
+                                      float maxLookAhead);
+
     // The trash pack the advanced-pull maneuver should grab, or nullptr. Mirrors
     // the blocking-trash trigger's primary detection (corridor scan along the
     // cached long-path, falling back to the geometric cone) plus the closed-door
