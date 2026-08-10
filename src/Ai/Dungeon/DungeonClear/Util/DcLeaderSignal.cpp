@@ -8,6 +8,7 @@
 #include "DungeonClearUtil.h"   // DC_PULL_* log macros
 #include "DungeonClearMath.h"
 #include "DungeonClearTuning.h"
+#include "DcZoneLine.h"
 #include "Ai/Dungeon/DungeonClear/Settings/DcSettings.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonEventExecutor.h"
 #include <algorithm>
@@ -72,6 +73,19 @@ namespace
     inline bool IsNavReachable(Player* bot, Position const& p)
     {
         return DcEngageGeometry::IsNavReachable(bot, p);
+    }
+
+    // A trail hold point must clear the instance zone line, for the same reason a
+    // pull camp must (DcZoneLine): the tank walked IN through the entrance, so
+    // the oldest breadcrumbs of a run sit on the exit trigger, and a follower
+    // told to hold `lag` yards back at the start of a dungeon is told to stand on
+    // the way out. A headless bot shrugs that off — it sends no areatrigger
+    // packet — but a self-bot's client reports it and the player is teleported
+    // out of the instance.
+    inline bool TrailOverZoneLine(Player* bot, Position const& p)
+    {
+        return DcZoneLine::WouldCrossTheLine(bot, p.GetPositionX(), p.GetPositionY(),
+                                             p.GetPositionZ());
     }
 
     // Leader-election memo. FindLeaderTank is on the hot path: nearly every DC
@@ -1089,13 +1103,13 @@ bool DcLeaderSignal::GetLeaderScoutTrailPoint(Player* bot, float lag, Position& 
             // the map. The interpolated point sits on a contiguous walked segment,
             // so it is reachable whenever the bracketing crumb is; fall back to the
             // crumb if the snap missed, else keep walking back.
-            if (IsNavReachable(bot, target))
+            if (IsNavReachable(bot, target) && !TrailOverZoneLine(bot, target))
             {
                 out = target;
                 found = true;
                 return false;
             }
-            if (IsNavReachable(bot, s.crumb))
+            if (IsNavReachable(bot, s.crumb) && !TrailOverZoneLine(bot, s.crumb))
             {
                 out = s.crumb;
                 found = true;
@@ -1111,7 +1125,7 @@ bool DcLeaderSignal::GetLeaderScoutTrailPoint(Player* bot, float lag, Position& 
     // closer until more trail accrues).
     for (auto it = preLag.rbegin(); it != preLag.rend(); ++it)
     {
-        if (IsNavReachable(bot, it->second))
+        if (IsNavReachable(bot, it->second) && !TrailOverZoneLine(bot, it->second))
         {
             out = it->second;
             return true;

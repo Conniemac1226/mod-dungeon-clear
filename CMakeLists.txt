@@ -374,3 +374,20 @@ AC_ADD_CONFIG_FILE("${CMAKE_CURRENT_LIST_DIR}/conf/mod_dungeon_clear.conf.dist")
 #    runs only, bot-only groups only (a human-controlled member's own client is
 #    already sending it — relaying would double-fire), and scripted
 #    NON-teleport triggers only (the instance exit is an areatrigger).)
+# Util/DcZoneLine.{h,cpp}
+#   (ZONE-LINE KEEP-OUT for camp placement. An advanced pull drags the pack back
+#    onto cleared ground, and at a dungeon's FIRST pull the only cleared ground
+#    behind the tank is the entrance it walked in through — so ComputeSafeCamp /
+#    ComputeTrailCamp / GetLeaderScoutTrailPoint would plant the camp on, or
+#    past, the instance exit areatrigger. Nothing downstream catches it: the
+#    navmesh has no idea areatriggers exist, so IsNavReachable says yes. The cost
+#    is asymmetric — a headless bot sends no CMSG_AREATRIGGER and shrugs it off,
+#    but a SELF-BOT is a real client, reports the trigger, and the player is
+#    teleported out of the instance mid-run. This indexes every map-changing
+#    areatrigger by the map it stands on (ObjectMgr, snapshot by value, built
+#    once) and offers a point test padded by CampMargin plus a segment test
+#    padded by the much thinner WalkMargin — a camp can sit cleanly BEYOND a zone
+#    line with both endpoints clear while the leg to it goes straight through.
+#    Margins pad in XY only, never Z: a fall-catcher slab's ceiling sits a couple
+#    of yards UNDER the floor beside it, and padding its height would make a
+#    third of Shadowfang un-campable.)
