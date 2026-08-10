@@ -1777,6 +1777,48 @@ TEST(DungeonClearAssistRangeTest, MeleeKeepsItsOwnReachInclusiveThreshold)
     EXPECT_FALSE(DungeonClearMath::IsWithinAssistAttackRange(true, 20.0f, /*meleeRange*/ 4.2f, 28.5f, 3.2f));
 }
 
+TEST(DungeonClearAssistRangeTest, TriggerStandDownUsesTheSameWindowAsTheAction)
+{
+    // Issue #18. S1116 fixed the ACTION but left ShouldAssistCampFight (the trigger
+    // that gates it) on a bare `dist <= GetRange("spell")`, so the dead band moved
+    // into the trigger: the action engaged from <= spell + reachSum while the
+    // stand-down needed <= spell. A ranged follower in between made the trigger fire
+    // forever on a mob the action had already decided was in range.
+    //
+    // Live trace: SpellDistance 28.5, casters pinned at 29.0-31.0yd with the two
+    // biggest clusters at 30.6 and 30.8. reachSum is read off the trace rather than
+    // guessed — the action engaged out to 31.0yd, so spell + reachSum >= 31.0.
+    float const spell = 28.5f;
+    float const reachSum = 2.5f;
+
+    for (float dist : {29.0f, 30.1f, 30.6f, 30.8f})
+    {
+        EXPECT_TRUE(DungeonClearMath::IsWithinAssistAttackRange(
+            /*isMelee*/ false, dist, /*meleeRange*/ 4.0f, spell, reachSum))
+            << "trigger must stand down at " << dist
+            << "yd — the action already engages there and stock will not close";
+        EXPECT_GT(dist, spell) << "the old bare-spell test would have kept firing here";
+    }
+}
+
+TEST(DungeonClearAssistRangeTest, MeleeTriggerArmStaysWiderThanTheActionArm)
+{
+    // The trigger keeps `reach + 5.0` for melee on purpose. It must remain LOOSER
+    // than the action's `reachSum + 1.0` so the two overlap; if this ever inverts,
+    // melee gains the gap that ranged just lost.
+    float const botReach = 1.5f;
+    float const targetReach = 2.1f;
+    float const triggerMeleeRange = botReach + 5.0f;
+    float const actionMeleeRange = botReach + targetReach + 1.0f;
+    EXPECT_GT(triggerMeleeRange, actionMeleeRange);
+
+    // A melee bot between the two thresholds stands down and lets stock reach-melee
+    // (stop point reachSum + 0.75) walk it the rest of the way.
+    float const between = 0.5f * (actionMeleeRange + triggerMeleeRange);
+    EXPECT_TRUE(DungeonClearMath::IsWithinAssistAttackRange(
+        /*isMelee*/ true, between, triggerMeleeRange, 28.5f, botReach + targetReach));
+}
+
 // --- DecideChase (the chase leash) ---------------------------------------
 // A pull/engage target is latched by GUID and re-aimed at its live position every
 // tick, so a mob that WALKS turns the approach into a pursuit across the room —

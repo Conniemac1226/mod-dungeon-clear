@@ -1428,17 +1428,40 @@ namespace
         // stall. Mirror the healer: assist (reposition to the tank's fight) whenever
         // nothing is engageable from here; stand down only when there is a real
         // target the rotation can already hit.
+        // The reach test MUST be the one the ACTION enforces, or this stand-down and
+        // the action it gates disagree about the same mob and the trigger re-fires
+        // forever on work the action believes is already done. S1116 closed exactly
+        // this mismatch between the action and stock ReachSpell
+        // (DungeonClearMath::IsWithinAssistAttackRange) but left this predicate on a
+        // bare `dist <= GetRange("spell")`, so the dead band simply moved here:
+        // stock's keep-closing window ends at spellRange + combatReachSum (~32yd,
+        // IsWithinCombatRange adds both reaches) and the action engages there, while
+        // this asked for 28.5yd flat. A ranged follower resting in that ~3.5yd gap is
+        // "in range, engage and yield" to the action, "in range, stop moving" to
+        // stock, and "nothing engageable here" to this trigger — nobody drives it.
+        // Reported live (issue #18): both casters pinned at 29-31yd for the whole
+        // log, 136 samples at 30.6yd and 124 at 30.8yd, zero damage dealt.
+        //
+        // The MELEE arm deliberately keeps its own wider value. reach + 5.0 is looser
+        // than the action's reachSum + 1.0, so melee OVERLAPS instead of gapping and
+        // stock reach-melee (stop point reachSum + 0.75) still closes anything in
+        // between. Narrowing it to match the action would hand melee approaches to
+        // assist that stock already handles — melee has never had this bug.
         GuidVector const& attackers =
             botAI->GetAiObjectContext()->GetValue<GuidVector>(DcKey::Stock::Attackers)->Get();
         if (attackers.empty())
             return true;
-        float const range = botAI->IsMelee(bot)
-            ? (bot->GetCombatReach() + 5.0f)
-            : botAI->GetRange("spell");
+        bool const isMelee = botAI->IsMelee(bot);
+        float const meleeRange = bot->GetCombatReach() + 5.0f;
+        float const spellRange = botAI->GetRange("spell");
         for (ObjectGuid const& guid : attackers)
         {
             Unit* u = ObjectAccessor::GetUnit(*bot, guid);
-            if (u && u->IsAlive() && bot->GetExactDist(u) <= range &&
+            if (!u || !u->IsAlive())
+                continue;
+            if (DungeonClearMath::IsWithinAssistAttackRange(
+                    isMelee, bot->GetExactDist(u), meleeRange, spellRange,
+                    /*combatReachSum*/ bot->GetCombatReach() + u->GetCombatReach()) &&
                 bot->IsWithinLOSInMap(u))
                 return false;  // an engageable target is in reach — let combat fight it
         }
