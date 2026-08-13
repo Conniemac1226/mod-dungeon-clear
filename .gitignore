@@ -36,3 +36,20 @@ testdeck/*.egg-info/
 
 # TypeScript incremental build cache — a local artifact, not a build output.
 testdeck/web/tsconfig.tsbuildinfo
+
+# AC Command Deck: local config (lives only on feat/ac-command-deck's tree).
+dashboard/*.toml
+
+# streamcast: local config + runtime state (same shape as testdeck above).
+streamcast/streamcast.toml
+streamcast/data/
+streamcast/.venv/
+streamcast/**/__pycache__/
+streamcast/.pytest_cache/
+streamcast/*.egg-info/
+
+# These site-local *.toml files exist nowhere but this checkout. Their ignore
+# rules must live on master, not just on the feature branch that introduced
+# them: off that branch they become plain untracked files, and the next
+# `git clean -fd` / `git stash -u` / `git worktree remove` eats them.
+# .git/info/exclude carries the same three paths as a branch-proof backstop.
