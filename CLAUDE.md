@@ -12,10 +12,25 @@ untangling. Follow them exactly.
    Only branch off another feature branch when the dependency is deliberate and
    stated.
 
-2. **One feature = one isolated worktree.** When more than one feature is in
-   flight, give each its own working tree so their uncommitted files can never
-   mix. Use `tools/dc-feature.sh <name> [feat|fix|refactor|...]` — it creates
-   `.claude/worktrees/<name>` on a fresh master-based branch.
+2. **Never use git worktrees.** Work only in the main checkout, switching
+   branches with `git switch`. Worktrees were tried and retired: they
+   accumulated unmanaged, half-forgotten trees whose branches drifted hundreds
+   of commits behind master, and work went stale in directories nobody
+   revisited. `tools/dc-feature.sh` is retired — do not run it. Rule 3 is what
+   keeps concurrent features from mixing: commit before you switch, so there
+   are never loose files to collide.
+
+   **Two worktrees are permanent and must never be removed** — they are live
+   running copies, not feature work:
+   - `.claude/worktrees/ac-command-deck` (`feat/ac-command-deck`) — AC Command
+     Deck, served on :8788 from its `dashboard/` subdir.
+   - `.claude/worktrees/testdeck` (`feat/testdeck-clean`) — Test Deck, served
+     on :8790 from its `testdeck/` subdir.
+
+   Before removing any worktree, run `git status --ignored`: `git worktree
+   remove` deletes gitignored files without warning and without needing
+   `--force`. That is how the site-local `ac-dashboard.toml` and
+   `testdeck.toml` were lost — they are gitignored and exist nowhere else.
 
 3. **A session boundary is a commit boundary — never stop on a dirty tree.**
    Before ending a session, commit, even if the feature is half-done:
