@@ -555,11 +555,16 @@ TEST(DungeonEventRegistryTest, BlackrockRingOfLawEventShape)
     EXPECT_EQ(e->steps[1].hookId, 1u);
 
     // 3. garrison the centre until TYPE_RING_OF_LAW (1) reaches DONE (3); long
-    //    timeout for the boss fight.
+    //    timeout for the boss fight. The garrison re-runs the SAME start hook
+    //    while it holds, because the state is not monotonic (npc_grimstone's
+    //    no-victim watchdog resets it to NOT_STARTED).
     EXPECT_EQ(e->steps[2].kind, EventStepKind::MoveTo);
     EXPECT_EQ(e->steps[2].instanceDataId, 1);    // TYPE_RING_OF_LAW
     EXPECT_EQ(e->steps[2].instanceDataMin, 3u);  // EncounterState::DONE
     EXPECT_EQ(e->steps[2].timeoutMs, 600000u);
+    EXPECT_EQ(e->steps[2].hookId, 1u);           // .WhileHolding(EnsureRingStarted)
+    EXPECT_FLOAT_EQ(e->steps[2].radius, e->steps[0].radius)
+        << "walk-in and hold must agree on where the centre is";
 }
 
 // Deadmines Defias Cannon: walk to the cannon, fire it (Custom hook 2 casts the
@@ -723,8 +728,10 @@ TEST(DungeonEventRegistryTest, UnderbogDropDownEventShape)
     EXPECT_FLOAT_EQ(hop2.landY, -471.68f);
     EXPECT_FLOAT_EQ(hop2.landZ, 24.32f);
 
-    // Anchored, so it is not in the map's conditional set.
-    EXPECT_TRUE(DungeonEventRegistry::Conditional(546).empty());
+    // Anchored, so it is not itself in the map's conditional set — which is not
+    // empty: 546 also carries the conditional "Send Ghaz'an up to his platform".
+    for (DungeonEvent const* c : DungeonEventRegistry::Conditional(546))
+        EXPECT_NE(c->id, 1u) << "the drop-down chain must stay Anchored";
 }
 
 // Stratholme (329) dead-side "Baron run": the persistent Slaughterhouse chain

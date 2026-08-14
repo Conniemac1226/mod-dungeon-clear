@@ -5,17 +5,21 @@
 
 #include "DcRezRecovery.h"
 
+#include "Ai/Dungeon/DungeonClear/DcPullContext.h"
+#include "Ai/Dungeon/DungeonClear/DcValueKeys.h"
 #include "Ai/Dungeon/DungeonClear/Settings/DcSettings.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcCombatFlag.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcLeaderSignal.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcRun.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcStatusPublisher.h"
+#include "Ai/Dungeon/DungeonClear/Util/DungeonClearTuning.h"
 
 #include <string>
 #include <vector>
 
 #include "Group.h"
 #include "Log.h"
+#include "Map.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
@@ -39,39 +43,11 @@ namespace
         }
     }
 
-    // The member whose DcRunState owns this run — DEAD OR ALIVE. FindLeaderTank
-    // only elects among alive tank bots, so it goes null (or resolves a tank
-    // whose own run state is default) precisely in the case recovery matters
-    // most: the leader is the corpse. Fall back to scanning the same-map group
-    // for the bot whose own run state is enabled. See the header comment.
-    Player* ResolveRunOwner(Player* bot)
-    {
-        auto owns = [](Player* p) -> bool
-        {
-            if (!p)
-                return false;
-            PlayerbotAI* ai = GET_PLAYERBOT_AI(p);
-            return ai && DcRun::Of(ai).enabled;
-        };
-
-        if (Player* leader = DcLeaderSignal::FindLeaderTank(bot))
-            if (owns(leader))
-                return leader;
-
-        Group* group = bot ? bot->GetGroup() : nullptr;
-        if (!group)
-            return owns(bot) ? bot : nullptr;
-
-        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
-        {
-            Player* member = ref->GetSource();
-            if (!member || member->GetMapId() != bot->GetMapId())
-                continue;
-            if (owns(member))
-                return member;
-        }
-        return nullptr;
-    }
+    // The member whose DcRunState owns this run — DEAD OR ALIVE. This used to be a
+    // copy of the walk; it now shares one body with the terminal rungs, which need
+    // exactly the same dead-tolerance for exactly the same reason. See
+    // DcLeaderSignal::FindRunOwner and the header comment.
+    Player* ResolveRunOwner(Player* bot) { return DcLeaderSignal::FindRunOwner(bot); }
 
     // Same-map group snapshot, KEEPING dead members (unlike the Smart Rest
     // snapshot — the corpses are the whole point here). `players` receives the
@@ -124,6 +100,25 @@ namespace
         for (Player* p : players)
             if (DcCombatFlag::IsEngaged(p))
                 return true;
+        return false;
+    }
+
+    // Same read, from a bare group walk instead of a built snapshot — for
+    // IsElectedRezzer, which answers a stand-down question and has no reason to
+    // pay for the snapshot EvaluateImpl builds.
+    bool AnySameMapMemberEngaged(Player* bot)
+    {
+        Group* group = bot->GetGroup();
+        if (!group)
+            return DcCombatFlag::IsEngaged(bot);
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (!member || member->GetMapId() != bot->GetMapId())
+                continue;
+            if (DcCombatFlag::IsEngaged(member))
+                return true;
+        }
         return false;
     }
 
@@ -184,6 +179,41 @@ namespace
             return plan;
         }
 
+        // THE PULLER DIED — retire the pull it was running.
+        //
+        // Nothing else can. The whole pull FSM is leader-driven and the leader is
+        // the corpse: DungeonClearPullTrigger and the maneuver both stand down on a
+        // dead bot, and MaintainScoutCamp (which owns the orphan release) is only
+        // reached through the leader election, which excludes the dead. So the
+        // phase, the camp and any latched scripted stage simply persist — in the
+        // MgT heroic audit the teardown snapshots show phase 3/4 held for 606-708k
+        // ms, and tr-20260805-191834-3 ended at phase=4 with camp=True and all five
+        // members corpses.
+        //
+        // That residue is not inert. A latched stage pins the pull target, forces
+        // the pull mode on and stands the advance rung down; the camp keeps the
+        // followers' hold-at-camp reading a camp nobody is dragging to. Both come
+        // back with the tank when it is rezzed, pointed at a fight that is over.
+        //
+        // Clearing it here rather than in the pull code because this is the one rung
+        // that runs on EVERY bot, dead leader included, and already resolves the
+        // owner. Idempotent and self-limiting: the guard goes false after the first
+        // pass and cannot re-fire until a live pull is re-formed.
+        if (mutate && owner->isDead())
+        {
+            DcPullContext& pull =
+                ownerAI->GetAiObjectContext()->GetValue<DcPullContext&>(DcKey::PullContext)->Get();
+            if (pull.phase != DcPullPhase::Idle || pull.HasCamp() || pull.scriptedStage >= 0)
+            {
+                LOG_INFO("playerbots.dungeonclear",
+                         "[DC:{}] the puller died mid-pull (phase {}, stage {}, camp {}) "
+                         "-> pull FSM reset; the party stops holding a camp nobody is "
+                         "dragging to", owner->GetName(), static_cast<uint32>(pull.phase),
+                         pull.scriptedStage, pull.HasCamp() ? "set" : "none");
+                pull.Reset();
+            }
+        }
+
         // The recovery clock: runs only while nobody is FIGHTING (a fight clears
         // it, so a mid-recovery add pull resets the budget instead of burning it).
         bool const partyEngaged = AnyMemberEngaged(players);
@@ -195,14 +225,57 @@ namespace
                 run.rezPendingSinceMs = now ? now : 1;
         }
 
+        // The NoRezzer floor's other input: is any LIVING survivor still carrying
+        // the core combat flag? Deliberately the raw flag rather than engagement —
+        // the shape it exists to catch is a boss that has stopped fighting and not
+        // yet released the party (Kael'thas' 11s defeat sequence), where every
+        // survivor is flagged and nothing is swinging.
+        bool anySurvivorCombatFlagged = false;
+        for (Player* p : players)
+            if (p && p->IsAlive() && p->IsInCombat())
+            {
+                anySurvivorCombatFlagged = true;
+                break;
+            }
+
         DcRezDecision::Inputs in;
         in.enabled = true;
         in.nowMs = now;
         in.pendingSinceMs = run.rezPendingSinceMs;
         in.timeoutMs = DcSettings::GetUInt(bot, "PostCombatRezTimeoutSecs") * 1000;
         in.partyEngaged = partyEngaged;
+        in.anySurvivorCombatFlagged = anySurvivorCombatFlagged;
+        in.noRezzerSinceMs = run.noRezzerSinceMs;
+        in.noRezzerQuietSinceMs = run.noRezzerQuietSinceMs;
+        in.noRezzerQuietGraceMs = DC_NO_REZZER_QUIET_GRACE_MS;
+        in.noRezzerHoldMaxMs = DC_NO_REZZER_HOLD_MAX_MS;
 
         plan.verdict = DcRezDecision::Decide(in, members);
+
+        // Advance the floor's clocks from the verdict we just got. They can only be
+        // stamped after the fact — whether a rezzer is left is precisely what the
+        // kernel decides — so both run a tick behind, which is immaterial against
+        // graces measured in seconds. A verdict that is not the no-rezzer branch
+        // clears them, so a rezzer coming back up (or a fresh episode) starts clean.
+        if (mutate)
+        {
+            bool const noRezzer = plan.verdict.reason == DcRezDecision::Reason::NoRezzer ||
+                                  plan.verdict.reason == DcRezDecision::Reason::NoRezzerInFight;
+            if (!noRezzer)
+            {
+                run.noRezzerSinceMs = 0;
+                run.noRezzerQuietSinceMs = 0;
+            }
+            else
+            {
+                if (run.noRezzerSinceMs == 0)
+                    run.noRezzerSinceMs = now ? now : 1;
+                if (partyEngaged || anySurvivorCombatFlagged)
+                    run.noRezzerQuietSinceMs = 0;
+                else if (run.noRezzerQuietSinceMs == 0)
+                    run.noRezzerQuietSinceMs = now ? now : 1;
+            }
+        }
 
         if (plan.verdict.rezzerIdx >= 0 &&
             plan.verdict.rezzerIdx < static_cast<int>(players.size()))
@@ -227,6 +300,11 @@ namespace
             if (plan.verdict.reason == DcRezDecision::Reason::WaitingOnHuman)
                 line = plan.targetName + " died \xe2\x80\x94 waiting for you to resurrect them (" +
                        std::to_string(in.timeoutMs / 1000) + "s).";
+            else if (plan.verdict.reason == DcRezDecision::Reason::NoRezzerInFight)
+                // No rezzer elected — there is none left. The hold is only until the
+                // fight ends, at which point the verdict becomes the classic disable.
+                line = plan.targetName + " died and no one left can resurrect \xe2\x80\x94 "
+                       "finishing this fight first.";
             else
                 line = plan.targetName + " died \xe2\x80\x94 " + plan.rezzerName +
                        " is coming to resurrect them.";
@@ -296,6 +374,54 @@ namespace DcRezRecovery
                 return true;
         }
         return false;
+    }
+
+    bool IsElectedRezzer(Player* bot)
+    {
+        // Cheapest read first — this runs on every follower rung, every tick,
+        // and only a living rez class is ever elected. Non-rez classes (and
+        // every bot mid-fight) never reach the group walk in EvaluateImpl.
+        if (!bot || bot->isDead() || bot->IsInCombat() || !IsRezClass(bot))
+            return false;
+        Map* map = bot->GetMap();
+        if (!map || !map->IsDungeon())
+            return false;
+
+        // DELIBERATELY NARROWER THAN THE TRIGGER: the trigger only asks whether THIS
+        // bot is flagged, but this predicate hands the bot's movement to the rez rung
+        // by taking it away from every other mover. Doing that while the party is
+        // still swinging would let an unflagged healer walk out of a live fight to
+        // start a corpse run. Recovery loses nothing by waiting — the glue clears the
+        // pending clock for exactly as long as anyone is engaged, so the budget this
+        // defers is not being spent.
+        if (AnySameMapMemberEngaged(bot))
+            return false;
+
+        // mutate=false: see the header. The trigger owns the clock; this is the
+        // same verdict read without the side effects.
+        Plan const plan = EvaluateImpl(bot, /*mutate*/ false);
+        if (plan.verdict.outcome != DcRezDecision::Outcome::Hold ||
+            plan.verdict.reason != DcRezDecision::Reason::Recovering ||
+            plan.rezzer != bot->GetGUID())
+            return false;
+
+        // ...AND NOTHING ALIVE IS STILL ON THE PARTY. The engagement test above is
+        // `victim || attackers`, a snapshot of who is mid-swing this instant: it
+        // goes false in the gap between a pack's swings, and this predicate then
+        // hands the rezzer's movement to the corpse walk — out of the camp, across
+        // the room, alone, into mobs that are still very much alive.
+        //
+        // Six of the 45 rez approaches in tp-20260808-162331-1 killed the rezzer
+        // within 40s and four of those ended the run. tr-20260808-162337-8 is the
+        // clean read: the tank died at 10:41 mid-pack, the healer was released the
+        // same second, and was dead at 10:45 to a Sunblade Blood Knight — with the
+        // healer the only rez class in the group, that was the run.
+        //
+        // Placed LAST on purpose. The scan costs a pathfind per combat reference,
+        // and everything above already narrows this to the elected rezzer of a
+        // pending recovery, which is rare. Radius-bounded so a hostile area aura
+        // (45yd, nothing actually on us) cannot stall recovery forever.
+        return !DcCombatFlag::AnyPartyHeldByLiveEnemy(bot, DC_FIGHT_HOLDER_RADIUS);
     }
 
     std::string DescribeWait(Player* bot)

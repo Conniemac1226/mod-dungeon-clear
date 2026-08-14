@@ -44,6 +44,41 @@ public:
     // AND non-leader (off-)tanks alike — follows it via the follow-tank trigger.
     static bool IsDungeonClearLeader(Player* bot);
 
+    // The member whose DcRunState OWNS this run — DEAD OR ALIVE. FindLeaderTank
+    // elects only among ALIVE tank bots, so in a 5-man with one tank it returns
+    // nullptr the moment that tank dies, and every gate built on it goes inert
+    // precisely when the run most needs deciding. This one falls back to scanning
+    // the same-map group for the bot whose own run state is `enabled` — which is
+    // only ever the tank that started the run, alive or a corpse.
+    //
+    // Use this (not FindLeaderTank) wherever the question is "what is this RUN's
+    // state", and FindLeaderTank wherever it is "who is DRIVING right now".
+    static Player* FindRunOwner(Player* bot);
+
+    // Elects the single member that runs the TERMINAL rungs — the party-died
+    // bailout and the all-cleared completion. These two are not driving decisions;
+    // they are the run's own verdict on itself, and a run whose tank is a corpse
+    // still has to reach one.
+    //
+    // The driving ladder is leader-gated (see IsDungeonClearLeader), which is right
+    // for everything that moves the tank and fatal for these two: with the leader
+    // dead there is no leader, so `DungeonClearPartyDiedTrigger` never consumes the
+    // Disable verdict and `DungeonClearAllClearedTrigger` never fires. The run then
+    // idles until the 600s no-progress watchdog kills it — 17 of 17 no_progress runs
+    // in the MgT heroic 100-run audit (tp-20260805-005412-1) were exactly this, one
+    // of which (run -76) had already killed all four bosses.
+    //
+    // Election, in order: the living elected leader (so nothing changes in the
+    // healthy case), else the lowest-GUID living bot on the owner's map, else — a
+    // full wipe, where nobody is alive to elect — the lowest-GUID bot on it. Every
+    // member computes the same answer, so exactly one drives. Returns nullptr when
+    // the run is off, paused, or has no owner.
+    static Player* FindTerminalDriver(Player* bot);
+
+    // True when `bot` is that member. The terminal triggers' replacement for the
+    // driving ladder's IsEnabled gate.
+    static bool IsTerminalDriver(Player* bot);
+
     // True when `bot` belongs to a dungeon-clear run that is currently PAUSED —
     // either it is the elected leader and its own run is paused, or it is a
     // follower whose elected leader's run is paused. Reads the leader's

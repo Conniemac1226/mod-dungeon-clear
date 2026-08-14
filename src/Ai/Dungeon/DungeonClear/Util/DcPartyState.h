@@ -137,6 +137,40 @@ public:
     // they can never drift again (they were two copies, and had).
     static bool IsBetweenPullsReady(Player* bot, AiObjectContext* context, bool requireNoLoot);
 
+    // SCRIPTED-STAGE MUSTER. True to HOLD the plan: a ScriptedPullRegistry stage is
+    // due, no stage is in flight yet, the party is short of the muster floors
+    // (DC_SCRIPTED_PULL_MUSTER_HP/_MP), and the bounded wait has not run out.
+    //
+    // Separate from IsBetweenPullsReady rather than folded into it because it must
+    // bind in BOTH of that gate's branches — the Smart Rest branch deliberately
+    // passes 0/0 floors and hands recovery to its latch — and because it carries a
+    // clock, which a readiness predicate should not. Mutates the latch on the
+    // leader's DcPullContext::scriptedMusterSince; call once per tick from the
+    // pull trigger. False (and the latch cleared) whenever no stage is due, so
+    // every dungeon without a plan pays one memoised registry lookup.
+    //
+    // See DungeonClearMath::ShouldMusterForScriptedStage for the wait contract and
+    // ScriptedPullRegistry.h's muster block for why the floors are what they are.
+    static bool IsScriptedStageMustering(Player* bot, AiObjectContext* context);
+
+    // READ-ONLY view of the muster latch for the leader's OTHER driving rungs
+    // (advance, blocking-trash). True while a muster is actively holding: latch
+    // armed and inside the budget. The muster only stood the PULL trigger down —
+    // the ordinary floors are lower than the muster floors, so advance stayed
+    // green in the gap and walked the tank into the very room the stage was about
+    // to pull (tp-20260806-212646-1: 32 unplanned rotunda pulls, 19 run-fatal).
+    // Never mutates and never logs: IsScriptedStageMustering owns the latch and
+    // its two log edges, and the pull trigger stays its single caller.
+    static bool IsScriptedMusterHolding(Player* bot, AiObjectContext* context);
+
+    // Any dead group member on the bot's map. IsPartyReady deliberately skips
+    // the dead (rez recovery holds the run); the scripted-stage muster must NOT
+    // — when recovery is not pending (no viable rezzer, or the death is one tick
+    // old), "topped up" over a corpse armed stages short-handed within 10s of a
+    // death. Bounded by the muster budget, so an unrecoverable death cannot
+    // deadlock the run through this.
+    static bool HasDeadSameMapMember(Player* bot);
+
     // Returns true if any LIVING bot party member on the bot's map (excluding
     // `bot` itself) currently has a corpse it intends to loot — in any phase,
     // walking in (has available loot) or within reach (can loot). Reads each

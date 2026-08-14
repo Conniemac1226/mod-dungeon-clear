@@ -17,7 +17,10 @@ AC_ADD_SCRIPT("${CMAKE_CURRENT_LIST_DIR}/src")
 
 AC_ADD_CONFIG_FILE("${CMAKE_CURRENT_LIST_DIR}/conf/mod_dungeon_clear.conf.dist")
 
-# New files added: DungeonClearDispatch.h, DungeonClearAddonHook.cpp,
+# New files added: Util/DcFirstContact.{h,cpp} (records the enemy that STARTED
+#   each fight, off the OnPlayerEnterCombat `enemy` parameter DC had been
+#   discarding — the pull record only covers fights DC pulled),
+#   DungeonClearDispatch.h, DungeonClearAddonHook.cpp,
 # Action/BetterLootRollAction.{h,cpp} (self-bot no-auto-roll override),
 # Data/DungeonWingRegistry.{h,cpp}, Action/StayDeadAction.{h,cpp},
 # Util/CorridorCenter.{h,cpp}, Value/DungeonClearLiveBossValue.{h,cpp},
@@ -339,3 +342,55 @@ AC_ADD_CONFIG_FILE("${CMAKE_CURRENT_LIST_DIR}/conf/mod_dungeon_clear.conf.dist")
 # Util/DcPullBrake.{h,cpp}
 #   (same-tick pull movement brake: stop a scripted walk-in as soon as combat is
 #   raised instead of waiting for the next AI update.)
+# Util/DcPlayerbotCompat.h
+#   (header-only: IsSelfBot / IsRealPlayer / IsHumanControlled written against
+#    only the mod-playerbots API that is identical on master and test-staging,
+#    so this module builds on both across PR #2592. No .cpp, so no re-glob is
+#    needed for it — listed here to keep the file inventory complete.)
+# Data/DcSocialQuarantineRegistry.{h,cpp} + Util/DcSocialQuarantine.{h,cpp}
+#   (SOCIAL QUARANTINE — the fourth positional override, and the only one that
+#    changes the MOBS rather than the party. While a named boss is the run's
+#    objective, every pack the plan is not currently pulling is held at
+#    REACT_DEFENSIVE, which is the first thing Creature::CanAssistTo tests and
+#    the gate CreatureAI/SmartAI::MoveInLineOfSight passes before AttackStart —
+#    so a quarantined pack can be neither RECRUITED by a call for help nor woken
+#    by walking past it, while CreatureGroup::MemberEngagingTarget (which does
+#    not test react state) keeps it fighting as a formation the instant anything
+#    actually attacks it. Volumes come from the scripted-pull plan's own pack
+#    cylinders, minus the due stage, plus hand-authored zones for packs with no
+#    pull row. Built for the Magisters' Terrace rotunda, whose east/north-east
+#    and centre/north-east pairs are inside CreatureFamilyAssistanceRadius AT
+#    SPAWN — a T=0 bond no stand spot, opener or ordering can break.)
+# TestRun/DcTestAreaTriggers.{h,cpp}
+#   (AREATRIGGER RELAY for headless runs. An areatrigger is a client-side
+#    volume: the only thing that ever runs an at_* script is
+#    WorldSession::HandleAreaTriggerOpcode fed by a client's CMSG_AREATRIGGER,
+#    and stock playerbots only relays a HUMAN MASTER's packet
+#    (masterIncomingPacketHandlers) — its position-based WithinAreaTrigger
+#    returns false for anything without an areatrigger_teleport row. So a
+#    5-bot test party fires NO scripted areatriggers at all. The Underbog's
+#    Ghaz'an is the proof: at_underbog_ghazan (4302) is the only caller of his
+#    ACTION_MOVE_TO_PLATFORM, so without it he swims his underwater DB patrol
+#    (path 1383920, z 32-47) all run instead of climbing to his platform (path
+#    1383921, z 81.4). The job sends the packet for whichever member is
+#    standing in the volume, edge-triggered like a client. Scoped hard: test
+#    runs only, bot-only groups only (a human-controlled member's own client is
+#    already sending it — relaying would double-fire), and scripted
+#    NON-teleport triggers only (the instance exit is an areatrigger).)
+# Util/DcZoneLine.{h,cpp}
+#   (ZONE-LINE KEEP-OUT for camp placement. An advanced pull drags the pack back
+#    onto cleared ground, and at a dungeon's FIRST pull the only cleared ground
+#    behind the tank is the entrance it walked in through — so ComputeSafeCamp /
+#    ComputeTrailCamp / GetLeaderScoutTrailPoint would plant the camp on, or
+#    past, the instance exit areatrigger. Nothing downstream catches it: the
+#    navmesh has no idea areatriggers exist, so IsNavReachable says yes. The cost
+#    is asymmetric — a headless bot sends no CMSG_AREATRIGGER and shrugs it off,
+#    but a SELF-BOT is a real client, reports the trigger, and the player is
+#    teleported out of the instance mid-run. This indexes every map-changing
+#    areatrigger by the map it stands on (ObjectMgr, snapshot by value, built
+#    once) and offers a point test padded by CampMargin plus a segment test
+#    padded by the much thinner WalkMargin — a camp can sit cleanly BEYOND a zone
+#    line with both endpoints clear while the leg to it goes straight through.
+#    Margins pad in XY only, never Z: a fall-catcher slab's ceiling sits a couple
+#    of yards UNDER the floor beside it, and padding its height would make a
+#    third of Shadowfang un-campable.)

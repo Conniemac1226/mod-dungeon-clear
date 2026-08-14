@@ -48,6 +48,7 @@
 #include "Ai/Dungeon/DungeonClear/Util/DcDoorPolicy.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcMovement.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcPathWorker.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcSocialQuarantine.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTargeting.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTickMemo.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearTuning.h"
@@ -633,6 +634,24 @@ DungeonClearAdvanceAction::Step DungeonClearAdvanceAction::TryBetweenPullsRest(A
     // (TryLootYield above reaches its own state the same way).
     DcApproachState& appr =
         context->GetValue<DcApproachState&>(DcKey::ApproachState)->Get();
+
+    // Scripted-stage muster: the pull trigger is standing down while the party
+    // drinks to the MUSTER floors — but the ordinary floors here are lower, so
+    // this gate stayed green in the gap and advance walked the tank into the
+    // very room the stage was about to pull (the muster-window scout face-pull:
+    // tp-20260806-212646-1, 32 unplanned rotunda pulls, 19 run-fatal). The
+    // symmetry rule below already says it: not ready to fight what is in front
+    // of us means not ready to walk into it — the muster is that, one band
+    // higher. Read-only latch view; the pull trigger stays the latch's owner.
+    if (DcPartyState::IsScriptedMusterHolding(bot, context))
+    {
+        if (++appr.partyNotReadyTicks == 1)
+            LOG_DEBUG("playerbots.dungeonclear",
+                      "[DC:{}] advance yielding: scripted-stage muster holds the tank",
+                      bot->GetName());
+        DcMovement::StopBot(bot, DcMovement::Stop::Hold);
+        return Step::ReturnFalse;
+    }
 
     if (IsBetweenPullsReady(bot, context))
     {
@@ -1563,6 +1582,16 @@ DungeonClearAdvanceAction::Step DungeonClearAdvanceAction::DoMoveToFallback(Adva
 
 bool DungeonClearAdvanceAction::Execute(Event /*event*/)
 {
+    // SOCIAL QUARANTINE upkeep, before every guard below — including the ones that
+    // bail. This rung and the pull FSM between them tick in every state the leader
+    // can be in outside a boss fight, and the quarantine has to track the approach
+    // rather than the maneuver: it must already be in force when the party walks
+    // into a room, and it must be RELEASED the moment the boss it was gated on
+    // dies, whether or not the tick that notices goes on to move anybody.
+    // Idempotent and cheap (one enum compare per DB-spawned creature); a no-op on
+    // any map with no zones and no scripted-pull plan. See DcSocialQuarantine.h.
+    DcSocialQuarantine::Update(bot, context);
+
     // Hard pause guard. The engine builds its action queue from the triggers
     // that fired at the START of the tick; on the tick the door-blocked action
     // auto-pauses, `advance` was already queued (paused was still false then) and

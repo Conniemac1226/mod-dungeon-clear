@@ -51,6 +51,7 @@
 #include "Ai/Dungeon/DungeonClear/Util/NavmeshSnap.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcPathWorker.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTankForm.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcSocialQuarantine.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTargeting.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTickMemo.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearTuning.h"
@@ -468,16 +469,14 @@ namespace
         pull.Transition(p, getMSTime());
     }
 
-    // Why the leader tank can't carry out the pull drag-back right now, or nullptr
-    // if it is fine. Hard loss-of-control (stun / fear / confuse) and root stop the
-    // retreat outright; a heavy movement slow (run speed at/below `slowFloor` of
-    // base) drags so slowly the pack wins the race home. Daze is already immunized
-    // for the pull (DcLeaderSignal::SetLeaderDazeImmunity), so a slow seen here is a
-    // genuine debuff — Hamstring, web, a Frostbolt chill. Read purely off Unit state
-    // so no aura-id table is needed; the timing/grace decision lives in the
-    // unit-tested DungeonClearMath::ShouldAbortPullForCc. The returned string is a
-    // stable literal safe to log.
-    char const* DcDragImpairReason(Player* tank, float slowFloor)
+    // HARD loss of control: the four states under which the drag-back is not happening
+    // at all, as opposed to happening slowly. Read purely off Unit state so no aura-id
+    // table is needed; the returned string is a stable literal safe to log.
+    //
+    // Split out of DcDragImpairReason below because the two halves of that predicate
+    // want different answers on a SCRIPTED stage — see the CC block in the maneuver for
+    // why a slow keeps dragging there and a stun may not.
+    char const* DcDragHardCcReason(Player* tank)
     {
         if (!tank)
             return nullptr;
@@ -489,6 +488,22 @@ namespace
             return "confused";
         if (tank->IsRooted() || tank->HasUnitState(UNIT_STATE_ROOT))
             return "rooted";
+        return nullptr;
+    }
+
+    // Why the leader tank can't carry out the pull drag-back right now, or nullptr
+    // if it is fine. The hard states above stop the retreat outright; a heavy movement
+    // slow (run speed at/below `slowFloor` of base) drags so slowly the pack wins the
+    // race home. Daze is already immunized for the pull
+    // (DcLeaderSignal::SetLeaderDazeImmunity), so a slow seen here is a genuine debuff
+    // — Hamstring, web, a Frostbolt chill. The timing/grace decision lives in the
+    // unit-tested DungeonClearMath::ShouldAbortPullForCc.
+    char const* DcDragImpairReason(Player* tank, float slowFloor)
+    {
+        if (!tank)
+            return nullptr;
+        if (char const* const hard = DcDragHardCcReason(tank))
+            return hard;
         if (tank->GetSpeedRate(MOVE_RUN) <= slowFloor)
             return "slowed";
         return nullptr;
@@ -505,6 +520,16 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
     DcPullPhase const phase = pull.phase;
 
     std::optional<DungeonBossInfo> next = AI_VALUE(std::optional<DungeonBossInfo>, DcKey::NextDungeonBoss);
+
+    // SOCIAL QUARANTINE upkeep. The advance rung does the same thing, and between
+    // them the leader re-asserts it in every state it can be in outside a boss
+    // fight — but THIS is the call that matters for a scripted plan, because a
+    // stage's release is keyed on it being the due stage and this rung is where
+    // the due stage is read and committed. Running it here, ahead of the phase
+    // switch, means the pack the tank is about to walk into is aggressive on the
+    // same tick the plan picks it, and its four neighbours are not.
+    // See DcSocialQuarantine.h.
+    DcSocialQuarantine::Update(bot, context);
 
     // A druid tank pulls as a BEAR. Every rung of this maneuver — commit, the
     // Forming dwell, the tag walk-in — runs on the NON-combat engine, and the
@@ -1874,6 +1899,60 @@ namespace
             *hpSum = sum;
         return any;
     }
+
+    // The NEAREST live member of this stage's pack standing outside `leash` of the
+    // camp, or nullptr when every live member is inside it.
+    //
+    // Same party-wide attacker scan as ScriptedPackStillFighting and for the same
+    // reason: a mob with the party on its threat list is this pack's business wherever
+    // it happens to be standing. Nearest rather than farthest because the camp walks
+    // one bounded step at a time — the cheapest mob to bring into reach is the one
+    // worth aiming the step at, and anything behind it is reached by the next step.
+    //
+    // Returned as a live pointer for use on THIS tick only (the caller measures two
+    // distances off it and drops it); nothing stores it.
+    Unit* ScriptedPackNearestStandoff(Player* bot, ScriptedPullStage const& stage,
+                                      Position const& camp, float leash)
+    {
+        GuidSet seen;
+        Unit* nearest = nullptr;
+        float nearestDist = 0.0f;
+
+        auto scan = [&](Player const* p)
+        {
+            for (Unit* a : p->getAttackers())
+            {
+                if (!a || !a->IsAlive() ||
+                    !ScriptedPullRegistry::IsPackEntry(stage, a->GetEntry()))
+                    continue;
+                if (!seen.insert(a->GetGUID()).second)
+                    continue;
+                float const d = a->GetExactDist(&camp);
+                if (d <= leash)
+                    continue;
+                if (!nearest || d < nearestDist)
+                {
+                    nearest = a;
+                    nearestDist = d;
+                }
+            }
+        };
+
+        scan(bot);
+        if (Group* group = bot->GetGroup())
+        {
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            {
+                Player* member = ref->GetSource();
+                if (!member || member == bot || member->isDead())
+                    continue;
+                if (member->GetMapId() != bot->GetMapId())
+                    continue;
+                scan(member);
+            }
+        }
+        return nearest;
+    }
 }
 
 bool DungeonClearPullManeuverAction::Execute(Event /*event*/)
@@ -1984,6 +2063,76 @@ bool DungeonClearPullManeuverAction::Execute(Event /*event*/)
                              (now - pull.scriptedEngageSince) / 1000);
                 EndCampFight(bot, context, pull);
                 return false;
+            }
+            // THE CAMP WALKS AT WHAT WILL NOT COME TO IT.
+            //
+            // Runs in front of the retirement above, on the same evidence and a much
+            // shorter clock (DC_SCRIPTED_PULL_STANDOFF_MS). The pack's health has
+            // stopped moving AND a live member of it is standing outside the tank's
+            // leash: that is the SmartAI range-mode caster this camp cannot reach —
+            // a Sunblade Magister holds station 35yd from its victim and will neither
+            // close nor back off, against a 14yd tank leash and a 12yd follower leash.
+            // See DC_SCRIPTED_PULL_CAMP_STEP for the measurement and for why the answer
+            // is to move the camp rather than to lengthen either leash.
+            //
+            // One bounded step per stall, along camp -> the row's own stand spot and no
+            // further: that spot is the only forward ground the plan has cleared
+            // against the packs it has not pulled, and the tank already walked to it
+            // once this pull to take the tag. Two guards keep a step honest — it must
+            // actually CLOSE on the mob that is standing off (otherwise the mob is
+            // behind us and the stand spot is the wrong way), and the landing point is
+            // snapped through the navmesh exactly as ComputeCampSlot does, so a
+            // straight-line interpolation across a neck can never park the party in a
+            // wall.
+            //
+            // Re-arms the progress clock, so the retirement above can only fire once
+            // the camp has run out of segment to give.
+            else if (ScriptedPullStandoffStalled(pull.scriptedEngageSince, now))
+            {
+                Unit* const held = ScriptedPackNearestStandoff(
+                    bot, *stage, camp, DC_SCRIPTED_PULL_LEASH);
+                Position const spot(stage->standX, stage->standY, stage->standZ);
+                float const toSpot = camp.GetExactDist(&spot);
+                if (held && toSpot > DC_PULL_CAMP_ARRIVE)
+                {
+                    float const t = std::min(DC_SCRIPTED_PULL_CAMP_STEP, toSpot) / toSpot;
+                    float const nx = camp.GetPositionX() +
+                                     (spot.GetPositionX() - camp.GetPositionX()) * t;
+                    float const ny = camp.GetPositionY() +
+                                     (spot.GetPositionY() - camp.GetPositionY()) * t;
+                    float const nz = camp.GetPositionZ() +
+                                     (spot.GetPositionZ() - camp.GetPositionZ()) * t;
+
+                    PathGenerator gen(bot);
+                    gen.CalculatePath(nx, ny, nz, /*forceDest*/ false);
+                    if (!(gen.GetPathType() & (PATHFIND_NOPATH | PATHFIND_FARFROMPOLY)))
+                    {
+                        G3D::Vector3 const end = gen.GetActualEndPosition();
+                        Position const next(end.x, end.y, end.z, camp.GetOrientation());
+                        float const before = held->GetExactDist(&camp);
+                        float const after = held->GetExactDist(&next);
+                        float const stepped = camp.GetExactDist(&next);
+                        if (after < before - 1.0f)
+                        {
+                            pull.PublishCamp(next, now);
+                            // The recall in flight was aimed at the OLD camp; drop the
+                            // latch so the leash re-arms against the new one instead of
+                            // marching the tank back to a point that has moved.
+                            pull.scriptedRecall = false;
+                            pull.scriptedRecallBest = 0.0f;
+                            pull.scriptedEngageSince = now;
+                            DC_PULL_INFO("[DC:{}] scripted-pull: stage [{}] — {} is "
+                                         "holding {:.1f}yd off the camp and will not "
+                                         "close, and the pack has taken nothing in {}s "
+                                         "-> walked the camp {:.1f}yd up its stand-spot "
+                                         "line ({:.1f}yd of it left), gap now {:.1f}yd",
+                                         bot->GetName(), stage->name ? stage->name : "?",
+                                         held->GetGUID().ToString(), before,
+                                         DC_SCRIPTED_PULL_STANDOFF_MS / 1000, stepped,
+                                         next.GetExactDist(&spot), after);
+                        }
+                    }
+                }
             }
         }
     }
@@ -2232,26 +2381,62 @@ bool DungeonClearPullManeuverAction::Execute(Event /*event*/)
     // IsLeaderCampFightActive so the followers pile onto the pack and help. The
     // grace ignores a brief micro-CC so a single stutter-stun doesn't throw an
     // otherwise-fine pull away.
-    // Suppressed for a SCRIPTED stage. The CC-assist's answer to a failing drag is
-    // "stop and fight where you stand, party piles in" — which is right when the
-    // ground under the tank is ordinary corridor, and catastrophic when the plan
-    // exists precisely because that ground is not survivable. Selin's room is the
-    // case: a slow read mid-drag aborted the pull, the tank turned and fought the
-    // pack back at its own spawn (228.2,-21.0), and the whole room came with it
-    // (tr-20260802-215715-3). Keep dragging instead — the return-leg watchdog below
-    // still bounds it, so a drag that genuinely cannot finish falls out to
-    // fight-in-place rather than freezing, it just isn't the FIRST answer any more.
-    if (DcSettings::GetBool(bot, "PullCcAssist") && pull.scriptedStage < 0)
+    //
+    // A SCRIPTED stage does not take the abort, but it does take HALF of it.
+    //
+    // The abort's answer to a failing drag is "stop and fight where you stand, party
+    // piles in" — right when the ground under the tank is ordinary corridor, and
+    // catastrophic when the plan exists precisely because that ground is not
+    // survivable. Selin's room is the case: a slow read mid-drag aborted the pull,
+    // the tank turned and fought the pack back at its own spawn (228.2,-21.0), and
+    // the whole room came with it (tr-20260802-215715-3). So a scripted drag keeps
+    // dragging, bounded by the return-leg watchdog below.
+    //
+    // But "keep dragging" is only an answer while the tank is ACTUALLY DRAGGING. The
+    // suppression was written against a SLOW, which still walks the pack home — just
+    // slowly — and it swept a hard stun in with it, where the tank covers no ground
+    // at all and simply stands in the pack. Live (tr-20260808-211502-15, the rotunda
+    // south row, whose authored body-pull target IS a Sister of Torment): tag at
+    // 21:26:34, Deadly Embrace (44547 — 6s stun plus ~500 a tick, fired exactly 3s
+    // after the pack enters combat, and the solo puller is the only thing on its
+    // threat list) landed at 21:26:41 with 22.1yd still to run, and the tank was dead
+    // at 21:26:47 with the party still passive at a camp it never reached. The same
+    // row killed the same tank three times in a row.
+    //
+    // So on a scripted stage a hard CC RELEASES THE PARTY without touching the pull
+    // (DcPullContext::SafetyRelease — the camp-safety valve's "let them fight, don't
+    // abandon the maneuver" half). The drag survives, so the fight still ends up at
+    // the authored camp rather than in the room; what changes is that the healer
+    // unpins and the DPS engage during the seconds the tank cannot move. A slow on a
+    // scripted stage still changes nothing at all.
+    if (DcSettings::GetBool(bot, "PullCcAssist"))
     {
+        bool const scripted = pull.scriptedStage >= 0;
         float const slowFloor = DcSettings::GetFloat(bot, "PullCcSlowFloor");
-        char const* const ccReason = DcDragImpairReason(bot, slowFloor);
+        char const* const ccReason = scripted ? DcDragHardCcReason(bot)
+                                              : DcDragImpairReason(bot, slowFloor);
         uint32 const graceMs =
             uint32(DcSettings::GetFloat(bot, "PullCcAssistGrace") * 1000.0f);
         uint32 ccSinceOut = pull.ccSince;
         bool const ccAbort = DungeonClearMath::ShouldAbortPullForCc(
             ccReason != nullptr, pull.ccSince, now, graceMs, ccSinceOut);
         pull.ccSince = ccSinceOut;
-        if (ccAbort)
+        if (ccAbort && scripted)
+        {
+            // One-shot per maneuver: SafetyRelease is idempotent, but leaving the
+            // latch armed would re-log it every grace period for the whole stun.
+            // Deliberately does NOT return — the drag owns the rest of this tick.
+            if (!pull.partyReleased)
+            {
+                pull.SafetyRelease(now);
+                DC_PULL_INFO("[DC:{}] scripted-pull: tank {} mid-drag (held >{} ms) "
+                             "at {:.1f}yd from camp — the drag has stopped, so it is "
+                             "not a drag -> releasing the party to it, pull kept",
+                             bot->GetName(), ccReason, graceMs,
+                             bot->GetExactDist(&camp));
+            }
+        }
+        else if (ccAbort)
         {
             pull.ccSince = 0;
 

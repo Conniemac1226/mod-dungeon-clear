@@ -81,6 +81,14 @@ SIGNALS = [
     ("stranded recovery", ["stranded-recovery", "stranded recovery"]),
     ("unreachable", ["unreachable", "no path", "path ends short", "cannot reach", "can't reach"]),
     ("pull", ["pull released", "pull fizzled", "fizzle", "camp re-anchored", "camp anchor"]),
+    # How each fight STARTED. The pull rows only cover fights DC pulled; an
+    # objective that shows up here is one that joined a fight nobody pulled it into.
+    ("first contact", ["first contact:"]),
+    ("OBJECTIVE joined a fight", ["OBJECTIVE JOINED AN ONGOING FIGHT"]),
+    # Both halves of the MgT interrupt pass. The hits alone cannot say whether a low count
+    # means the bots missed or that nothing kickable was cast, so the misses are grepped too.
+    ("interrupt landed", ["interrupt: '"]),
+    ("interrupt MISSED", ["interrupt MISS:"]),
     ("door", ["door blocked", "door-blocked", "door stalled", "forcing door", "force-open"]),
     ("combat", ["phantom combat", "stuck in combat", "flip-early", "regroup"]),
     ("death / rez", ["post-combat rez", "died", "wipe", "resurrect"]),

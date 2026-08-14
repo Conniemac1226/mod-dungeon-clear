@@ -7,11 +7,16 @@
 
 #include "Ai/Dungeon/DungeonClear/DcApproachState.h"
 #include "Ai/Dungeon/DungeonClear/DcValueKeys.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcEngageGeometry.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearMath.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearTuning.h"
 
 #include "AiObjectContext.h"
+#include "CombatManager.h"
+#include "Creature.h"
+#include "CreatureAI.h"
 #include "Group.h"
+#include "Map.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
@@ -58,6 +63,81 @@ namespace DcCombatFlag
             Player* member = ref->GetSource();
             if (member && member != bot && member->IsAlive() &&
                 member->GetMapId() == bot->GetMapId() && member->IsInCombat())
+                return true;
+        }
+        return false;
+    }
+
+    HolderScan ScanCombatHolders(Player* p)
+    {
+        HolderScan scan;
+        if (!p)
+            return scan;
+
+        auto const& refs = p->GetCombatManager().GetPvECombatRefs();
+        if (refs.empty())
+        {
+            scan.opaque = true;
+            return scan;
+        }
+
+        Map* const map = p->GetMap();
+        for (auto const& kv : refs)
+        {
+            CombatReference* const ref = kv.second;
+            if (!ref)
+                continue;
+            Unit* const other = ref->GetOther(p);
+            if (!other || !other->IsAlive() || other->GetMap() != map)
+                continue;
+            if (other->GetCombatManager().IsInEvadeMode())
+                continue;  // holder is bailing home -> not a real threat
+            if (!DcEngageGeometry::IsReachable(p, other->GetPositionX(),
+                                               other->GetPositionY(), other->GetPositionZ()))
+                continue;  // unreachable -> the phantom holder
+            if (Creature* const c = other->ToCreature())
+                if (c->AI() && !c->AI()->CanAIAttack(p))
+                    continue;  // its own script forbids it touching us -> phantom too
+            // Keep scanning so nearestDist is the CLOSEST such holder: every caller
+            // asks a distance question of whichever holder is most nearly on top of
+            // us, not of whichever the map happened to enumerate first.
+            float const dist = p->GetExactDist(other);
+            if (!scan.found || dist < scan.nearestDist)
+                scan.nearestDist = dist;
+            scan.found = true;
+        }
+        return scan;
+    }
+
+    bool IsHeldByLiveEnemy(Player* p, float radius)
+    {
+        // Cheap reads first, in the order that short-circuits most ticks: the
+        // scan below costs a pathfind per combat reference.
+        if (!p || !p->IsAlive() || !p->IsInCombat())
+            return false;
+        if (IsEngaged(p))
+            return true;
+        HolderScan const scan = ScanCombatHolders(p);
+        // `opaque` deliberately does NOT count. The hatch reads it as "leave this
+        // alone", but here the question is "is there something to fight", and a
+        // flag with no reference behind it names nothing that could be fought.
+        return scan.found && scan.nearestDist <= radius;
+    }
+
+    bool AnyPartyHeldByLiveEnemy(Player* bot, float radius)
+    {
+        if (!bot)
+            return false;
+        if (IsHeldByLiveEnemy(bot, radius))
+            return true;
+        Group* group = bot->GetGroup();
+        if (!group)
+            return false;
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (member && member != bot && member->GetMapId() == bot->GetMapId() &&
+                IsHeldByLiveEnemy(member, radius))
                 return true;
         }
         return false;

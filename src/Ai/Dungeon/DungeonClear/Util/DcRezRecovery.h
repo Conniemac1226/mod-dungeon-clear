@@ -70,6 +70,24 @@ namespace DcRezRecovery
     // enabling is allowed and the recovery flow takes it from there.
     bool CanRecover(Player* bot);
 
+    // "Is THIS bot the one that has to walk to a corpse right now" — the
+    // stand-down gate for every follower rung that moves (follow-tank /
+    // scout-lag, hold-at-camp, heal-reposition). Tracks
+    // DungeonClearRezPartyTrigger::IsActive — same alive / out-of-combat /
+    // in-a-dungeon preconditions, same Hold+Recovering+this-bot verdict — so a
+    // rung stands down on the ticks the rez rung is armed and not on others.
+    //
+    // One deliberate narrowing on top of the trigger: false while ANY same-map
+    // member is engaged. Handing the bot's movement to the rez rung is a bigger
+    // claim than arming that rung, and it must not strand a healer that happens
+    // to be unflagged in the middle of a live fight. Costs the recovery nothing
+    // — its budget clock is stopped for as long as anyone is engaged.
+    //
+    // READ-ONLY, unlike Evaluate: a rung asking "is this me" must not stamp the
+    // recovery clock or fire an announcement. Cheap-early-outs on class before
+    // it evaluates anything, because only a living rez class is ever elected.
+    bool IsElectedRezzer(Player* bot);
+
     // "Neko is coming to resurrect Bib." / "Waiting for you to resurrect
     // Bib." — one status-panel sentence for the current recovery, empty when
     // none is in progress. Read-only (no clock side effects).

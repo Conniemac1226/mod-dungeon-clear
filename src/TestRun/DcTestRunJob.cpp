@@ -627,6 +627,10 @@ void DcTestRunJob::Tick(uint32 diff, bool& provisionBudget)
             break;
         case Stage::Monitoring:
             _monitorMs += diff;
+            // Every tick, NOT on the monitor's 1s step: a bot crosses a small
+            // trigger box in well under a second, and a relay that samples at
+            // 1Hz would silently skip the set-piece it exists to fire.
+            _areaTriggers.Tick(FindTank());
             _monitorAccumMs += diff;
             if (_monitorAccumMs >= MONITOR_STEP_MS)
             {
@@ -996,13 +1000,16 @@ void DcTestRunJob::TickGrouping()
         // Keep the GM (a real human Player) as each bot's playerbots MASTER, and
         // strip the stock follow-master strategy instead of nulling the master.
         //
-        // Why not masterless: HasRealPlayerMaster() gates the whole "a human is
-        // driving me" fast path in stock playerbots. With no real-player master,
+        // Why not masterless: the real-player-master gate governs the whole "a
+        // human is driving me" fast path in stock playerbots (pre-PR-2592 the
+        // removed HasRealPlayerMaster(); now the master satisfying
+        // IsRealPlayer(master) || IsSelfBot(master)). With no real-player master,
         // GetReactDelay() returns base*10 (1000ms vs 100ms) out of combat, so the
         // party thinks on a 1s beat between packs — test runs looked far slower
-        // and sloppier than a real human-led run. HasRealPlayerMaster() has no
-        // map/distance/visibility gate (it only checks the master pointer is a
-        // non-bot Player), so keeping the GM as master holds the fast path even
+        // and sloppier than a real human-led run. That gate has no
+        // map/distance/visibility check (it only checks the master pointer is a
+        // non-bot Player or a self-bot), so keeping the GM as master holds the
+        // fast path even
         // though the GM is invisible and outside the instance — the test now
         // mirrors a real run in every master-gated respect (react delay, AoE
         // avoidance, wait-for-attack), which is the point of a regression harness.
@@ -1236,6 +1243,11 @@ void DcTestRunJob::TickStarting()
         LOG_INFO("playerbots.dungeonclear",
                  "TESTRUN {} running: instance {} with {} bosses/objectives",
                  _record.runId, _record.instanceId, _record.bossesTotal);
+        // Nobody in this party has a game client, so nobody will ever send a
+        // CMSG_AREATRIGGER and no `at_*` script would run for the whole clear.
+        // Armed here rather than at Teleporting so it covers exactly the window
+        // the party is actually walking the dungeon.
+        _areaTriggers.Arm(_mapId);
         EnterStage(Stage::Monitoring);
         return;
     }
@@ -2039,6 +2051,16 @@ void DcTestRunJob::Teardown()
     // gap) a no-op, so the record is appended and the bots logged out once.
     if (_stage.exchange(Stage::TearingDown) == Stage::TearingDown)
         return;
+
+    // Report the relay's tally before Disarm() drops the volume list. Logged
+    // whenever the map had anything to relay, INCLUDING zero fires — "0 of 1"
+    // is the party never reaching the volume, which is a different failure from
+    // a set-piece that fired and did nothing.
+    if (uint32 const armed = _areaTriggers.Armed())
+        LOG_INFO("playerbots.dungeonclear",
+                 "TESTRUN {} areatrigger relay: {} packet(s) over {} volume(s)", _record.runId,
+                 _areaTriggers.Relayed(), armed);
+    _areaTriggers.Disarm();
 
     Player* tank = FindTank();
     if (tank)

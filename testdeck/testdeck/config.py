@@ -88,6 +88,7 @@ class Config:
     # paths
     base: Path = None
     dist: Path = None
+    server_root: Path = None        # the worldserver's working directory
     log_dir: Path = None
     worldserver_conf: Path = None
     playerbots_conf: Path = None
@@ -134,21 +135,54 @@ class Config:
 
     # -- derived paths ------------------------------------------------------
 
+    def sidecar_dirs(self):
+        """Where a mod-dungeon-clear sidecar file could be, best first.
+
+        The module opens these by relative name, so they land in whatever
+        directory the worldserver was started from — `server_root`. The rest
+        are there because that directory is a deduction, not a fact: a service
+        definition, a shortcut's "Start in", or a launcher script can set a
+        working directory this host has no way to read back. Looking in the
+        other plausible roots costs three stat calls and is the difference
+        between a Live view that works and one that is permanently empty.
+        """
+        out = []
+        for d in (self.server_root, self.log_dir, self.dist, self.base):
+            if d is not None and d not in out:
+                out.append(d)
+        return out
+
+    def sidecar(self, name):
+        """The path a named sidecar actually has on this host.
+
+        An absolute name is taken as given — that is how an operator who moved
+        a file with one of the module's DC_* environment variables says so.
+        Otherwise: wherever it already exists, else the working directory,
+        which is where the module will create it.
+        """
+        p = Path(name)
+        if p.is_absolute():
+            return p
+        for d in self.sidecar_dirs():
+            if (d / p).is_file():
+                return d / p
+        return self.server_root / p
+
     @property
     def testruns_file(self):
-        return self.log_dir / self.dc_testruns
+        return self.sidecar(self.dc_testruns)
 
     @property
     def testplans_file(self):
-        return self.log_dir / self.dc_testplans
+        return self.sidecar(self.dc_testplans)
 
     @property
     def testrun_live_file(self):
-        return self.log_dir / self.dc_live
+        return self.sidecar(self.dc_live)
 
     @property
     def testdungeons_file(self):
-        return self.log_dir / self.dc_dungeons
+        return self.sidecar(self.dc_dungeons)
 
     @property
     def rosters_file(self):
@@ -252,6 +286,38 @@ def _p(value, default=None):
     return Path(str(value)).expanduser() if value else default
 
 
+def _first_existing(candidates, want_file=False):
+    """The first candidate that is really there, else the first candidate.
+
+    Falling back to the first rather than to None is deliberate: a path that
+    does not exist is still the path to name in the banner, so the operator is
+    told which file to go and produce instead of being told nothing at all.
+    """
+    real = [c for c in candidates if c is not None]
+    for c in real:
+        if c.is_file() if want_file else c.is_dir():
+            return c
+    return real[0] if real else None
+
+
+def _module_conf(cfg, name):
+    """Where the core would load a module's .conf from on this host.
+
+    ConfigMgr::LoadModulesConfigs reads `GetConfigPath() + "modules/"`, and
+    GetConfigPath() is the compiled-in _CONF_DIR on POSIX but the literal,
+    working-directory-relative "configs/" on Windows. So the module confs sit
+    beside worldserver.conf in an ordinary install — and on Windows they sit
+    under the working directory even when worldserver.conf was passed in from
+    somewhere else entirely, which is why both are tried.
+    """
+    windows_dir = cfg.server_root / "configs" / "modules" / name
+    beside_conf = cfg.worldserver_conf.parent / "modules" / name
+    stock_dist = cfg.dist / "etc" / "modules" / name
+    order = ([windows_dir, beside_conf, stock_dist] if hostenv.IS_WINDOWS
+             else [beside_conf, stock_dist, windows_dir])
+    return _first_existing(order, want_file=True)
+
+
 def _load_paths(cfg, sec, app_dir):
     # With no [paths] base to derive from, look for the install the same way
     # the wizard does rather than assuming one shape of workspace — `acore.sh`
@@ -274,18 +340,41 @@ def _load_paths(cfg, sec, app_dir):
     cfg.base = _p(sec.get("base"), found["base"] if found else guess)
     cfg.dist = _p(sec.get("dist"),
                   found["dist"] if found else cfg.base / "env" / "dist")
-    cfg.log_dir = _p(sec.get("log_dir"),
-                     found["log_dir"] if found else cfg.dist / "bin")
     cfg.worldserver_conf = _p(sec.get("worldserver_conf"),
                               found["worldserver_conf"] if found
                               else cfg.dist / "etc" / "worldserver.conf")
+
+    # The worldserver's working directory, and then everything the server
+    # itself resolves against it. `<dist>/bin` used to stand in for all of
+    # this, which is true of a POSIX acore.sh install and of nothing else: a
+    # Windows all-in-one pack runs its exe out of the install root, keeps its
+    # configs in `configs/` beside it, and commonly points LogsDir at
+    # `../logs/worldserver/`. Deriving from what the install states about
+    # itself is the difference between supporting one layout and supporting
+    # the ones people actually have.
+    cfg.server_root = _p(sec.get("server_root"),
+                         _setup.find_server_root(cfg.worldserver_conf,
+                                                 cfg.dist))
+    logs_dir, data_dir = _setup.read_server_paths(cfg.worldserver_conf)
+    cfg.log_dir = _p(sec.get("log_dir"),
+                     _setup.resolve_under(cfg.server_root, logs_dir))
+
     cfg.playerbots_conf = _p(sec.get("playerbots_conf"),
-                             cfg.dist / "etc" / "modules" / "playerbots.conf")
+                             _module_conf(cfg, "playerbots.conf"))
     cfg.dungeonclear_conf = _p(sec.get("dungeonclear_conf"),
-                               cfg.dist / "etc" / "modules" /
-                               "mod_dungeon_clear.conf")
-    cfg.dbc_dir = _p(sec.get("dbc_dir"), cfg.log_dir / "dbc")
+                               _module_conf(cfg, "mod_dungeon_clear.conf"))
     cfg.data_dir = _p(sec.get("data_dir"), hostenv.default_data_dir())
+    # DataDir is where the extracted client data lives; the DBCs the roster
+    # picker reads for talent specs are the `dbc` inside it. The other
+    # candidates are for a pack that ships them somewhere of its own — this is
+    # a warn-level nicety, so a wider search costs nothing if it misses.
+    cfg.dbc_dir = _p(sec.get("dbc_dir"),
+                     _first_existing([
+                         _setup.resolve_under(cfg.server_root, data_dir) / "dbc",
+                         cfg.server_root / "dbc",
+                         cfg.dist / "data" / "dbc",
+                         cfg.dist / "dbc",
+                     ]))
     cfg.mysql_bin = str(sec.get("mysql_bin", ""))
 
 
@@ -388,10 +477,21 @@ def validate(cfg, check_privileges=True):
         cfg.problem("error", "paths",
                     f"base {cfg.base} does not exist — every path derived "
                     "from it will be wrong")
-    if not cfg.log_dir.is_dir():
+    # Two different directories, and saying which is which is most of the
+    # help: the panels read the files the module writes into the worldserver's
+    # working directory, while the log viewer reads whatever LogsDir points at.
+    if not cfg.server_root.is_dir():
         cfg.problem("error", "paths",
+                    f"server_root {cfg.server_root} does not exist — that is "
+                    "where the worldserver runs and where it writes the dc_* "
+                    "files, so every test-run panel will be empty. Set [paths] "
+                    "server_root to the directory holding worldserver"
+                    f"{'.exe' if hostenv.IS_WINDOWS else ''}.")
+    if not cfg.log_dir.is_dir():
+        cfg.problem("warn", "paths",
                     f"log_dir {cfg.log_dir} does not exist — the log viewer "
-                    "and every test-run panel will be empty")
+                    "will be empty. It follows LogsDir in worldserver.conf; "
+                    "set [paths] log_dir if the logs are somewhere else.")
     if not cfg.worldserver_conf.is_file():
         cfg.problem("error", "paths",
                     f"worldserver_conf {cfg.worldserver_conf} not found — "

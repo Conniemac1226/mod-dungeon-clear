@@ -12,6 +12,7 @@
 #include "DungeonClearTuning.h"
 #include "Ai/Dungeon/DungeonClear/Data/BossPullbackRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Data/RoomAggroRegistry.h"
+#include "Ai/Dungeon/DungeonClear/Data/RouteSweepRegistry.h"
 #include "Ai/Dungeon/DungeonClear/DcApproachState.h"
 #include "Ai/Dungeon/DungeonClear/DcValueKeys.h"
 #include "Ai/Dungeon/DungeonClear/Settings/DcSettings.h"
@@ -552,11 +553,31 @@ std::optional<Position> DcEngageGeometry::EnRoutePackAvoidPoint(Player* bot,
     return wp;
 }
 
+bool DcEngageGeometry::EnRouteSweepApplies(Player* bot)
+{
+    Map* const map = bot ? bot->GetMap() : nullptr;
+    if (!map || !map->IsDungeon())
+        return false;
+    // Heroic is excluded whatever the map says: there the same spheres already
+    // bend the WALK (PullEnRouteAvoid), its rooms are wide enough for that detour
+    // to exist, and its pull profile is tuned against measured baselines. Checked
+    // before the table so a map that later earns a row cannot arm heroic by
+    // accident.
+    if (map->GetDifficulty() == DUNGEON_DIFFICULTY_HEROIC)
+        return false;
+    return RouteSweepRegistry::SweepsRoute(map->GetId());
+}
+
 bool DcEngageGeometry::TargetInsideBystanderPack(Player* bot, Unit* target)
 {
     if (!bot || !target)
         return false;
-    if (!DcSettings::GetBool(bot, "PullEnRouteAvoid"))
+    // Heroic arms this through the avoidance it belongs to; normal arms it through
+    // the en-route SWEEP, which is on there and answers the same question from the
+    // other side (the sweep says "that pack's aggro covers our walk", this says
+    // "another pack's aggro covers our destination"). Either way the predicate is
+    // live on exactly one difficulty's terms and dead on neither.
+    if (!DcSettings::GetBool(bot, "PullEnRouteAvoid") && !EnRouteSweepApplies(bot))
         return false;
 
     float const margin = DcSettings::GetFloat(bot, "PullEnRouteMargin");

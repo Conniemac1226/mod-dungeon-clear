@@ -107,6 +107,32 @@ python3 -m testdeck check       # every problem this host has, in one list
   *The worldserver bridge* below.
 - *base … does not exist* — setup guessed the wrong install. Re-run
   `python3 -m testdeck setup --force` and give it the path when it asks.
+- *server_root … does not exist* — Test Deck could not tell which directory
+  the worldserver runs in. That directory is the one holding
+  `worldserver`/`worldserver.exe`, and it decides more than its name suggests:
+  the module writes its `dc_*` files there by relative name, so the launch,
+  Live and history panels all read out of it, and the relative paths inside
+  `worldserver.conf` (`LogsDir`, `DataDir`) are relative to it too. Set
+  `[paths] server_root` to it if the server is started from somewhere the
+  binary is not — a service with its own working directory, or a launcher
+  script that `cd`s first.
+- *log_dir … does not exist* — only the log viewer depends on this. It follows
+  `LogsDir` in `worldserver.conf`; set `[paths] log_dir` if the logs really
+  live elsewhere.
+- *playerbots_conf … not found* / *dbc_dir … not found* — both are found from
+  the install itself (module confs beside `worldserver.conf`, and on Windows
+  under `<server_root>/configs/modules/` where the core hardcodes them; DBCs
+  via `DataDir`). If a pack puts them somewhere of its own, name them with
+  `[paths] playerbots_conf` and `[paths] dbc_dir`.
+
+`check` prints the two directories these come from, so you can see at a glance
+which one is wrong:
+
+```
+  server    C:\WoW\SingleCraft  (worldserver working directory)
+  log_dir   C:\WoW\SingleCraft\logs
+  sidecars  C:\WoW\SingleCraft  (found)
+```
 
 Symptoms as they appear in the browser:
 
@@ -116,7 +142,8 @@ Symptoms as they appear in the browser:
 | **auth database unavailable** on login | the `mysql` client is there but cannot reach the database — check `LoginDatabaseInfo` in `worldserver.conf` |
 | **this account has GM level 0** | the message names the exact `account set gmlevel` line to run |
 | **forbidden: unexpected Host header** | you reached the deck by a *name*; add it to `[server] allowed_hosts`, or use the address the startup banner printed |
-| **No dungeon catalogue yet** | the worldserver writes its dungeon list shortly after startup — if the realm is up and it never appears, mod-dungeon-clear is not loaded |
+| **No dungeon catalogue yet** | the worldserver writes its dungeon list shortly after startup — if the realm is up and it never appears, either mod-dungeon-clear is not loaded, or the deck is looking in the wrong directory: `check` prints the `sidecars` line, and `dc_test_dungeons.json` has to be in it |
+| **Live** stays empty while a run is going | same directory question as above — `dc_testrun_live.json` is written next to the worldserver, not into the log directory |
 | **test driver character 'Dcdriver' not found** on *Start run* | the module could not create it — usually `DungeonClear.TestRun.DriverCharacter` is not a capitalised name, or its account is a random-bot one. `check` names which |
 | a run starts but nothing appears on **Live** | the test driver was still logging in; the deck queues it as a one-run plan, which waits it out. Expected on the very first launch, which creates the driver |
 

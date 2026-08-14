@@ -194,14 +194,16 @@ bool DungeonClearMath::ShouldStandDownForPull(bool packIsPullsOwn, bool pullPhas
     return !pullPhaseIdle;    // in flight: never thrash the maneuver
 }
 
-bool DungeonClearMath::ShouldReleaseStandingPull(bool effectiveOn, bool standing, bool inCombat,
-                                                 bool holdingPhase, bool bossPullback)
+bool DungeonClearMath::ShouldReleaseStandingPull(bool effectiveOn, bool standing,
+                                                 bool partyInCombat, bool holdingPhase,
+                                                 bool bossPullback)
 {
     if (effectiveOn || !standing)
         return false;             // the pull owns itself / nothing left standing
     if (bossPullback)
         return false;             // pull-back drags run with pull mode off by design
-    return !inCombat && !holdingPhase;  // never dismantle a maneuver in flight
+    // Never dismantle a maneuver in flight — nor a camp anyone is still fighting at.
+    return !partyInCombat && !holdingPhase;
 }
 
 bool DungeonClearMath::ShouldDropPullVerdict(bool targetPresent, std::uint32_t lostSince,
@@ -262,6 +264,49 @@ bool DungeonClearMath::ShouldWaitForPatrol(std::uint32_t fullCount,
     // verdict — the latch stays armed so the wait does not re-fire. waitMs == 0
     // proceeds immediately.
     std::uint32_t const elapsed = now >= start ? now - start : 0u;
+    return elapsed < waitMs;
+}
+
+bool DungeonClearMath::ShouldMusterForScriptedStage(bool stagePending, bool toppedUp,
+                                                    std::uint32_t waitSince,
+                                                    std::uint32_t now,
+                                                    std::uint32_t waitMs,
+                                                    std::uint32_t minMs,
+                                                    std::uint32_t& waitSinceOut)
+{
+    if (!stagePending)
+    {
+        waitSinceOut = 0;
+        return false;
+    }
+    // Never armed and already topped up: the healthy case — arm nothing, pull now.
+    if (waitSince == 0 && toppedUp)
+    {
+        waitSinceOut = 0;
+        return false;
+    }
+    // Arm on the first short tick. Never store 0 (it means "clear"), so a muster
+    // that begins at the very first millisecond still latches.
+    std::uint32_t const start = waitSince != 0 ? waitSince : (now != 0 ? now : 1u);
+    waitSinceOut = start;
+    // Guard the unsigned subtraction (the now==0 corner can leave start ahead of
+    // now).
+    std::uint32_t const elapsed = now >= start ? now - start : 0u;
+    // Substance floor: an armed muster holds through min(minMs, waitMs) even if
+    // the percentages close first. The floors going green one tick after arming
+    // means an AoE heal crossed a line, not that anyone drank — and the raised
+    // rest targets need a few seconds of sitting to mean anything. The min()
+    // keeps waitMs == 0 as "muster disabled outright".
+    if (elapsed < std::min(minMs, waitMs))
+        return true;
+    if (toppedUp)
+    {
+        waitSinceOut = 0;
+        return false;
+    }
+    // Hold while inside the budget; once it elapses, proceed on the ordinary
+    // floors — the latch stays armed so the muster does not re-fire on the same
+    // stage.
     return elapsed < waitMs;
 }
 
@@ -415,6 +460,45 @@ float DungeonClearMath::DistSqToSegment2D(float px, float py,
     float const dx = px - cx;
     float const dy = py - cy;
     return dx * dx + dy * dy;
+}
+
+bool DungeonClearMath::NearestPointOnPolyline2D(std::vector<G3D::Vector3> const& route,
+                                                float px, float py, G3D::Vector3& out)
+{
+    if (route.size() < 2)
+        return false;
+
+    float bestDist2 = std::numeric_limits<float>::max();
+    for (std::size_t i = 0; i + 1 < route.size(); ++i)
+    {
+        G3D::Vector3 const& a = route[i];
+        G3D::Vector3 const& b = route[i + 1];
+        float const ex = b.x - a.x;
+        float const ey = b.y - a.y;
+        float const len2 = ex * ex + ey * ey;
+
+        // Degenerate leg (two coincident route points — the smoother emits them
+        // at anchor joins): the whole leg IS point `a`.
+        float t = 0.0f;
+        if (len2 > 1e-6f)
+        {
+            t = ((px - a.x) * ex + (py - a.y) * ey) / len2;
+            if (t < 0.0f) t = 0.0f;
+            else if (t > 1.0f) t = 1.0f;
+        }
+
+        float const cx = a.x + t * ex;
+        float const cy = a.y + t * ey;
+        float const dx = px - cx;
+        float const dy = py - cy;
+        float const d2 = dx * dx + dy * dy;
+        if (d2 < bestDist2)
+        {
+            bestDist2 = d2;
+            out = G3D::Vector3(cx, cy, a.z + t * (b.z - a.z));
+        }
+    }
+    return true;
 }
 
 std::size_t DungeonClearMath::PathProgressCursor(std::vector<G3D::Vector3> const& route,

@@ -8,6 +8,7 @@
 #include "DungeonClearUtil.h"   // DC_PULL_* log macros
 #include "DungeonClearMath.h"
 #include "DungeonClearTuning.h"
+#include "DcZoneLine.h"
 #include "Ai/Dungeon/DungeonClear/Settings/DcSettings.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonEventExecutor.h"
 #include <algorithm>
@@ -49,6 +50,7 @@
 #include "PlayerbotAI.h"
 #include "Chat.h"
 #include "ServerFacade.h"
+#include "StringFormat.h"
 #include "Timer.h"
 #include "World.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
@@ -71,6 +73,19 @@ namespace
     inline bool IsNavReachable(Player* bot, Position const& p)
     {
         return DcEngageGeometry::IsNavReachable(bot, p);
+    }
+
+    // A trail hold point must clear the instance zone line, for the same reason a
+    // pull camp must (DcZoneLine): the tank walked IN through the entrance, so
+    // the oldest breadcrumbs of a run sit on the exit trigger, and a follower
+    // told to hold `lag` yards back at the start of a dungeon is told to stand on
+    // the way out. A headless bot shrugs that off — it sends no areatrigger
+    // packet — but a self-bot's client reports it and the player is teleported
+    // out of the instance.
+    inline bool TrailOverZoneLine(Player* bot, Position const& p)
+    {
+        return DcZoneLine::WouldCrossTheLine(bot, p.GetPositionX(), p.GetPositionY(),
+                                             p.GetPositionZ());
     }
 
     // Leader-election memo. FindLeaderTank is on the hot path: nearly every DC
@@ -391,6 +406,88 @@ bool DcLeaderSignal::IsDungeonClearLeader(Player* bot)
 {
     return bot && FindLeaderTank(bot) == bot;
 }
+Player* DcLeaderSignal::FindRunOwner(Player* bot)
+{
+    auto owns = [](Player* p) -> bool
+    {
+        if (!p)
+            return false;
+        PlayerbotAI* ai = GET_PLAYERBOT_AI(p);
+        return ai && DcRun::Of(ai).enabled;
+    };
+
+    // The living leader is the owner in every healthy case, and resolving it first
+    // keeps this on the leader cache's fast path rather than walking the group.
+    if (Player* leader = FindLeaderTank(bot))
+        if (owns(leader))
+            return leader;
+
+    if (!bot)
+        return nullptr;
+
+    Group* group = bot->GetGroup();
+    if (!group)
+        return owns(bot) ? bot : nullptr;
+
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (!member || member->GetMapId() != bot->GetMapId())
+            continue;
+        if (owns(member))
+            return member;
+    }
+    return nullptr;
+}
+
+Player* DcLeaderSignal::FindTerminalDriver(Player* bot)
+{
+    Player* owner = FindRunOwner(bot);
+    if (!owner)
+        return nullptr;
+
+    PlayerbotAI* ownerAI = GET_PLAYERBOT_AI(owner);
+    if (!ownerAI)
+        return nullptr;
+    DcRunState const& run = DcRun::Of(ownerAI);
+    if (!run.enabled || run.paused)
+        return nullptr;  // a pause holds the terminal rungs exactly as it holds the rest
+
+    // Healthy case first: an elected leader exists, so it drives, and this is
+    // byte-for-byte the old behaviour.
+    if (Player* leader = FindLeaderTank(owner))
+        return leader;
+
+    Group* group = owner->GetGroup();
+    if (!group)
+        return owner;  // solo tank: it is the only candidate either way
+
+    // No leader — the tank is dead. Elect deterministically so every member agrees
+    // and exactly one fires. Living members outrank corpses (a living member can
+    // actually act on the verdict); the all-dead pass is what lets a full wipe
+    // still reach the party-died bailout.
+    Player* bestAlive = nullptr;
+    Player* bestAny = nullptr;
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (!member || member->GetMapId() != owner->GetMapId())
+            continue;
+        if (!GET_PLAYERBOT_AI(member))
+            continue;  // a real player has no AI to run the rung
+        if (!bestAny || member->GetGUID() < bestAny->GetGUID())
+            bestAny = member;
+        if (member->IsAlive() && (!bestAlive || member->GetGUID() < bestAlive->GetGUID()))
+            bestAlive = member;
+    }
+    return bestAlive ? bestAlive : bestAny;
+}
+
+bool DcLeaderSignal::IsTerminalDriver(Player* bot)
+{
+    return bot && FindTerminalDriver(bot) == bot;
+}
+
 bool DcLeaderSignal::IsInPausedDungeonClearRun(Player* bot)
 {
     if (!bot)
@@ -755,14 +852,34 @@ bool DcLeaderSignal::IsLeaderFightAssistWanted(Player* bot)
         uint32 const latchMs =
             uint32(DcSettings::GetFloat(leader, "PartyCombatLatch") * 1000.0f);
         bool const groupInCombat = IsPartyEngagedLatched(leader, latchMs);
-        // Diagnostic for the spiral death: fires only in the exact divergence we
-        // are fixing — a party fight is live but the elected leader's own flag reads
-        // out of combat. With the old leader-only gate this returned false here and
-        // the party stayed passive; this line proves the new path now engages.
+        // Diagnostic for the spiral death: fires in the divergence this gate fixes —
+        // a party fight reads live while the elected leader's own flag reads out of
+        // combat. With the old leader-only gate this returned false here and the
+        // party stayed passive; this line proves the new path engages.
+        //
+        // IT PRINTS ITS OWN INPUTS, AND IT HAS TO. The two terms are sampled on
+        // DIFFERENT CLOCKS — `group` is latched for PartyCombatLatch seconds past
+        // the last positive read, `leader` is instantaneous — so this fires for the
+        // whole latch tail after EVERY fight ends, when the leader has legitimately
+        // dropped combat. Read as a state ("the tank walked off mid-fight") it is
+        // pure artifact: across tp-20260808-162331-1 it covered 2173 seconds in 621
+        // episodes, 93% of them <= 4s, piled on the 3.0s latch value. That reading
+        // cost a designed, tested and merged feature that then had to be reverted.
+        // The stale-ms and the latch window below are what stop the next reader
+        // making the same mistake.
         if (groupInCombat && !leaderInCombat)
             DC_PULL_DEBUG("[DC:{}] assist: groupmate in combat while leader reads "
-                          "out-of-combat -> assisting (was the no-pull-state stall)",
-                          bot->GetName());
+                          "out-of-combat -> assisting (was the no-pull-state stall) "
+                          "[leader flag=0 instant | group=1 {} | latch {:.1f}s]",
+                          bot->GetName(),
+                          AnyGroupMemberInCombat(leader)
+                              ? "live"
+                              : Acore::StringFormat(
+                                    "LATCH TAIL, {}ms since live",
+                                    getMSTimeDiff(DcRun::Of(GET_PLAYERBOT_AI(leader))
+                                                      .partyEngagedLatchMs,
+                                                  getMSTime())),
+                          latchMs / 1000.0f);
         wanted = groupInCombat;
     }
 
@@ -986,13 +1103,13 @@ bool DcLeaderSignal::GetLeaderScoutTrailPoint(Player* bot, float lag, Position& 
             // the map. The interpolated point sits on a contiguous walked segment,
             // so it is reachable whenever the bracketing crumb is; fall back to the
             // crumb if the snap missed, else keep walking back.
-            if (IsNavReachable(bot, target))
+            if (IsNavReachable(bot, target) && !TrailOverZoneLine(bot, target))
             {
                 out = target;
                 found = true;
                 return false;
             }
-            if (IsNavReachable(bot, s.crumb))
+            if (IsNavReachable(bot, s.crumb) && !TrailOverZoneLine(bot, s.crumb))
             {
                 out = s.crumb;
                 found = true;
@@ -1008,7 +1125,7 @@ bool DcLeaderSignal::GetLeaderScoutTrailPoint(Player* bot, float lag, Position& 
     // closer until more trail accrues).
     for (auto it = preLag.rbegin(); it != preLag.rend(); ++it)
     {
-        if (IsNavReachable(bot, it->second))
+        if (IsNavReachable(bot, it->second) && !TrailOverZoneLine(bot, it->second))
         {
             out = it->second;
             return true;

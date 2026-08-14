@@ -16,8 +16,11 @@ class Player;
 //
 // The whole test harness leans on an issuing GM Player*: the party bots log in
 // under the GM's PlayerbotMgr and account, keep the GM as playerbots MASTER
-// (HasRealPlayerMaster() gates the stock fast path — react delay, AoE
-// avoidance; the S1062 fix), and FindGm() liveness-gates every stage. So a
+// (a real-player-or-self-bot master gates the stock fast path — react delay,
+// AoE avoidance; the S1062 fix. Stock expresses this as the master being
+// IsRealPlayer(master) || IsSelfBot(master); pre-PR-2592 it was the removed
+// PlayerbotAI::HasRealPlayerMaster()), and FindGm() liveness-gates every
+// stage. So a
 // console start needs a real Player object, not a code path around one.
 //
 // This provides it: a dedicated character (config
@@ -26,8 +29,9 @@ class Player;
 // (sRandomPlayerbotMgr.AddPlayerBot(guid, 0) — the masterless login path),
 // then made to pass for a real player master:
 //   * its own PlayerbotAI is SELF-MASTERED (SetMaster(driver)), so for every
-//     party bot HasRealPlayerMaster() == masterBotAI->IsRealPlayer() == true —
-//     the react-throttle fast path holds exactly as with a human GM;
+//     party bot the master resolves as IsSelfBot(driver) == true (pre-PR-2592:
+//     masterBotAI->IsRealPlayer(), master == bot) — the react-throttle fast
+//     path holds exactly as with a human GM;
 //   * it gets its own PlayerbotMgr (PlayerbotsMgr::AddPlayerbotData(p, false);
 //     the AI map and mgr map are separate, so one character can hold both),
 //     which is what AddPlayerBot/LogoutPlayerBot run through;

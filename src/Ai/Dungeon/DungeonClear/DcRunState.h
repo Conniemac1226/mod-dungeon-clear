@@ -128,6 +128,12 @@ struct DcRunState
                                    // (dedup: one announce per recovery episode; also
                                    // marks the episode so the "party restored" resume
                                    // line fires exactly once when deaths clear)
+    // The NoRezzer floor's two clocks — see the branch in DcRezDecision.h. Stamped
+    // off the PREVIOUS tick's verdict (the kernel is the thing that decides whether
+    // a rezzer is left, so the glue cannot know before calling it); a tick of lag is
+    // immaterial against graces measured in seconds.
+    uint32 noRezzerSinceMs      = 0;  // getMSTime() the party first had no rezzer
+    uint32 noRezzerQuietSinceMs = 0;  // ...and first read unengaged AND unflagged
 
     // === stranded-member recovery failsafe (leader-owned) =========================
     // The no-progress clock + last-seen progress snapshot, ticked live on the

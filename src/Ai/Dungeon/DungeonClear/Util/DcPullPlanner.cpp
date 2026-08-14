@@ -9,7 +9,9 @@
 #include "DungeonClearUtil.h"   // DC_PULL_* macros + DcTargeting::GetPullTarget (until DcTargeting moves)
 
 #include "DcBreadcrumb.h"
+#include "DcCombatFlag.h"
 #include "DcHazard.h"
+#include "DcZoneLine.h"
 #include "DungeonClearMath.h"
 #include "DungeonClearTuning.h"
 #include "Ai/Dungeon/DungeonClear/Settings/DcSettings.h"
@@ -114,6 +116,21 @@ namespace
             return false;
         return DcHazard::PointIsHot(bot, c.GetPositionX(), c.GetPositionY(), c.GetPositionZ()) ||
                DcHazard::LegIsHot(bot, c.GetPositionX(), c.GetPositionY(), c.GetPositionZ());
+    }
+
+    // True when a candidate camp sits on — or the walk to it crosses — the
+    // instance zone line (DcZoneLine). The first pull of a dungeon is the one
+    // that trips this: the only cleared ground behind the tank IS the entrance,
+    // so the drag-back walks the camp straight back at the exit trigger, and a
+    // self-bot standing in it is teleported out of the instance mid-run. The
+    // navmesh has no idea areatriggers exist, so IsNavReachable waves it
+    // through; this is the only gate that sees it.
+    bool CampOverZoneLine(Player* bot, Position const& c)
+    {
+        if (!bot)
+            return false;
+        return DcZoneLine::WouldCrossTheLine(bot, c.GetPositionX(), c.GetPositionY(),
+                                             c.GetPositionZ());
     }
 }
 
@@ -654,7 +671,44 @@ void DcPullPlanner::UpdateDynamicPullMode(PlayerbotAI* botAI, AiObjectContext* c
     // measuring "always Advanced" against the tuned ceiling (off by default on
     // both difficulties — see the registry row). Same direction as the room-clear
     // force, so they simply OR together.
+    // THIRD force: the target is standing inside ANOTHER pack's aggro, so there is
+    // no way to fight it where it stands without that pack joining. Leeroy means
+    // "walk in and tank in place", and in that geometry tanking in place is the
+    // bug — the estimate sizes who joins a fight that STAYS PUT at the target, and
+    // the neighbour joins precisely because the fight stays put.
+    //
+    // Stormwind Stockade (issue #17) is the case this was written for, and the
+    // numbers are what make it not a tuning question. Its central corridor is
+    // flanked by cells on BOTH sides at 10-21yd against ~29yd of real aggro reach,
+    // so every fight spot in that hall is inside two neighbours at once. Live run
+    // tr-20260809-201248-2: 35 LEEROY verdicts to 4 ADVANCED, and the one pull the
+    // harness sized predicted 3 mobs and fought 7. The pack weighed 9 thirds
+    // against the 15 ceiling — comfortably under, and correctly so, because the
+    // ceiling is asking about the PACK and the problem is the ROOM.
+    //
+    // Advanced is what fixes it: the maneuver drags the pack BACK down the
+    // corridor to a camp placed in ground the party already cleared, where no
+    // neighbour reaches. That is how a human clears the Stockade. Same direction
+    // as the other two forces, so all three simply OR together.
+    //
+    // SWEEP MAPS ONLY (RouteSweepRegistry), and the gate is explicit rather than
+    // inherited. TargetInsideBystanderPack is armed on heroic by PullEnRouteAvoid
+    // (default on there), so without this line the force would fire on every
+    // heroic map — and on nearly every pack, because a heroic room's formations
+    // sit 12-23yd apart against ~30yd spheres. That is PullForceAdvanced in all
+    // but name, which the registry row says must never ship on: it costs the full
+    // pull FSM on every single-mob pack.
+    //
+    // The same caution is why the scope is a map list rather than "all normal
+    // dungeons": forcing Advanced reshapes how every fight in a dungeon happens,
+    // and only the Stockade has the run data to justify it so far. See
+    // RouteSweepRegistry.h.
+    bool const insideNeighbour =
+        DcEngageGeometry::EnRouteSweepApplies(bot) &&
+        DcEngageGeometry::TargetInsideBystanderPack(bot, target);
+
     bool const forceAdv = DcTargeting::RoomClearForcesAdvanced(bot, context) ||
+                          insideNeighbour ||
                           DcSettings::GetBool(bot, "PullForceAdvanced");
 
     // Per-pack latch, UPGRADE-ONLY while approaching the SAME pack.
@@ -937,7 +991,13 @@ std::optional<Position> DcPullPlanner::ComputeSafeCamp(PlayerbotAI* botAI, Unit*
             // door we have not opened — the navmesh is blind to it. (Note: an
             // unreachable crumb skips the maxDrag cap below, matching the original
             // `continue`.)
-            if (!IsNavReachable(bot, c) || CampBlockedByDoor(bot, c) || CampInHazard(bot, c))
+            // Zone line first: it is pure arithmetic over a handful of cached
+            // volumes, while IsNavReachable is a full PathGenerator build. At a
+            // dungeon's first pull the oldest crumbs are ALL over the line, so
+            // short-circuiting here is the difference between rejecting them for
+            // free and paying a path build apiece to reject them anyway.
+            if (CampOverZoneLine(bot, c) || !IsNavReachable(bot, c) ||
+                CampBlockedByDoor(bot, c) || CampInHazard(bot, c))
                 return true;
             float const clear = clearanceAt(c);
             float const drag = tankPos.GetExactDist(&c);
@@ -1015,7 +1075,8 @@ std::optional<Position> DcPullPlanner::ComputeSafeCamp(PlayerbotAI* botAI, Unit*
                 DungeonPathFollower::PointBehind(bot, path, follower, setback))
         {
             Position cand(back->x, back->y, back->z);
-            if (IsNavReachable(bot, cand) && !CampBlockedByDoor(bot, cand) && !CampInHazard(bot, cand))
+            if (IsNavReachable(bot, cand) && !CampBlockedByDoor(bot, cand) &&
+                !CampInHazard(bot, cand) && !CampOverZoneLine(bot, cand))
             {
                 clearanceOut = clearanceAt(cand);
                 dragOut = tankPos.GetExactDist(&cand);
@@ -1065,7 +1126,8 @@ std::optional<Position> DcPullPlanner::ComputeSafeCamp(PlayerbotAI* botAI, Unit*
             // but on the far side of a wall / on another level. Only keep it if a
             // complete generated path reaches it, so the move never straight-lines
             // through the geometry in between — and never across/into a shut door.
-            if (!IsNavReachable(bot, cand) || CampBlockedByDoor(bot, cand) || CampInHazard(bot, cand))
+            if (!IsNavReachable(bot, cand) || CampBlockedByDoor(bot, cand) ||
+                CampInHazard(bot, cand) || CampOverZoneLine(bot, cand))
                 continue;
             float const c = clearanceAt(cand);
             float const drag = tankPos.GetExactDist(&cand);
@@ -1145,8 +1207,14 @@ std::optional<Position> DcPullPlanner::ComputeTrailCamp(PlayerbotAI* botAI,
             // path — a seam crumb would make the follower move straight-line under
             // the map. Also reject a crumb across/inside a still-shut door: on a
             // doubling-back route walked-distance "back" can land spatially forward,
-            // on door-gated ground the party has not legitimately reached.
-            if (IsNavReachable(bot, s.crumb) && !CampBlockedByDoor(bot, s.crumb))
+            // on door-gated ground the party has not legitimately reached. And
+            // reject a crumb on/past the zone line: the tank DID walk in through
+            // the entrance, so the oldest crumbs of a run sit on the exit trigger
+            // and trailing back onto them ports a self-bot out of the instance.
+            // Zone line tested first — pure arithmetic, and it spares the
+            // PathGenerator build on exactly the entrance crumbs it rejects.
+            if (!CampOverZoneLine(bot, s.crumb) && IsNavReachable(bot, s.crumb) &&
+                !CampBlockedByDoor(bot, s.crumb))
             {
                 result = s.crumb;
                 return false;
@@ -1162,7 +1230,8 @@ std::optional<Position> DcPullPlanner::ComputeTrailCamp(PlayerbotAI* botAI,
     // trail the farthest reachable point we have (the party simply stacks closer
     // behind the tank until more trail accrues).
     for (auto it = preSetback.rbegin(); it != preSetback.rend(); ++it)
-        if (IsNavReachable(bot, it->second) && !CampBlockedByDoor(bot, it->second))
+        if (IsNavReachable(bot, it->second) && !CampBlockedByDoor(bot, it->second) &&
+            !CampOverZoneLine(bot, it->second))
             return it->second;
     return tankPos;
 }
@@ -1200,9 +1269,18 @@ void DcPullPlanner::MaintainScoutCamp(PlayerbotAI* botAI, AiObjectContext* ctx)
         // camp here reverts the party to plain follow, which is exactly the posture
         // the persistent-event override asks for. See DungeonClearMath::
         // ShouldReleaseStandingPull for the guards (never mid-maneuver).
+        //
+        // PARTY-WIDE combat, not the tank's own flag. The tank in Engage is often
+        // flag-clear while the followers fight the pack it just dragged home — a
+        // scripted stage tags at range, so the pack arrives strung out and lands on
+        // whoever it reaches first. Asking only the tank tore the camp down mid
+        // camp-fight and sent it off to form the next pull with the last pack still
+        // standing. DcCombatFlag::AnyPartyEngagement is the module's one definition
+        // of "somebody is actually fighting" and already carries this exact warning.
         if (DungeonClearMath::ShouldReleaseStandingPull(
                 /*effectiveOn*/ false, /*standing*/ pull.phase != DcPullPhase::Idle || pull.HasCamp(),
-                bot->IsInCombat(), DcLeaderSignal::IsPullPhaseHolding(static_cast<uint32>(pull.phase)),
+                DcCombatFlag::AnyPartyEngagement(bot),
+                DcLeaderSignal::IsPullPhaseHolding(static_cast<uint32>(pull.phase)),
                 pull.bossPullback) &&
             DcLeaderSignal::IsDungeonClearLeader(bot))
         {

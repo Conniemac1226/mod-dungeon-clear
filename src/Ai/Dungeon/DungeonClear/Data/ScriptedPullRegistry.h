@@ -446,6 +446,73 @@ inline constexpr uint32 ScriptedPullTravelBudgetMs(float yards)
 // and spent it on a party that fights three yards further forward all fight.
 inline constexpr float  DC_SCRIPTED_PULL_FOLLOWER_LEASH = 12.0f;
 
+// How far past that leash a follower may stand to BRING ITS OWN TARGET INTO RANGE.
+//
+// The leash above is sized by the step-out, and the step-out is the only reason a
+// held follower legitimately leaves the camp — right up until the thing it is
+// supposed to be shooting refuses to come to the camp at all. A SmartAI range-mode
+// caster stands off 25-35yd from the tank (see DC_SCRIPTED_PULL_CAMP_STEP), so it can
+// easily sit 40-45yd from a camp the tank is planted on, and a 28.5yd spellDistance
+// then makes the leash and the shot mutually exclusive: the follower walks out, gets
+// in range, is recalled, and is out of range again the moment it arrives.
+//
+// Live (tp-20260808-211456-1), one hunter, one cycle, verbatim:
+//     assist camp: LOS, out of range (40.3yd) -> yield to stock reach
+//     assist camp: engaged C24685#22 in range+LOS (31.5yd) -> yield
+//     hold-at-camp: walking to camp (8.8yd, ...)
+// and round again. 5261 "LOS, out of range" lines and 2819 "no-LOS, closing" lines
+// across that plan's twenty runs — the reported "ranged DPS run around like they
+// can't get enough range".
+//
+// So the leash stretches by exactly the shortfall and no further (see
+// ScriptedFollowerReachLeash). What bounds the stretch is the camps themselves: the
+// tightest one any row uses is the rotunda's forward camp, which clears the nearest
+// LIVE pack by 47.5yd against a ~21.5yd elite reach, leaving 26yd of ground a
+// follower can stand on without waking anything. 22 keeps four of those in hand, and
+// it is far more than the cases need — the hunter above wanted 14.6yd, and a Sunblade
+// Magister parked 45yd off the camp wants 18.
+inline constexpr float  DC_SCRIPTED_PULL_FOLLOWER_REACH_CAP = 22.0f;
+
+// The follower's leash for one tick: the standing one, stretched just far enough to
+// put `campToTarget` inside `attackRange`, and never past the cap.
+//
+// The 0.9 is what stops the stretch from landing the follower exactly on its own
+// range edge, where one step of the mob's own movement puts it out again — the same
+// reason the recall releases in a band rather than on a point.
+inline constexpr float ScriptedFollowerReachLeash(float campToTarget, float attackRange)
+{
+    if (campToTarget <= 0.0f || attackRange <= 0.0f)
+        return DC_SCRIPTED_PULL_FOLLOWER_LEASH;
+    float const needed = campToTarget - attackRange * 0.9f;
+    if (needed <= DC_SCRIPTED_PULL_FOLLOWER_LEASH)
+        return DC_SCRIPTED_PULL_FOLLOWER_LEASH;
+    return needed < DC_SCRIPTED_PULL_FOLLOWER_REACH_CAP
+               ? needed : DC_SCRIPTED_PULL_FOLLOWER_REACH_CAP;
+}
+
+// Has the camp fight actually REACHED the camp? Measured mob-to-camp, and answered
+// against the follower leash on purpose: inside it, a follower handed this mob is
+// being handed something already standing on ground it is allowed to occupy, so the
+// seed can never turn into a walk. Outside it, the same seed would point a follower
+// at a mob it must leave the camp to reach, which is the one thing a scripted stage
+// forbids.
+//
+// This is the gate on the NON-COMBAT assist's scripted stand-down. That stand-down
+// used to be unconditional, and it closed the seed along with the walk: a follower
+// the pack has not personally touched has no stock proactive picker (the DC
+// multiplier zeroes "attack anything"/"pull start"/"reach pull"), no DC assist, and
+// no instance kill order (MgT's focus triggers all require IsInCombat) — so it stands
+// at the camp watching until a mob picks it. Measured across the 20 runs of
+// tp-20260808-191156-1, from "party released" to a follower's own first combat entry:
+// ordinary camp fights (assist live) 97 samples, median 1s, NONE over 15s; scripted
+// rows (assist stood down) 402 samples, 25 over 15s, worst 86s. tr-20260808-191202-9's
+// east row ran 62s against a 22s median for that row, with the hunter entering combat
+// 59s after release — three seconds before the fight ended.
+inline constexpr bool ScriptedCampFightHasReachedCamp(float mobDistToCamp)
+{
+    return mobDistToCamp <= DC_SCRIPTED_PULL_FOLLOWER_LEASH;
+}
+
 // --- the losing-ground ratchet -------------------------------------------------
 // How much ground a leg that should only ever CLOSE may lose against its own
 // best-so-far before it is re-issued from scratch. Giving ground is proof something
@@ -509,6 +576,107 @@ inline constexpr bool ScriptedPullEngageStalled(uint32 since, uint32 nowMs)
     return since != 0 && nowMs > since &&
            (nowMs - since) > DC_SCRIPTED_PULL_ENGAGE_STALL_MS;
 }
+
+// --- the camp that walks forward -------------------------------------------------
+//
+// A CAMP IS ONLY A CAMP IF THE FIGHT CAN HAPPEN AT IT, and against one class of mob it
+// cannot. AzerothCore's SmartAI has a RANGE MODE: SmartAI::InitializeAI takes the
+// first SMARTCAST_COMBAT_MOVE cast a creature owns (there is no SMARTCAST_MAIN_SPELL
+// anywhere on this trash) and calls SetMainSpell, which sets
+//   _attackDistance = spellMaxRange - NOMINAL_MELEE_RANGE
+// and then chases with MoveChase(victim, _attackDistance). ChaseRange(float) has
+// MinRange 0, so such a mob never backs away — but it never closes past that distance
+// either. It stands there and shoots. For the rotunda that is:
+//
+//   Sunblade Magister  Frostbolt 44606      40yd -> stands off at 35yd
+//   Sunblade Warlock   Immolate 44518       30yd -> stands off at 25yd
+//   Coilskar Witch     Forked Lightning 20299 30yd -> stands off at 25yd
+//
+// Every one of those is outside DC_SCRIPTED_PULL_LEASH (14) and well outside
+// DC_SCRIPTED_PULL_FOLLOWER_LEASH (12). So a camp fight whose last live member is one
+// of them is unwinnable BY CONSTRUCTION, and it fails in a very particular way: the
+// tank's rotation chases the only thing it can see, trips the leash at 14, is recalled
+// to the 10yd release band, yields the tick, and chases again — while the followers,
+// pinned at 12, log "LOS, out of range" or "no-LOS" at it and never fire.
+//
+// Live (tr-20260808-211502-8, the north-east row): 42 leash trips between 21:29:38 and
+// 21:32:05, every one of them 14.1-14.8yd out and back to 9.5-10.0, with the pack's
+// health frozen at 88% the whole time — one Sunblade Magister, alive and untouched,
+// standing where nobody was allowed to go. 218 trips across that plan's twenty runs.
+//
+// THE ANSWER IS TO MOVE THE CAMP, NOT TO LENGTHEN THE LEASH. Widening the leash was
+// tried and reverted (see DC_SCRIPTED_PULL_LEASH: at 18/10 the tank's steady state
+// moved 10-20yd forward of the authored camp on EVERY camp fight, whether or not
+// anything was ever standing off). And it would not even work here — 35yd of stand-off
+// is not a leash length any camp can afford. What a human tank does instead is walk up
+// to the caster and hold there, and the party moves up with them.
+//
+// SO THE CAMP WALKS, along the camp->stand-spot segment and no further. The stand spot
+// is the one forward point on this row that the plan has already reasoned about: it is
+// authored ~26yd from the pack and cleared against every pack the plan has not pulled
+// yet (the margins table in each row's comment), and the tank has already walked to it
+// once this pull to take the tag. Anything past it is ground nobody measured.
+//
+// Step size. One leash-band per trip: far enough that a step is worth taking (a 35yd
+// stand-off needs two or three of them), small enough that the party never jumps a
+// whole room on one bad sample. The clamp to the segment is what bounds the total.
+inline constexpr float  DC_SCRIPTED_PULL_CAMP_STEP = 12.0f;
+
+// How long the fight has to have stopped before the camp walks. Deliberately far
+// shorter than DC_SCRIPTED_PULL_ENGAGE_STALL_MS, because these are answers to the same
+// evidence at different confidence: eight seconds of a heroic pack taking no damage
+// while something sits outside the leash is enough to try moving up, and 45s of it
+// after we have already walked the camp to the stand spot is the admission that the
+// stage is over. The stall watchdog therefore stays exactly as it was — this rung runs
+// in front of it and re-arms the progress clock whenever it fires, so a camp that IS
+// walking cannot also be retiring.
+inline constexpr uint32 DC_SCRIPTED_PULL_STANDOFF_MS = 8000;
+
+// Has the camp fight stalled long enough to walk the camp at whatever is standing off?
+// Same `since` contract as ScriptedPullEngageStalled.
+inline constexpr bool ScriptedPullStandoffStalled(uint32 since, uint32 nowMs)
+{
+    return since != 0 && nowMs > since &&
+           (nowMs - since) > DC_SCRIPTED_PULL_STANDOFF_MS;
+}
+
+// --- The muster ------------------------------------------------------------------
+//
+// A stage is a PLANNED fight against a hand-counted pack, so the party should walk
+// into it the way it walks into a boss — topped up — and not merely "no longer
+// resting". The ordinary between-pulls floors are min(90, AlmostFullHealth) HP and
+// min(75, HighMana) mana, i.e. 85/65 on stock config, and they are sized for the
+// emergent case where the next pull is whatever the corridor scan found. For an
+// authored five-elite heroic pack that contains its own healer they are too low, and
+// the gap shows up as the tank dying in the fight's opening seconds.
+//
+// Live (tr-20260805-191834-3): "Waiting on Shannon (low mana), Erinerice (low HP)" at
+// 12:25, gate released 12:30, stage armed, tank dead at 12:52, party wiped by 13:14.
+// The floors were satisfied. They were satisfied at 65% healer mana.
+//
+// THESE SIT ABOVE WHAT STOCK BOTS RESTORE TO, which is deliberate and is why the wait
+// is bounded (see DC_SCRIPTED_PULL_MUSTER_MS). DungeonClearNeedsEat/DrinkTrigger is
+// raised to the same numbers while a stage is pending so the floors are reachable
+// rather than merely demanded; a bot with nothing to eat still has natural out-of-
+// combat regen, and the timeout covers the rest.
+inline constexpr float  DC_SCRIPTED_PULL_MUSTER_HP = 90.0f;
+inline constexpr float  DC_SCRIPTED_PULL_MUSTER_MP = 80.0f;
+
+// How long the muster may hold the plan. Bounded for the same reason every wait in
+// this pipeline is: a stage that can never arm is a run that never finishes, and that
+// is a strictly worse failure than a pull taken at 70% mana. Sized to a drink from
+// HighMana (65) to the floor above with a wide margin — a full drink cycle is ~10s —
+// so in practice the timeout is a backstop and not the usual exit.
+inline constexpr uint32 DC_SCRIPTED_PULL_MUSTER_MS = 40000;
+
+// The substance floor: once a muster has ARMED — the party was genuinely below the
+// floors — it holds at least this long even if the percentages close sooner. The
+// release test is an instantaneous percentage over a 5-point band, so one AoE heal
+// satisfied it in 1-5s and stages armed against parties that never sat down
+// (tp-20260806-212646-1: 115/184 musters ended <=5s the plan before). Sized to one
+// real drink cycle: sit latency plus 2-3 drink ticks. A party already at the floors
+// when the stage comes due never arms a muster and pays nothing.
+inline constexpr uint32 DC_SCRIPTED_PULL_MUSTER_MIN_MS = 8000;
 
 class ScriptedPullRegistry
 {

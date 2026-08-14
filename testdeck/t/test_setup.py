@@ -75,6 +75,154 @@ def test_layout_of_a_flat_install(tmp_path):
     assert lay["dist"] == (tmp_path / "dist").resolve()
 
 
+# ---- the Windows all-in-one shape -----------------------------------------
+#
+# One directory holds worldserver.exe, its configs/ and its data. The core
+# hardcodes GetConfigPath() to "configs/" on Windows, relative to the working
+# directory, so this is not one packager's idea — it is the only shape a
+# Windows server can have.
+
+
+def make_pack(root, conf_text=CONF, exe="worldserver.exe"):
+    """A Windows all-in-one install; returns its worldserver.conf."""
+    (root / "configs").mkdir(parents=True)
+    (root / "configs" / "worldserver.conf").write_text(conf_text)
+    if exe:
+        (root / exe).write_text("MZ")
+    return root / "configs" / "worldserver.conf"
+
+
+def test_finds_conf_in_a_windows_configs_dir(tmp_path):
+    """The shape the wizard could not see at all: every Windows install keeps
+    its conf in configs/, and no candidate looked there."""
+    conf = make_pack(tmp_path / "SingleCraft")
+    assert tdsetup.find_worldserver_conf(tmp_path / "SingleCraft") == conf
+
+
+def test_layout_of_a_windows_pack(tmp_path):
+    """The exe's directory is the working directory, and for a pack that has
+    nothing above it, the workspace too."""
+    root = (tmp_path / "SingleCraft").resolve()
+    conf = make_pack(root)
+    lay = tdsetup.layout_from_conf(conf)
+    assert lay["server_root"] == root
+    assert lay["dist"] == root
+    assert lay["base"] == root
+    assert lay["log_dir"] == root          # LogsDir unset = the working dir
+
+
+def test_server_root_is_the_bin_dir_of_a_posix_install(tmp_path):
+    conf = make_tree(tmp_path)
+    (tmp_path / "env" / "dist" / "bin" / "worldserver").write_text("elf")
+    assert tdsetup.find_server_root(conf) == tmp_path / "env" / "dist" / "bin"
+
+
+def test_server_root_without_a_binary_reads_the_config_dir(tmp_path):
+    """A host that installed the server as a service, or a tree read over a
+    share: no binary to point at, so the shape of the config directory is the
+    only evidence left. configs/ can only be below a working directory."""
+    conf = make_pack(tmp_path / "SingleCraft", exe=None)
+    assert tdsetup.find_server_root(conf) == (tmp_path / "SingleCraft")
+    posix = make_tree(tmp_path / "linux")
+    assert tdsetup.find_server_root(posix) == \
+        tmp_path / "linux" / "env" / "dist" / "bin"
+
+
+def test_layout_of_a_conf_beside_the_binary(tmp_path):
+    """`worldserver -c worldserver.conf` in one flat folder. The install is
+    that folder — not its parent, which belongs to somebody else."""
+    root = (tmp_path / "SingleCraft").resolve()
+    root.mkdir()
+    (root / "worldserver.exe").write_text("MZ")
+    conf = root / "worldserver.conf"
+    conf.write_text(CONF)
+    lay = tdsetup.layout_from_conf(conf)
+    assert lay["server_root"] == root
+    assert lay["dist"] == root
+    assert lay["base"] == root
+
+
+def test_server_root_finds_an_exe_one_level_down(tmp_path):
+    """Not every pack calls that directory bin/."""
+    root = tmp_path / "SingleCraft"
+    conf = make_pack(root, exe=None)
+    (root / "Server").mkdir()
+    (root / "Server" / "worldserver.exe").write_text("MZ")
+    assert tdsetup.find_server_root(conf) == root / "Server"
+
+
+def test_log_dir_follows_logs_dir_from_the_conf(tmp_path):
+    """`LogsDir = "../logs/worldserver/"` is what the AzerothCore Windows
+    guide itself tells people to write, and it is resolved against the working
+    directory — not against the config file."""
+    root = (tmp_path / "SingleCraft").resolve()
+    conf = make_pack(root, conf_text='LogsDir = "../logs/worldserver/"\n')
+    lay = tdsetup.layout_from_conf(conf)
+    assert lay["log_dir"] == root.parent / "logs" / "worldserver"
+
+
+def test_absolute_logs_dir_is_left_alone(tmp_path):
+    root = (tmp_path / "SingleCraft").resolve()
+    elsewhere = (tmp_path / "elsewhere").resolve()
+    conf = make_pack(root, conf_text=f'LogsDir = "{elsewhere}"\n')
+    assert tdsetup.layout_from_conf(conf)["log_dir"] == elsewhere
+
+
+def test_server_paths_default_to_the_working_directory(tmp_path):
+    conf = make_tree(tmp_path)
+    assert tdsetup.read_server_paths(conf) == ("", ".")
+    assert tdsetup.resolve_under(tmp_path, "") == tmp_path
+    assert tdsetup.resolve_under(tmp_path, ".") == tmp_path
+
+
+def test_conf_values_are_read_the_way_the_core_reads_them(tmp_path):
+    """Config.cpp takes everything after the first '=', trims it and deletes
+    every quote — quotes are how a path with spaces is written, not
+    delimiters."""
+    conf = make_tree(tmp_path, conf_text='DataDir = "C:/Program Files/ac data"\n')
+    assert tdsetup.read_server_paths(conf)[1] == "C:/Program Files/ac data"
+
+
+def test_commented_out_settings_are_not_read(tmp_path):
+    conf = make_tree(tmp_path, conf_text='#LogsDir = "nope"\nLogsDir = "logs"\n')
+    assert tdsetup.read_server_paths(conf)[0] == "logs"
+
+
+def test_rendered_config_spells_out_a_windows_pack(tmp_path):
+    """server_root is the value every other path hangs off on this layout, so
+    the written config has to state it rather than leave it to be re-guessed
+    by a reader."""
+    root = tmp_path / "SingleCraft"
+    conf = make_pack(root, conf_text='LogsDir = "logs"\n')
+    text = tdsetup.render_toml({
+        "layout": tdsetup.layout_from_conf(conf), "port": 8790,
+        "soap_url": "http://127.0.0.1:7878/", "soap_user": "u",
+        "soap_pass": "", "mysql_bin": "", "process_name": "worldserver.exe",
+    })
+    parsed = tdconfig.parse_toml(text)
+    assert Path(parsed["paths"]["server_root"]) == root.resolve()
+    assert Path(parsed["paths"]["log_dir"]) == (root / "logs").resolve()
+
+
+def test_a_windows_pack_config_round_trips(tmp_path):
+    """The whole point of the wizard: what it writes, config.load() reads back
+    as the same install."""
+    root = tmp_path / "SingleCraft"
+    conf = make_pack(root, conf_text=CONF + 'LogsDir = "logs"\nDataDir = "data"\n')
+    lay = tdsetup.layout_from_conf(conf)
+    text = tdsetup.render_toml({
+        "layout": lay, "port": 8790, "soap_url": "http://127.0.0.1:7979/",
+        "soap_user": "u", "soap_pass": "", "mysql_bin": "",
+        "process_name": "worldserver.exe",
+    })
+    out = tmp_path / "testdeck.toml"
+    out.write_text(text)
+    cfg = tdconfig.load(str(out), app_dir=tmp_path / "app")
+    assert cfg.server_root == lay["server_root"]
+    assert cfg.log_dir == lay["log_dir"]
+    assert cfg.worldserver_conf == conf.resolve()
+
+
 # ---- finding the install from the checkout's own position -----------------
 #
 # The deck sits at <core>/modules/mod-dungeon-clear/testdeck. Where the built

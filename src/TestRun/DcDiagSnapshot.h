@@ -69,6 +69,17 @@ namespace DcDiag
         bool reachable = false;
         bool reachChecked = false;
         bool canAttackMe = true;      // CreatureAI::CanAIAttack(member)
+        // A boss can be ALIVE, reachable and allowed to attack while being
+        // scripted out of the fight entirely. MgT's Kael'thas clamps damage to
+        // health-1, goes SetImmuneToAll + REACT_PASSIVE, despawns his summons and
+        // schedules KillSelf ELEVEN SECONDS later — and for all eleven the blame
+        // row read `0% reachable -> LEGITIMATE`, which is true and tells the reader
+        // nothing. Two runs in tp-20260808-162331-1 were disabled inside that
+        // window, already won, and it took reading the boss script to find out why.
+        // These three fields are that answer, printed where the question is asked.
+        bool immune = false;          // Unit::IsImmuneToAll
+        bool passive = false;         // Creature::GetReactState == REACT_PASSIVE
+        bool atOneHp = false;         // health == 1: a damage clamp, not a rounding
         float dist = -1.f;            // -1 when on another map
         std::uint32_t healthPct = 0;
         std::string victim;           // what the holder itself is fighting, if anything

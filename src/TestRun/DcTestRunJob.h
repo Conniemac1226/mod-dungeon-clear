@@ -17,6 +17,7 @@
 #include "ObjectGuid.h"
 #include "TestRun/DcTestDungeonRegistry.h"
 #include "TestRun/DcTestGearTiers.h"
+#include "TestRun/DcTestAreaTriggers.h"
 #include "TestRun/DcTestRunLiveJson.h"
 #include "TestRun/DcTestRunRecord.h"
 #include "TestRun/DcTestRunVerdict.h"
@@ -324,6 +325,11 @@ private:
     bool _masterRepairLogged = false;
 
     // --- monitoring state ----------------------------------------------------
+    // Stands in for the game clients this party does not have, so scripted
+    // areatriggers still fire during a headless run. Armed on entry to
+    // Monitoring, ticked unthrottled from Tick(). See DcTestAreaTriggers.h for
+    // why the harness has to do this at all.
+    DcTestAreaTriggers _areaTriggers;
     std::vector<BossRef> _roster;
     uint32 _lastMask = 0;
     std::size_t _lastAnchors = 0;
