@@ -17,7 +17,10 @@ AC_ADD_SCRIPT("${CMAKE_CURRENT_LIST_DIR}/src")
 
 AC_ADD_CONFIG_FILE("${CMAKE_CURRENT_LIST_DIR}/conf/mod_dungeon_clear.conf.dist")
 
-# New files added: Util/DcFirstContact.{h,cpp} (records the enemy that STARTED
+# New files added: Value/DungeonClearGroundHazardsValue.{h,cpp} (live
+#   persistent-area-aura ground pools — DynamicObjects, not creatures — near the
+#   bot; the DcHazard half that covers Scholomance's Cloud of Disease),
+# Util/DcFirstContact.{h,cpp} (records the enemy that STARTED
 #   each fight, off the OnPlayerEnterCombat `enemy` parameter DC had been
 #   discarding — the pull record only covers fights DC pulled),
 #   DungeonClearDispatch.h, DungeonClearAddonHook.cpp,
@@ -226,13 +229,21 @@ AC_ADD_CONFIG_FILE("${CMAKE_CURRENT_LIST_DIR}/conf/mod_dungeon_clear.conf.dist")
 #    cannot be reused for this.)
 # Util/DcHazard.{h,cpp}
 #   (the live predicates the camp/standoff solvers call: PointIsHot/SegmentIsHot
-#    for the persistent pulse, plus NearestVacate for the active retreat from an
-#    unfightable pulse creature — the Arcatraz Destroyed Sentinel summon.)
+#    for the persistent pulse, plus NearestVacate for the active retreat, and
+#    PointIsInVacateBand — the "will the retreat trigger re-fire if I land here"
+#    test the retreat validates its destination with. That is a DIFFERENT question
+#    from PointIsHot, which asks about placement; conflating them thrashed the
+#    Maraudon sludge packs.)
 # Trigger/DungeonClearHazardVacateTrigger + Action/DungeonClearHazardVacateAction
-#   (survival move: walk every party bot out of an unfightable hazard emitter's
-#    pulse and hold until it despawns. Registered in BOTH strategies at
-#    DcRel::HazardVacate = 55 — the Destroyed Sentinel pulses after the kill, once
-#    combat has usually dropped.)
+#   (survival move: walk every party bot out of an active-vacate emitter's pulse.
+#    Registered in BOTH strategies at DcRel::HazardVacate = 55 — the Arcatraz
+#    Destroyed Sentinel pulses after the kill, once combat has usually dropped.
+#    Per-row hysteresis decides what happens next: a thin holdBand means leave and
+#    move on (the unattackable summon), a wide one means stay out while it lives
+#    (Maraudon's Creeping Sludge, which melee are meant to abandon rather than
+#    trade with). The action COMMITS to one validated point rather than recomputing
+#    per tick — recomputing reverses the bearing whenever a nearer emitter is
+#    elected, which is how a sludge pack turned the retreat into a treadmill.)
 # Data/Events/ArcatrazEvents.cpp
 #   (map 552: Warden Mellichar's stasis-pod wave finale + roster patch.)
 # Data/Events/SethekkHallsEvents.cpp

@@ -716,11 +716,12 @@ public:
 
 // ANY role, BOTH engines. Moves the bot OUT of an active-vacate hazard emitter's
 // pulse (DcHazard::NearestVacate — the Arcatraz Destroyed Sentinel's 15yd Energy
-// Discharge). Aims a point directly away from the emitter, just past its pulse
-// radius plus slack, snapped to the navmesh, clear of every OTHER hazard, and
-// path-reachable; if the straight-away point is blocked it fans the away-bearing
-// around until one validates. Re-issued each tick. MOVEMENT_COMBAT priority so it
-// overrides the bot's MoveChase / advance. Driven by
+// Discharge, a Maraudon Creeping Sludge's 5yd Poison Shock). Aims a point directly
+// away from the emitter, past its pulse radius plus that row's retreat slack,
+// snapped to the navmesh, clear of every other hazard's placement keep-out AND of
+// every live danger band, and path-reachable; if the straight-away point is
+// blocked it fans the away-bearing around until one validates. MOVEMENT_COMBAT
+// priority so it overrides the bot's MoveChase / advance. Driven by
 // DungeonClearHazardVacateTrigger.
 class DungeonClearHazardVacateAction : public DcMovementAction
 {
@@ -730,6 +731,22 @@ public:
     {
     }
     bool Execute(Event event) override;
+
+private:
+    // The committed retreat point. This action used to recompute every tick, which
+    // is fine with ONE emitter (the bearing is stable) and catastrophic with a
+    // field of them: NearestVacate re-elects a different centre on a step of drift
+    // and the bearing reverses, so the bot re-plots its spline several times a
+    // second and travels nowhere. While this point is still outside every danger
+    // band and the bot is still walking to it, the action owns the tick and leaves
+    // the move alone. Cleared when the bot is clear, or when no bearing validated.
+    //
+    // `_fleeSetAtMs` caps how long that ride may last. A commitment is only as good
+    // as the point behind it, and an unbounded one turned a bad candidate into a
+    // 47-second march in tr-20260815-154816-5. Committed is not unsupervised.
+    Position _fleeTo;
+    bool     _fleeToValid = false;
+    uint32   _fleeSetAtMs = 0;
 };
 
 // Leader-only, non-combat engine. The tank's mirror of the follower assist: a

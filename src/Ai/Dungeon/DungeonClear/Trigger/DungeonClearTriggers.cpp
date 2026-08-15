@@ -1920,8 +1920,10 @@ bool DungeonClearHazardVacateTrigger::IsActive()
     if (!bot || bot->isDead())
         return false;
 
-    // Cheap map early-out before anything else touches game state.
-    if (!DcHazardRegistry::HasEmitters(bot->GetMapId()))
+    // Cheap map early-out before anything else touches game state. HasAnyHazard,
+    // not HasEmitters: Scholomance registers only a ground pool (Cloud of
+    // Disease), and a creature-only gate would make the retreat inert there.
+    if (!DcHazardRegistry::HasAnyHazard(bot->GetMapId()))
         return false;
 
     // Feature toggle.

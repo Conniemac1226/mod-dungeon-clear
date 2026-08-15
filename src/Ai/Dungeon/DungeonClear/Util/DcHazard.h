@@ -14,28 +14,43 @@ class Player;
 // persistent damage aura?" See DcHazardRegistry.h for the mechanism and why it
 // is split from the route half.
 //
-// MAP THREAD ONLY. These resolve live creature positions through
-// DungeonClearHazardsValue (500ms-cached) and must never be called from the
-// DcPathWorker thread — the route producer avoids hazards via the
-// DcNavPenaltyRegistry boxes instead, which need no game state at all.
+// Covers BOTH emitter kinds transparently — the creature-carried pulses
+// (DcHazardEmitter, via DungeonClearHazardsValue) and the persistent-area-aura
+// ground pools (DcGroundHazard, via DungeonClearGroundHazardsValue). A caller
+// asks "is this spot hot" and never has to know which kind answered.
 //
-// Both predicates take the cheap DcHazardRegistry::HasEmitters(mapId) early-out
-// first, so a map with no rows pays one bool per call and nothing else.
+// MAP THREAD ONLY. These resolve live creature / dynamic-object positions
+// through those two 500ms-cached values and must never be called from the
+// DcPathWorker thread — the route producer avoids the creature emitters via the
+// DcNavPenaltyRegistry boxes instead, which need no game state at all. Ground
+// pools have no route-half counterpart at all: their positions are not known
+// until a mob dies, so the live predicates are the whole defence.
+//
+// Every entry point takes a cheap DcHazardRegistry map early-out first, so a map
+// with no rows of either kind pays one bool per call and nothing else.
 namespace DcHazard
 {
-    // Extra yards beyond an emitter's vacate radius. `RetreatSlack` is how far PAST
-    // the rim the retreat AIMS; `StayBand` is how far out the bot still counts as
-    // in-danger.
+    // The two hysteresis bands now live PER ROW (DcHazardEmitter/DcGroundHazard
+    // `holdBand` and `retreatSlack`), because they encode two different intents and
+    // one pair of globals could only ever serve one of them:
     //
-    // RetreatSlack > StayBand ON PURPOSE, so the retreat OVERSHOOTS the danger band
-    // and the bot stops reading in-danger once it arrives — the trigger goes inert
-    // and normal driving (advance / follow) resumes, carrying the party ONWARD past
-    // the corpse. It does NOT pin the party at the rim until the summon despawns:
-    // the Destroyed Sentinel can linger a long time, and there is nothing to hold
-    // for — the summon is unattackable, so unlike a live-mob fight nothing pulls a
-    // cleared bot back toward it. A thin StayBand (just outside the real pulse) is
-    // all that's needed to fire the retreat before a drifting bot re-clips the
-    // damaging radius; the advancing party then simply leaves.
+    //   holdBand    — how far past the pulse the bot still reads IN DANGER.
+    //   retreatSlack — how far past the pulse the retreat AIMS.
+    //
+    // retreatSlack > holdBand always, so the retreat overshoots the danger band and
+    // the bot is genuinely clear when it arrives rather than re-firing on landing.
+    //
+    // A THIN holdBand (the Destroyed Sentinel's 2) means "leave, then carry on":
+    // the trigger goes inert on arrival, normal driving resumes, and the party
+    // advances past the corpse. Nothing pulls a cleared bot back toward an
+    // unattackable summon, so there is nothing to hold for.
+    //
+    // A WIDE holdBand (Maraudon's Creeping Sludge, 6) means "stay out while it
+    // lives": the emitter is a live mob the bot's own MoveChase keeps steering it
+    // back into, and only a band wider than melee reach can outlast that. The bot
+    // orbits the aura instead of oscillating through it.
+    //
+    // These remain as the DEFAULTS a row inherits when it does not say otherwise.
     inline constexpr float VacateRetreatSlack = 6.0f;
     inline constexpr float VacateStayBand     = 2.0f;
 
@@ -60,11 +75,12 @@ namespace DcHazard
     // Convenience wrapper: SegmentIsHot from `bot`'s current position to (x,y,z).
     bool LegIsHot(Player* bot, float x, float y, float z);
 
-    // The nearest live active-vacate hazard emitter (DcHazardEmitter::vacateRadius
-    // > 0 — the Destroyed Sentinel's persistent pulse) whose radius the bot is
-    // standing inside (same-floor). Returned as its live position + the raw pulse
-    // radius, so the retreat action can compute a point to clear to. `ok == false`
-    // when the bot is clear of every vacate emitter.
+    // The nearest live active-vacate hazard whose radius the bot is standing
+    // inside (same-floor) — either a creature emitter with vacateRadius > 0 (the
+    // Destroyed Sentinel's persistent pulse) or any ground pool (Scholomance's
+    // Cloud of Disease). Returned as its live position + the raw pulse radius, so
+    // the retreat action can compute a point to clear to. `ok == false` when the
+    // bot is clear of everything.
     //
     // Presence-based, not aura-based: a vacate emitter is dangerous the whole time
     // it exists (the summon pulses permanently), so there is no wind-up signal to
@@ -77,8 +93,27 @@ namespace DcHazard
         bool  ok{false};
         float x{0.0f}, y{0.0f}, z{0.0f};
         float pulseRadius{0.0f};
+        float retreatSlack{VacateRetreatSlack};  // this row's, not the global
     };
     VacateEmitter NearestVacate(Player* bot);
+
+    // True when (x,y,z) lies inside ANY live vacate emitter's DANGER band — the
+    // exact condition NearestVacate fires on, asked about a point the bot is not
+    // standing on yet.
+    //
+    // This is what a retreat must validate its destination against, and it is NOT
+    // the same question as PointIsHot. PointIsHot answers "is this a bad place to
+    // PLANT something" using each row's placement `radius`; this answers "will the
+    // retreat trigger re-fire the moment I arrive here" using `vacateRadius +
+    // holdBand`. For a row whose danger band is wider than its placement radius
+    // the two disagree, and a retreat that only consulted PointIsHot would happily
+    // pick a landing spot that is still in danger — then flee again, and again.
+    // With a field of overlapping emitters (a Maraudon sludge pack) that is a
+    // per-tick thrash that never leaves the pack: tr-20260815-134844-5 logged 83
+    // retreat re-issues in ~25s across two bots, both of which died mid-flee.
+    //
+    // MAP THREAD ONLY, same as everything else here.
+    bool PointIsInVacateBand(Player* bot, float x, float y, float z);
 }
 
 #endif

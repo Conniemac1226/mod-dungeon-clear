@@ -131,10 +131,13 @@ namespace DcRel
     // ladder it lands in — above HazardVacate (55), below BreakStuckCombat (65).
     inline constexpr float PullManeuver           = 60.0f; // leader: drag the pack back to camp
     inline constexpr float StayAtCamp             = 60.0f; // follower: pin at camp (role peer of PullManeuver)
-    // Survival: move OUT of an active-vacate hazard's pulse. The Arcatraz
-    // "Destroyed Sentinel" (21761) is summoned on a Sentinel's death at the corpse,
-    // is NOT_SELECTABLE (can't be fought), and pulses ~563-937 every second in
-    // 15yd until it despawns. The party is standing right on it after the kill and
+    // Survival: move OUT of an active-vacate hazard's pulse. Two shapes, one rung.
+    // The Arcatraz "Destroyed Sentinel" (21761) is summoned on a Sentinel's death
+    // at the corpse, is NOT_SELECTABLE (can't be fought), and pulses ~563-937 every
+    // second in 15yd until it despawns. Scholomance's "Cloud of Disease" (17742) is
+    // the same problem one tier down and with no creature at all — a persistent
+    // area aura dropped where a Diseased Ghoul dies, 350/s in 5yd for 20s.
+    // Either way the party is standing right on it after the kill and
     // nothing else moves them off, so they die where they stand. This drives EVERY
     // bot (no tank exemption — there is nothing to tank) out of the pulse, after
     // which normal driving advances them past it. Registered in BOTH engines because the summon
