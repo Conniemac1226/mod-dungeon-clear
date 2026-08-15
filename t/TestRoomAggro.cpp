@@ -105,6 +105,33 @@ TEST(RoomAggroRegistryTest, MechanarCapacitusHasNoRoomAggroEntry)
     EXPECT_EQ(RoomAggroRegistry::Find(554, 19219), nullptr);
 }
 
+// Gilnid (Deadmines, 36) is flagged NOT because he force-pulls his room — his whole
+// script is a Molten Metal cast, a yell and a door — but because the goblin foundry
+// cannot be decomposed into packs: 19 level-18 ELITES standing 7.1-57.6yd from him,
+// 17 of which chain together at a same-level elite's ~20yd aggro radius. The pull
+// governor's 6yd-spread / 10yd-assist windows read that as "estimated 2" and Leeroy
+// the room, then Gilnid joins the pile (tp-20260815-171416-1: 5 of 20 runs wiped
+// there, status alternating boss/trash every 1-2s). radius 60 covers all 19; 50
+// would strand the three western-most at 52.0 / 55.3 / 57.6yd.
+TEST(RoomAggroRegistryTest, DeadminesGilnidPreClearsTheFoundry)
+{
+    RoomAggroBoss const* gilnid = RoomAggroRegistry::Find(36, 1763);
+    ASSERT_NE(gilnid, nullptr);
+    EXPECT_FLOAT_EQ(gilnid->radius, 60.0f);
+    // Any hostile in the room — the foundry is a mixed Craftsman/Engineer floor and
+    // the safe over-approximation is the documented default for a row like this.
+    EXPECT_TRUE(gilnid->memberEntries.empty());
+    EXPECT_FALSE(gilnid->hasYBand);
+    // No overrides: the computed boss sphere already excludes the two Craftsmen at
+    // 7.1/9.2yd (they come with the boss) and admits everything past it as trash.
+    EXPECT_FLOAT_EQ(gilnid->pullOutRadius, 0.0f);
+    EXPECT_FLOAT_EQ(gilnid->skirtRadius, 0.0f);
+    EXPECT_FLOAT_EQ(RoomAggroRegistry::SkirtOverride(36, 1763), 0.0f);
+    // The room members are room, not bosses.
+    EXPECT_EQ(RoomAggroRegistry::Find(36, 1731), nullptr);  // Goblin Craftsman
+    EXPECT_EQ(RoomAggroRegistry::Find(36, 622), nullptr);   // Goblin Engineer
+}
+
 // Nethermancer Sepethrea (Mechanar, 554) IS a room-aggro boss: her chamber holds
 // three elite trash groups pre-cleared and dragged back toward the entrance before
 // the pull. radius 70 covers the farthest (Pack A ~67yd); pullOutRadius 14 shrinks
