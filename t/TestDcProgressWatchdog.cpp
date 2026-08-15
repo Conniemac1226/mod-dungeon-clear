@@ -7,9 +7,14 @@
 // progress signals the route-glide / door-walk-in wedge detectors and the swim
 // leg were consolidated onto, at the exact thresholds those sites use, so the
 // consolidation stays behavior-preserving.
+//
+// Also covers DcApproachState's blocked-state DOOR watchdog (last section) —
+// a different clock with the same job: decide when a hold has gone on long
+// enough to be a failure rather than a wait.
 
 #include "gtest/gtest.h"
 #include "DcProgressWatchdog.h"
+#include "Ai/Dungeon/DungeonClear/DcApproachState.h"
 
 namespace
 {
@@ -153,4 +158,103 @@ TEST(DcProgressWatchdog, ResetClearsEverything)
     EXPECT_EQ(w.lastProgressMs, 0u);
     // After Reset the next closing sample re-arms as a fresh first sample.
     EXPECT_TRUE(w.TickClosing(99.0f, MIN_CLOSE, 600u));
+}
+
+// ---- Blocked-state door watchdog (DcApproachState::ObserveDoorStall) ------
+//
+// The door-blocked action's give-up clock. Only its ARRIVAL park observes it;
+// the walk-in failure parks (which fire anywhere along the up-to-80yd approach)
+// must not, or the budget goes on travel time and the run auto-pauses at a door
+// it never touched. Scholomance batch tp-20260815-132009-1 lost two runs that
+// way with zero Use() calls behind either pause.
+
+namespace
+{
+    constexpr uint32 REARM_MS   = 10000;  // DC_DOOR_STALL_REARM_MS
+    constexpr uint32 TIMEOUT_MS = 5000;   // DoorBlockedTimeout default, 5s
+
+    // Scholomance's Iron Gates, by their real spawn low-guids. Entry is
+    // irrelevant here — the watchdog keys on GUID identity only.
+    ObjectGuid DoorGuid(ObjectGuid::LowType low)
+    {
+        return ObjectGuid(HighGuid::GameObject, /*entry*/ 175612, low);
+    }
+}
+
+TEST(DcDoorStallWatchdog, ArmsOnFirstObservationAndTimesOutAtTheBudget)
+{
+    DcApproachState s;
+    ObjectGuid const gate = DoorGuid(40);
+    EXPECT_FALSE(s.ObserveDoorStall(gate, 1000u, REARM_MS, TIMEOUT_MS));
+    EXPECT_EQ(s.doorStallGuid, gate);
+    EXPECT_EQ(s.doorStallSinceMs, 1000u);
+    // Still inside the window.
+    EXPECT_FALSE(s.ObserveDoorStall(gate, 1000u + TIMEOUT_MS - 1, REARM_MS, TIMEOUT_MS));
+    // Budget spent working the SAME door -> give up.
+    EXPECT_TRUE(s.ObserveDoorStall(gate, 1000u + TIMEOUT_MS, REARM_MS, TIMEOUT_MS));
+}
+
+TEST(DcDoorStallWatchdog, ADifferentDoorStartsAFreshWindow)
+{
+    DcApproachState s;
+    s.ObserveDoorStall(DoorGuid(40), 1000u, REARM_MS, TIMEOUT_MS);
+    // The corridor's next gate, observed after the first one's budget would
+    // have expired: it gets its own full window, not the predecessor's accrual.
+    EXPECT_FALSE(s.ObserveDoorStall(DoorGuid(32), 9000u, REARM_MS, TIMEOUT_MS));
+    EXPECT_EQ(s.doorStallSinceMs, 9000u);
+}
+
+TEST(DcDoorStallWatchdog, AnObservationGapRearmsTheWindow)
+{
+    DcApproachState s;
+    ObjectGuid const gate = DoorGuid(40);
+    s.ObserveDoorStall(gate, 1000u, REARM_MS, TIMEOUT_MS);
+    // The run moved on and came back (a fight, a loot pass, a re-route). A gap
+    // of at least REARM_MS means the previous stall ended, so the door gets a
+    // clean budget rather than instantly timing out on stale accrual.
+    EXPECT_FALSE(s.ObserveDoorStall(gate, 1000u + REARM_MS, REARM_MS, TIMEOUT_MS));
+    EXPECT_EQ(s.doorStallSinceMs, 1000u + REARM_MS);
+}
+
+TEST(DcDoorStallWatchdog, GapUnderTheRearmKeepsAccruingAcrossAutoCloseCycles)
+{
+    DcApproachState s;
+    ObjectGuid const gate = DoorGuid(40);
+    s.ObserveDoorStall(gate, 1000u, REARM_MS, TIMEOUT_MS);
+    // Auto-closing gates (Strat's King's Square Gate re-shuts 3s after opening)
+    // interleave open/shut ticks. A sub-REARM_MS gap must NOT re-arm, or a bot
+    // livelocked on the cycle never times out.
+    EXPECT_FALSE(s.ObserveDoorStall(gate, 4000u, REARM_MS, TIMEOUT_MS));
+    EXPECT_EQ(s.doorStallSinceMs, 1000u);
+    EXPECT_TRUE(s.ObserveDoorStall(gate, 6000u, REARM_MS, TIMEOUT_MS));
+}
+
+TEST(DcDoorStallWatchdog, UnobservedApproachTicksNeverAccrue)
+{
+    // The regression itself, expressed on the state: the bot walks the corridor
+    // for well over the timeout while the approach parks decline to observe.
+    // Arrival must then get a FULL window — under the old code the walk-in's
+    // parks had already armed and spent it, and the arrival tick auto-paused
+    // without ever clicking.
+    DcApproachState s;
+    ObjectGuid const gate = DoorGuid(40);
+    // 60s of approach: not one observation.
+    EXPECT_EQ(s.doorStallGuid, ObjectGuid::Empty);
+    EXPECT_EQ(s.doorStallSinceMs, 0u);
+    // Arrival.
+    EXPECT_FALSE(s.ObserveDoorStall(gate, 60000u, REARM_MS, TIMEOUT_MS));
+    EXPECT_EQ(s.doorStallSinceMs, 60000u);
+    // A click's worth of ticks still inside the fresh budget.
+    EXPECT_FALSE(s.ObserveDoorStall(gate, 62500u, REARM_MS, TIMEOUT_MS));
+}
+
+TEST(DcDoorStallWatchdog, OnBossChangeClearsTheStall)
+{
+    DcApproachState s;
+    ObjectGuid const gate = DoorGuid(40);
+    s.ObserveDoorStall(gate, 1000u, REARM_MS, TIMEOUT_MS);
+    s.OnBossChange(10503);
+    EXPECT_EQ(s.doorStallGuid, ObjectGuid::Empty);
+    EXPECT_EQ(s.doorStallSinceMs, 0u);
+    EXPECT_EQ(s.doorStallLastMs, 0u);
 }
