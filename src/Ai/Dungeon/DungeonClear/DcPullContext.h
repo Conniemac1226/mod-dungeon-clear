@@ -71,6 +71,18 @@ struct DcPullContext
                                                  // tank during the drag-back; the
                                                  // debounce latch for
                                                  // DungeonClearMath::ShouldPlantEarly.
+    uint32      packPlantedSince = 0;            // getMSTime() the PULLED MOB was
+                                                 // first seen holding
+                                                 // UNIT_STATE_NO_COMBAT_MOVEMENT
+                                                 // during this drag, 0 = not
+                                                 // streaking. A mob in that state has
+                                                 // no chase generator, so the drag
+                                                 // cannot work by construction; the
+                                                 // streak debounces the transient
+                                                 // case (a caster that stops moving
+                                                 // only while it casts) from the
+                                                 // permanent one. See
+                                                 // DC_PULL_PLANT_CONFIRM_MS.
     bool        bossPullback = false;           // this pull is a BossPullbackRegistry
                                                  // boss drag, not an ordinary trash
                                                  // pull. (No row uses it today — the

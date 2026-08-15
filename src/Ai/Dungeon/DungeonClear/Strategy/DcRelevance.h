@@ -119,6 +119,16 @@ namespace DcRel
     // Inert on every map without a drivesInCombat event, which is all of them bar
     // Black Morass — the trigger resolves the flag before it fires.
     inline constexpr float EventDueCombat         = 61.0f; // leader: wave-encounter event driver
+    // Registered in BOTH engines (like BreakStuckCombat / HazardVacate). The combat
+    // registration is the working one; the NON-combat registration is a liveness net.
+    // Every watchdog the maneuver owns — tag-leg and return-leg timeouts, the CC
+    // abort, the arrive-at-camp release — is evaluated inside the action, so they
+    // only tick while the action runs. An LOS-break pull ends with the tank unable to
+    // see its own target, which is InvalidTargetValue's out-of-LOS clause, so stock
+    // `drop target` (99) can move the tank to the non-combat engine mid-drag and
+    // freeze the FSM in a holding phase with no clock running (Deadmines workshop,
+    // tp-20260815-162044-2: Returning pinned 130-215s). 60 also clears the non-combat
+    // ladder it lands in — above HazardVacate (55), below BreakStuckCombat (65).
     inline constexpr float PullManeuver           = 60.0f; // leader: drag the pack back to camp
     inline constexpr float StayAtCamp             = 60.0f; // follower: pin at camp (role peer of PullManeuver)
     // Survival: move OUT of an active-vacate hazard's pulse. The Arcatraz

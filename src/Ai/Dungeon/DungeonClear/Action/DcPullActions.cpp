@@ -106,6 +106,16 @@ namespace
     // Per-leg watchdog (tag / return) — abort a leg that makes no progress so a
     // navmesh wedge can never freeze the pull.
     constexpr uint32 DC_PULL_LEG_TIMEOUT_MS = 10000;
+    // How long the pulled mob must hold UNIT_STATE_NO_COMBAT_MOVEMENT before the
+    // drag is abandoned as unwinnable. The state itself is exact — the core sets it
+    // the moment something tells the creature to stop chasing, and clears its chase
+    // generator with it — so this is not a confidence threshold, only a debounce
+    // against creatures that toggle it TRANSIENTLY (a caster that plants for the
+    // duration of a cast and resumes after). 1.5s comfortably outlasts a cast-length
+    // pause while staying far inside the 10s leg watchdog it pre-empts, so a
+    // genuinely planted pack is answered in the first second or two of the drag
+    // rather than after the tank has hauled it the whole way for nothing.
+    constexpr uint32 DC_PULL_PLANT_CONFIRM_MS = 1500;
     // Per-leg watchdog for a PULL-BACK boss drag. The flat 10s above is sized to a
     // trash pull, whose legs are a few yards — the tank commits just outside the
     // pack's aggro. A BossPullbackRegistry drag is a different scale: Ghaz'an's
@@ -2359,6 +2369,9 @@ bool DungeonClearPullManeuverAction::Execute(Event /*event*/)
         // must start fresh for the new drag.
         pull.returnLegStartDist = bot->GetExactDist(&camp);
         pull.plantTicks = 0;
+        // Fresh leg, fresh streak: the pack-cannot-follow debounce must measure THIS
+        // drag, never a stale reading carried in from a previous one.
+        pull.packPlantedSince = 0;
         // Arm the scripted drag's ground ratchet at the leg's start distance (see
         // the losing-ground check on the return leg below).
         pull.scriptedReturnBest = pull.scriptedStage >= 0 ? pull.returnLegStartDist : 0.0f;
@@ -2610,6 +2623,94 @@ bool DungeonClearPullManeuverAction::Execute(Event /*event*/)
         DC_PULL_INFO("[DC:{}] advanced-pull: at camp ({:.1f}yd) -> engaging, party "
                      "released", bot->GetName(), dist);
         return false;
+    }
+
+    // THE PACK CANNOT FOLLOW. A drag assumes the mob chases the tank; a mob holding
+    // UNIT_STATE_NO_COMBAT_MOVEMENT has had its chase generator taken away, so it
+    // will stand exactly where it was tagged no matter how far or how cleverly the
+    // tank retreats. Dragging it is not slow, it is impossible — and the failure is
+    // silent, because both sides simply stop: the tank waits at a camp for a pack
+    // that is never coming, and the party waits passive behind it.
+    //
+    // Overwhelmingly this is SmartAI's ALLOW_COMBAT_MOVEMENT(0) fired by a
+    // SMART_EVENT_RANGE band — the "shoots you from where it stands" archetype. It
+    // is not rare and it is not one dungeon: 293 creature templates in the world DB
+    // carry that pattern, ~35 of them spawning across ~17 instances this module
+    // runs (Blackrock Depths 8, Maraudon 4, Deadmines 3, Utgarde Keep / Zul'Gurub 3
+    // each, ...). Reading the UNIT STATE rather than the script rows also covers the
+    // shapes a table of entries would miss — C++ AI calling SetCombatMovement(false),
+    // and anything rooted or otherwise immobilised mid-drag.
+    //
+    // The answer is to go to it. The tank turns around and re-engages where the pack
+    // actually is, and the Engage flip releases the party to follow — which is the
+    // same fight they would have had with pulls off, and the fight a human would
+    // take. Deliberately NOT "drag further until it re-chases": the band that makes
+    // one resume is per-creature (Goblin Engineer 622 resumes only outside 30yd),
+    // and hauling a pack 30yd+ through a dungeon to find that edge is how the
+    // neighbouring pack joins in.
+    //
+    // Excluded for a PULL-BACK and for a SCRIPTED stage. Both are authored maneuvers
+    // whose whole premise is that the fight must happen at a specific anchor, and a
+    // scripted plan already has purpose-built machinery for a pack that will not
+    // close (the stand-off camp walk). Neither should be second-guessed here.
+    if (!pull.bossPullback && pull.scriptedStage < 0)
+    {
+        Unit* const pulled = pull.pullTarget.IsEmpty()
+            ? nullptr : ObjectAccessor::GetUnit(*bot, pull.pullTarget);
+        bool const planted = pulled && pulled->IsAlive() &&
+                             pulled->HasUnitState(UNIT_STATE_NO_COMBAT_MOVEMENT);
+
+        uint32 plantedSinceOut = pull.packPlantedSince;
+        bool const abandon = DungeonClearMath::ShouldAbandonPlantedDrag(
+            planted, pull.packPlantedSince, now, DC_PULL_PLANT_CONFIRM_MS,
+            plantedSinceOut);
+        pull.packPlantedSince = plantedSinceOut;
+
+        if (abandon)
+        {
+            // Hard-cancel the run-home for the same reason the CC abort does: the
+            // drag-back is a launched MOVEMENT_COMBAT glide, and a plain stop can
+            // leave it queued so the tank resumes sprinting to the abandoned camp
+            // the moment it is free.
+            DcMovement::StopBot(bot, DcMovement::Stop::HardPin);
+
+            // Commit to the pack now rather than drifting until stock combat
+            // re-acquires. Nearest live attacker if one has reached us, else the mob
+            // we tagged — which for a planted pack is the normal case, because
+            // nothing has reached us and nothing will.
+            Unit* engageOn = nullptr;
+            for (Unit* a : bot->getAttackers())
+            {
+                if (!a || !a->IsAlive())
+                    continue;
+                if (!engageOn ||
+                    bot->GetExactDist2d(a) < bot->GetExactDist2d(engageOn))
+                    engageOn = a;
+            }
+            if (!engageOn)
+                engageOn = pulled;
+
+            bot->SetSelection(engageOn->GetGUID());
+            if (!bot->HasInArc(CAST_ANGLE_IN_FRONT, engageOn))
+                ServerFacade::instance().SetFacingTo(bot, engageOn);
+            context->GetValue<Unit*>(DcKey::Stock::CurrentTarget)->Set(engageOn);
+            bot->Attack(engageOn, botAI->IsMelee(bot));
+            botAI->ChangeEngine(BOT_STATE_COMBAT);
+
+            // Report the MEASURED hold, not the threshold — when this fires late
+            // (a mob that toggled a few times before settling) the difference is
+            // the whole diagnostic.
+            uint32 const plantedFor = now > pull.packPlantedSince
+                ? now - pull.packPlantedSince : 0u;
+
+            DcSetPullPhase(context, DcPullPhase::Engage);
+            DC_PULL_INFO("[DC:{}] advanced-pull: {} has no combat movement (held "
+                         "{} ms) — it cannot be dragged, so the drag is abandoned at "
+                         "{:.1f}yd from camp -> engaging it where it stands, party "
+                         "released", bot->GetName(), pulled->GetName(),
+                         plantedFor, dist);
+            return false;
+        }
     }
 
     // Return-leg budget off the leg length stamped at the turn-around, so a

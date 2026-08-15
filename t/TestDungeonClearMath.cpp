@@ -352,6 +352,61 @@ TEST(DungeonClearCcAssistTest, ZeroNowLatchesToOne)
 }
 
 // ---------------------------------------------------------------------------
+// ShouldAbandonPlantedDrag — the pack-cannot-follow gate. A mob holding
+// UNIT_STATE_NO_COMBAT_MOVEMENT has no chase generator, so a drag-back cannot
+// work at any distance and the tank must turn around and fight it where it
+// stands. Shares the ShouldAbortPullForCc latch contract by delegation; these
+// pin the behaviour at THIS call site so a future re-implementation that stops
+// delegating still has to honour it.
+// ---------------------------------------------------------------------------
+using DungeonClearMath::ShouldAbandonPlantedDrag;
+
+// A mob that is chasing normally never abandons the drag, and clears any latch.
+TEST(DungeonClearPlantedDragTest, ChasingPackKeepsTheDrag)
+{
+    std::uint32_t out = 4321u;
+    EXPECT_FALSE(ShouldAbandonPlantedDrag(false, 3000u, 9000u, 1500u, out));
+    EXPECT_EQ(out, 0u);
+}
+
+// First planted tick arms the streak but keeps dragging — the state may be the
+// transient kind (a caster planting only for the duration of a cast).
+TEST(DungeonClearPlantedDragTest, FirstPlantedTickArmsButKeepsDragging)
+{
+    std::uint32_t out = 0u;
+    EXPECT_FALSE(ShouldAbandonPlantedDrag(true, 0u, 8000u, 1500u, out));
+    EXPECT_EQ(out, 8000u);
+}
+
+// Held for the confirm window: the drag is abandoned. 1500ms is the shipped
+// value and lands well inside the 10s return-leg watchdog it pre-empts.
+TEST(DungeonClearPlantedDragTest, SustainedPlantAbandonsAfterConfirmWindow)
+{
+    std::uint32_t out = 0u;
+    EXPECT_FALSE(ShouldAbandonPlantedDrag(true, 8000u, 9499u, 1500u, out));
+    EXPECT_EQ(out, 8000u);
+    EXPECT_TRUE(ShouldAbandonPlantedDrag(true, 8000u, 9500u, 1500u, out));
+    EXPECT_EQ(out, 8000u);
+}
+
+// A creature that toggles combat movement off only while it casts must NOT lose
+// its drag: each pause re-arms fresh, so brief plants never accumulate.
+TEST(DungeonClearPlantedDragTest, TransientPlantDoesNotAccumulate)
+{
+    std::uint32_t out = 0u;
+    // Plants at 8000, resumes chasing at 8900 (streak cleared), plants again at
+    // 9200 — the window restarts there, not at 8000.
+    EXPECT_FALSE(ShouldAbandonPlantedDrag(true, 0u, 8000u, 1500u, out));
+    EXPECT_FALSE(ShouldAbandonPlantedDrag(false, out, 8900u, 1500u, out));
+    EXPECT_EQ(out, 0u);
+    EXPECT_FALSE(ShouldAbandonPlantedDrag(true, out, 9200u, 1500u, out));
+    EXPECT_EQ(out, 9200u);
+    // Had 8000 counted, this would already have fired; it must not.
+    EXPECT_FALSE(ShouldAbandonPlantedDrag(true, out, 10699u, 1500u, out));
+    EXPECT_TRUE(ShouldAbandonPlantedDrag(true, out, 10700u, 1500u, out));
+}
+
+// ---------------------------------------------------------------------------
 // ShouldTripCampSafety — the camp-safety valve gate (attribution + grace).
 // Mirrors the ShouldAbortPullForCc fixture: same latch/clear contract.
 // ---------------------------------------------------------------------------

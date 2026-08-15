@@ -187,6 +187,30 @@ TEST(DungeonClearRelevanceTest, HazardVacateOutranksNonCombatDrivers)
     EXPECT_LT(DcRel::HazardVacate, DcRel::Chat);
 }
 
+// The pull maneuver is dual-engine for the same reason HazardVacate and
+// BreakStuckCombat are: stock `drop target` (99) can move a still-flagged bot onto
+// the NON-combat engine, and every watchdog the maneuver owns lives inside its
+// action — so a combat-only registration lets an LOS-break drag freeze in a holding
+// phase with no clock running at all. In the non-combat ladder 60 must clear the
+// driving rungs it is unblocking and stay under the phantom-combat hatch.
+TEST(DungeonClearRelevanceTest, PullManeuverIsDualEngineAndClearsBothLadders)
+{
+    // Above every non-combat driving rung it now shares an engine with.
+    EXPECT_GT(DcRel::PullManeuver, DcRel::HazardVacate);
+    EXPECT_GT(DcRel::PullManeuver, DcRel::StrandedRecovery);
+    EXPECT_GT(DcRel::PullManeuver, DcRel::HealReposition);
+    EXPECT_GT(DcRel::PullManeuver, DcRel::Pull);
+    EXPECT_GT(DcRel::PullManeuver, DcRel::AssistCamp);
+    EXPECT_GT(DcRel::PullManeuver, DcRel::HoldAtCamp);
+    EXPECT_GT(DcRel::PullManeuver, DcRel::Advance);
+    // Below the phantom-combat hatch, which is inert whenever anything is fightable
+    // and must win the tick when it does fire.
+    EXPECT_LT(DcRel::PullManeuver, DcRel::BreakStuckCombat);
+    // Below the terminal bailouts on both sides.
+    EXPECT_LT(DcRel::PullManeuver, DcRel::Chat);
+    EXPECT_LT(DcRel::PullManeuver, DcRel::PartyDied);
+}
+
 // Contribution-gated combat regroup (Option B) is pinned BELOW the stock combat
 // movers, unlike the old distance-tether rung that had to sit above them. Stock
 // ACTION_MOVE / MoveChase is 30; the regroup only fires when stock movement has no

@@ -164,6 +164,20 @@ bool DungeonClearMath::ShouldAbortPullForCc(bool impaired, std::uint32_t ccSince
     return elapsed >= graceMs;
 }
 
+bool DungeonClearMath::ShouldAbandonPlantedDrag(bool planted,
+                                                std::uint32_t plantedSince,
+                                                std::uint32_t now,
+                                                std::uint32_t confirmMs,
+                                                std::uint32_t& plantedSinceOut)
+{
+    // Identical latch semantics — arm on the first qualifying tick, disarm the
+    // moment the condition clears, fire once it has persisted. Delegated rather
+    // than duplicated so the two can never drift apart on the awkward corners
+    // (now == 0, confirmMs == 0, a latch armed ahead of `now`).
+    return ShouldAbortPullForCc(planted, plantedSince, now, confirmMs,
+                                plantedSinceOut);
+}
+
 bool DungeonClearMath::ShouldTripCampSafety(bool inCombat, float healthPct,
                                             float safetyHpPct,
                                             bool attackerIsPullTarget,
