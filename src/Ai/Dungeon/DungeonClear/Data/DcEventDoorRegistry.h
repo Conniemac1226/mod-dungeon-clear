@@ -96,6 +96,46 @@ namespace DcEventDoorRegistry
         }
     }
 
+    // Doors that shut TEMPORARILY under instance-script control and reopen
+    // themselves on a timer. The bot must neither open one (the script owns the
+    // GO state) nor auto-pause on one (there is nothing for a player to come
+    // and solve) — it holds where it stands and the door frees it.
+    //
+    // Stratholme's two gate traps are the whole list. instance_stratholme's
+    // Update() watches two floor positions — (3612.3,-3335.4) Scarlet side,
+    // (3919.9,-3547.3) undead side — and the instant a non-GM player comes
+    // within 5.5yd it slams the matching PAIR of portcullises shut, spawns
+    // plagued critters on the trapped player 2s later, and reopens both gates
+    // 20s after that (EVENT_GATE*_DELAY). The trap then sits on a 30-minute
+    // cooldown, so a run meets it at most once per side.
+    //
+    // Nothing about that shape fits the pause machinery: the gates are
+    // lock-free with startOpen=1 (so BotCanOpenDoorLikePlayer already refuses
+    // them, and a bare Use() would fight the script's own DoUseDoorOrButton
+    // toggle), and they are shut for a bounded 20s. Run tr-20260816-151006-14
+    // walked its tank over the Scarlet-side trigger at Crusaders' Square and
+    // auto-paused 13.1yd from the portcullis; it burned 36s of a 60s pause
+    // budget before the script reopened the gate and the door-reopened trigger
+    // resumed it. Holding is the correct behaviour and costs nothing.
+    //
+    // Deliberately NOT extended to the ziggurat / gauntlet / slaughter gates:
+    // those are progress gates the run must EARN (kill the acolytes, finish the
+    // gauntlet), not timers, so a hold there would be an infinite one.
+    inline bool IsSelfClearing(uint32 goEntry)
+    {
+        switch (goEntry)
+        {
+            // --- Stratholme (map 329) — the two rat-trap portcullis pairs ---
+            case 175350:  // Doodad_SmallPortcullis04 — gate trap 1, Scarlet side
+            case 175351:  // Doodad_SmallPortcullis03 — gate trap 1, Scarlet side
+            case 175354:  // Doodad_SmallPortcullis09 — gate trap 2, undead side
+            case 175355:  // Doodad_SmallPortcullis08 — gate trap 2, undead side
+                return true;
+            default:
+                return false;
+        }
+    }
+
     // Doors whose KEY requirement we deliberately waive: the bot opens them as
     // if it held the key, no item in inventory needed.
     //

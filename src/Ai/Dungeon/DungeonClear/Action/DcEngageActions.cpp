@@ -2313,9 +2313,24 @@ bool DungeonClearDoorBlockedAction::Execute(Event event)
     // that made no progress) and can fire anywhere across the up-to-80yd
     // approach the blocking-door value looks ahead over. The distinction gates
     // the blocked-state watchdog below; see the comment there.
+    std::string const waitReason =
+        "A gate has closed on us — waiting for it to open.";
+
     auto parkAndStall = [&](bool atDoor)
     {
         DcMovement::StopBot(bot, DcMovement::Stop::Soft);
+
+        // Self-clearing script barriers (Stratholme's two gate traps) shut for a
+        // bounded 20s under instance-script control and reopen themselves. There
+        // is nothing to click and nothing for a player to come and solve, so the
+        // pause path below is simply wrong: hold, report, and let the door's own
+        // timer free us. Checked FIRST so neither the click ladder nor the
+        // blocked-state watchdog ever sees one.
+        if (door && DcEventDoorRegistry::IsSelfClearing(door->GetEntry()))
+        {
+            StallDungeonClear(botAI, waitReason);
+            return true;
+        }
 
         // Script-only event doors (e.g. SFK's Courtyard Door 18895) wear a
         // plainly-clickable empty-lock template but the client only opens them
@@ -2336,6 +2351,14 @@ bool DungeonClearDoorBlockedAction::Execute(Event event)
                 // noticed yet. Drop the stall immediately so the status panel
                 // stops reporting Blocked at an open door; Advance resumes the
                 // moment the value refreshes empty.
+                //
+                // Also end the blocked-state watchdog window: we have direct
+                // proof the door opens for us, so a later re-close (autoclose
+                // gates) must start counting from scratch rather than resume an
+                // old window. See DcApproachState::ClearDoorStall.
+                context->GetValue<DcApproachState&>(DcKey::ApproachState)
+                    ->Get()
+                    .ClearDoorStall();
                 ClearStall(context);
                 return true;
             }

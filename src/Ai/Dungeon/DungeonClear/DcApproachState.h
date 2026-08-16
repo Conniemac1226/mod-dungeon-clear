@@ -276,6 +276,27 @@ struct DcApproachState
         doorStallLastMs = now;
         return getMSTimeDiff(doorStallSinceMs, now) >= timeoutMs;
     }
+
+    // The stall is OVER: the door has been seen open, or the corridor flag moved
+    // to a different door / cleared entirely. The next arrival park arms a fresh
+    // window instead of resuming the old one.
+    //
+    // Load-bearing for auto-closing gates. Stratholme's two King's Square Gates
+    // carry door.autoCloseTime 3000, so the cycle is: click, gate opens, tank
+    // walks through, gate re-shuts 3s later, click again. The observation-gap
+    // re-arm inside ObserveDoorStall cannot see that — DC_DOOR_STALL_REARM_MS is
+    // 10s and the gap between two arrival parks on a 3s gate is only ~3s — so
+    // three successful opens accumulated into one 7s "stall" and tripped the
+    // (5s default) watchdog on a gate the bot was opening every single time.
+    // Run tr-20260816-151006-14 died exactly there, 27.9yd from Hearthsinger
+    // Forresten with 8/13 bosses down. "The door opened" is the signal; a gap in
+    // observations is only a proxy for it.
+    void ClearDoorStall()
+    {
+        doorStallGuid.Clear();
+        doorStallSinceMs = 0;
+        doorStallLastMs  = 0;
+    }
 };
 
 #endif

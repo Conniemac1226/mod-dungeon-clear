@@ -216,17 +216,54 @@ TEST(DcDoorStallWatchdog, AnObservationGapRearmsTheWindow)
     EXPECT_EQ(s.doorStallSinceMs, 1000u + REARM_MS);
 }
 
-TEST(DcDoorStallWatchdog, GapUnderTheRearmKeepsAccruingAcrossAutoCloseCycles)
+TEST(DcDoorStallWatchdog, GapUnderTheRearmKeepsAccruingWhenTheDoorNeverOpens)
 {
     DcApproachState s;
     ObjectGuid const gate = DoorGuid(40);
     s.ObserveDoorStall(gate, 1000u, REARM_MS, TIMEOUT_MS);
-    // Auto-closing gates (Strat's King's Square Gate re-shuts 3s after opening)
-    // interleave open/shut ticks. A sub-REARM_MS gap must NOT re-arm, or a bot
-    // livelocked on the cycle never times out.
+    // A short gap in observations on its own proves nothing — the bot may simply
+    // have missed a tick. Without an explicit "the door opened" signal the window
+    // keeps accruing, so a bot genuinely livelocked on a door still times out.
     EXPECT_FALSE(s.ObserveDoorStall(gate, 4000u, REARM_MS, TIMEOUT_MS));
     EXPECT_EQ(s.doorStallSinceMs, 1000u);
     EXPECT_TRUE(s.ObserveDoorStall(gate, 6000u, REARM_MS, TIMEOUT_MS));
+}
+
+TEST(DcDoorStallWatchdog, SeeingTheDoorOpenEndsTheWindow)
+{
+    // The tr-20260816-151006-14 regression. Stratholme's King's Square Gate
+    // (175352) carries door.autoCloseTime 3000: the tank clicks it, walks
+    // through, and ~3s later it re-shuts and re-flags. Three of those cycles
+    // are three SUCCESSFUL opens, but the gaps between arrival parks are ~3s —
+    // far under REARM_MS — so the raw gap rule stitched them into one 7s stall
+    // and tripped the 5s budget on a gate the bot was opening every time. The
+    // run auto-paused 27.9yd from Hearthsinger Forresten with 8/13 bosses down.
+    //
+    // ClearDoorStall is the missing signal: the door-blocked action calls it the
+    // moment the GO reads open, and the blocking-door value calls it whenever
+    // the flagged blocker changes or clears.
+    DcApproachState s;
+    ObjectGuid const gate = DoorGuid(98);
+
+    // Cycle 1: park, click, gate swings open.
+    EXPECT_FALSE(s.ObserveDoorStall(gate, 1000u, REARM_MS, TIMEOUT_MS));
+    s.ClearDoorStall();
+    EXPECT_EQ(s.doorStallGuid, ObjectGuid::Empty);
+    EXPECT_EQ(s.doorStallSinceMs, 0u);
+    EXPECT_EQ(s.doorStallLastMs, 0u);
+
+    // Cycle 2: it auto-closed 3s later. Fresh window, not 3s of stale accrual.
+    EXPECT_FALSE(s.ObserveDoorStall(gate, 4000u, REARM_MS, TIMEOUT_MS));
+    EXPECT_EQ(s.doorStallSinceMs, 4000u);
+    s.ClearDoorStall();
+
+    // Cycle 3: the tick that used to auto-pause the run (7s past cycle 1).
+    EXPECT_FALSE(s.ObserveDoorStall(gate, 8000u, REARM_MS, TIMEOUT_MS));
+    EXPECT_EQ(s.doorStallSinceMs, 8000u);
+
+    // And the give-up clock still works on the door that stops opening: no
+    // ClearDoorStall this time, so the budget runs out as designed.
+    EXPECT_TRUE(s.ObserveDoorStall(gate, 8000u + TIMEOUT_MS, REARM_MS, TIMEOUT_MS));
 }
 
 TEST(DcDoorStallWatchdog, UnobservedApproachTicksNeverAccrue)
