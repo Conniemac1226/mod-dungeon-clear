@@ -15,6 +15,7 @@ TEST(DcNavPenaltyRegistry, ReportsMapsWithVolumes)
     EXPECT_TRUE(DcNavPenaltyRegistry::HasVolumes(556));   // Sethekk Halls
     EXPECT_TRUE(DcNavPenaltyRegistry::HasVolumes(546));   // Underbog
     EXPECT_TRUE(DcNavPenaltyRegistry::HasVolumes(543));   // Hellfire Ramparts
+    EXPECT_TRUE(DcNavPenaltyRegistry::HasVolumes(389));   // Ragefire Chasm
     EXPECT_FALSE(DcNavPenaltyRegistry::HasVolumes(0));     // no rows
     EXPECT_FALSE(DcNavPenaltyRegistry::HasVolumes(230));   // BRD — no rows
     EXPECT_FALSE(DcNavPenaltyRegistry::HasVolumes(560));   // Old Hillsbrad — no rows
@@ -75,6 +76,45 @@ TEST(DcNavPenaltyRegistry, FencesTheHellfireRampartsCorridorWall)
 
     // Geometrically on the wall, but a different map → no region applies.
     EXPECT_FLOAT_EQ(DcNavPenaltyRegistry::PenaltyAt(0, -1351.55f, 1656.98f, 68.46f), 1.0f);
+}
+
+TEST(DcNavPenaltyRegistry, FencesTheRagefireChasmFunnelWall)
+{
+    // The four measured points the wall is drawn through. Each must be taxed —
+    // including the two outer ends, which is why every leg is extended past its
+    // endpoints instead of terminating exactly on them (a point sitting on the
+    // polygon's boundary edge is ill-defined for the even-odd test).
+    EXPECT_GT(DcNavPenaltyRegistry::PenaltyAt(389, -283.38f, -37.05f, -58.46f), 1.0f);
+    EXPECT_GT(DcNavPenaltyRegistry::PenaltyAt(389, -277.23f, -22.82f, -58.18f), 1.0f);
+    EXPECT_GT(DcNavPenaltyRegistry::PenaltyAt(389, -265.03f, -17.26f, -56.65f), 1.0f);
+    EXPECT_GT(DcNavPenaltyRegistry::PenaltyAt(389, -238.73f, -22.41f, -58.18f), 1.0f);
+
+    // The midpoint of each leg — the wall is continuous along its whole length,
+    // not just at the authored corners.
+    EXPECT_GT(DcNavPenaltyRegistry::PenaltyAt(389, -280.31f, -29.94f, -58.3f), 1.0f);
+    EXPECT_GT(DcNavPenaltyRegistry::PenaltyAt(389, -271.13f, -20.04f, -57.4f), 1.0f);
+    EXPECT_GT(DcNavPenaltyRegistry::PenaltyAt(389, -251.88f, -19.84f, -57.4f), 1.0f);
+
+    // Six yards off the wall on either side (measured along leg 3's perpendicular):
+    // the strip is thin, so open floor either side of it stays untaxed. This is the
+    // point of a polygon here — leg 3's bounding box alone would be ~28x6yd and
+    // would swallow floor the party legitimately uses.
+    EXPECT_FLOAT_EQ(DcNavPenaltyRegistry::PenaltyAt(389, -253.03f, -25.72f, -58.0f), 1.0f);
+    EXPECT_FLOAT_EQ(DcNavPenaltyRegistry::PenaltyAt(389, -250.73f, -13.95f, -58.0f), 1.0f);
+
+    // Same, off leg 1 — and far enough from leg 2 that the bend's overlap does not
+    // reach it either.
+    EXPECT_FLOAT_EQ(DcNavPenaltyRegistry::PenaltyAt(389, -274.80f, -32.32f, -58.0f), 1.0f);
+
+    // On the wall in XY but well outside the Z band → a different level is not
+    // this wall, so it is untaxed.
+    EXPECT_FLOAT_EQ(DcNavPenaltyRegistry::PenaltyAt(389, -271.13f, -20.04f, -20.0f), 1.0f);
+
+    // The instance's own start position is nowhere near the wall.
+    EXPECT_FLOAT_EQ(DcNavPenaltyRegistry::PenaltyAt(389, 3.81f, -14.82f, -17.84f), 1.0f);
+
+    // Geometrically on the wall, but a different map → no region applies.
+    EXPECT_FLOAT_EQ(DcNavPenaltyRegistry::PenaltyAt(0, -271.13f, -20.04f, -57.4f), 1.0f);
 }
 
 TEST(DcNavPenaltyRegistry, PenalizesInsideTheLbrsShaft)

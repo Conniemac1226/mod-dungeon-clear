@@ -112,13 +112,39 @@ namespace
     // that clips into / along the wall is fenced while the corridor centre stays
     // clear. Z band 62..76 straddles the ~z68 floor. costMult 40 (a spot a real
     // player can't be, same class as the shortcut rows above).
-    constexpr std::array<DcNavPenaltyPolygon, 2> kPolygons = {{
+    // Ragefire Chasm (map 389) — a funnel wall, authored from four measured
+    // points rather than a single straight run. The route producer cuts across a
+    // stretch of cave floor the party should not take; fencing the crossing sends
+    // it round the intended way. The measured polyline is
+    //     (-283.38, -37.05, -58.46) -> (-277.23, -22.82, -58.18)
+    //  -> (-265.03, -17.26, -56.65) -> (-238.73, -22.41, -58.18)
+    // (three legs, ≈15.5 / 13.4 / 26.8yd, bending ~40° at each joint). No single
+    // quad follows a bent line, so it is authored as one thin quad PER LEG — each
+    // leg inflated ±2yd on its perpendicular (≈4yd thick), same recipe as the
+    // Hellfire Ramparts wall above. Every leg is extended 2yd past each of its
+    // ends: at the two interior joints that makes consecutive quads overlap so
+    // the bend leaves no gap to squeeze through, and at the two outer ends it
+    // puts the measured endpoints strictly inside the footprint rather than on
+    // its boundary edge (where the even-odd test is ill-defined) and seals the
+    // wall against whatever geometry it abuts. Z band -64..-50 straddles the
+    // ≈-58 floor. costMult 40 (a line the party must not cross, same class as
+    // the shortcut rows above).
+    constexpr std::array<DcNavPenaltyPolygon, 5> kPolygons = {{
         { 556, 15.0f, 38.0f, 40.0f, 5,
           { -233.29f, -230.34f, -209.82f, -192.94f, -192.04f },
           {  275.04f,  309.39f,  326.92f,  305.38f,  271.93f } },
         { 543, 62.0f, 76.0f, 40.0f, 4,
           { -1368.64f, -1336.84f, -1334.46f, -1366.26f },
           {  1646.85f,  1670.32f,  1667.10f,  1643.63f } },
+        { 389, -64.0f, -50.0f, 40.0f, 4,   // leg 1
+          { -282.34f, -274.60f, -278.27f, -286.01f },
+          {  -39.68f,  -21.78f,  -20.19f,  -38.09f } },
+        { 389, -64.0f, -50.0f, 40.0f, 4,   // leg 2
+          { -278.22f, -262.38f, -264.04f, -279.88f },
+          {  -25.47f,  -18.25f,  -14.61f,  -21.83f } },
+        { 389, -64.0f, -50.0f, 40.0f, 4,   // leg 3
+          { -267.38f, -237.15f, -236.38f, -266.61f },
+          {  -18.84f,  -24.76f,  -20.83f,  -14.91f } },
     }};
 
     // Even-odd ray cast — true iff (x,y) is inside the polygon's XY footprint.
