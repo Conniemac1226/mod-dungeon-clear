@@ -175,6 +175,26 @@ struct EventStep
     // which targets the room-trash value rather than a fixed entry.)
     bool   engage{false};
 
+    // KillCreature(engage) only. Bar this step from the COMBAT-side stealth-breaker
+    // (DungeonEventExecutor::ActiveEngageStep's `anyStep` fallback, which arms
+    // DungeonClearObjectiveEngageCombatTrigger from the event's FIRST engage step
+    // even while an earlier step is still active).
+    //
+    // That fallback exists for a stealthed sapper that flags the party into combat
+    // before the tank has reached the anchor: the signature it keys on is "a live
+    // creature of the entry is nearby and reachable but this bot cannot see or
+    // detect it". A boss that is DESIGNED to be undetectable until a gate opens
+    // matches that signature perfectly and permanently — so the rung, which sits
+    // above the stock combat movers, hijacks every combat tick and walks the tank
+    // at the boss, abandoning whatever the party is actually fighting.
+    //
+    // Pathaleon the Calculator is exactly that: greater-invisible with
+    // CanAIAttack()==false until four bridge deaths. Set this on any engage step
+    // whose target is invisible/untargetable by script until the steps before it
+    // have run. The step still drives the engage normally once it IS the active
+    // step (DcObjectiveArriveAction), which is the only time engaging is correct.
+    bool   engageOnlyWhenActive{false};
+
     // Gossip only. When set, a Gossip step whose target creature is not alive
     // anywhere nearby is SKIPPED (Done) instead of waited on — for an OPTIONAL
     // interaction the run must not deadlock on if the NPC died (a freed ZulFarrak
@@ -235,6 +255,21 @@ struct EventStep
     // climbs, so a >= gate is safe to observe late. -1 => no instance-data gate.
     int32  instanceDataId{-1};
     uint32 instanceDataMin{0};
+
+    // MoveTo garrison gate, instance PERSISTENT-data variant. Same contract as
+    // instanceDataId (monotonic counter, safe to observe late), but read from
+    // InstanceScript::GetPersistentData instead of GetData.
+    //
+    // The two stores are unrelated: GetData is a virtual an instance script must
+    // OVERRIDE, while the persistent-data vector is a plain SetPersistentDataCount
+    // /StorePersistentData slot that every InstanceScript exposes for free. Several
+    // scripts keep their wave counters only in the persistent store and never
+    // override GetData at all (instance_mechanar is one: DATA_BRIDGE_MOB_DEATH_COUNT
+    // lives in the persistent vector, and GetData returns the base-class 0 forever),
+    // so an instanceDataId gate on such a map would hold until it times out.
+    // -1 => no persistent-data gate.
+    int32  persistentDataId{-1};
+    uint32 persistentDataMin{0};
 
     // ClearRadius only. When non-empty, the volume clears ONLY creatures whose
     // entry is in this allow-list — both the RunStep completion gate and the
@@ -466,6 +501,13 @@ public:
     // bosses are already dead by the time the party drops combat).
     EventBuilder& MoveToHoldUntilInstanceData(float x, float y, float z, float radius,
                                               uint32 dataId, uint32 minValue);
+    // Garrison variant gated on the InstanceScript PERSISTENT-data store: hold at
+    // (x,y,z) until GetPersistentData(dataId) >= minValue. Use it when the map's
+    // counter lives in the persistent vector and the script never overrides GetData
+    // — the Mechanar bridge gauntlet's DATA_BRIDGE_MOB_DEATH_COUNT is the case it
+    // exists for. See EventStep::persistentDataId.
+    EventBuilder& MoveToHoldUntilPersistentData(float x, float y, float z, float radius,
+                                                uint32 dataId, uint32 minValue);
     // Run ObjectiveHookRegistry `hookId` every tick while the PRECEDING garrison
     // step holds, in addition to its gate. The hook's result is ignored — the gate
     // alone still ends the step. Chain it right after the step it arms:
@@ -510,6 +552,12 @@ public:
     // EventStep::engage.
     EventBuilder& KillCreatureEngage(uint32 creatureEntry, uint32 count = 1,
                                      float searchRadius = 0.0f);
+    // Bar the LAST-added engage step from the combat-side stealth-breaker's
+    // "arm from any engage step" fallback. Chain it right after the step:
+    //   .KillCreatureEngage(boss, 1, 130).EngageOnlyWhenActive()
+    // For a target that is invisible/untargetable by script until the earlier
+    // steps have run. See EventStep::engageOnlyWhenActive.
+    EventBuilder& EngageOnlyWhenActive();
     // Point-anchored room pre-clear: the driving action engages every reachable
     // hostile within `radius` (2D) and `zBand` (vertical, floor-keeping) of the
     // centre (x,y,z); the step is Done once none remain. Use on an OBJECTIVE

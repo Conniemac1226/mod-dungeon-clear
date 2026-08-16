@@ -27,7 +27,7 @@
 namespace
 {
     // A step kind whose rewind-on-gap is dangerous: teleport/drop/jump are one-way,
-    // escort/engage/clear span combat gaps, an instance-data MoveTo garrisons a
+    // escort/engage/clear span combat gaps, a data-gated MoveTo garrisons a
     // gate. A multi-step anchored event containing one of these MUST be Persistent
     // or a mid-fight combat gap rewinds it (the module's most-repeated bug class —
     // see the dc-multihop-teleport-persistent memory). A KillCreatureEngage is a
@@ -45,7 +45,8 @@ namespace
             case EventStepKind::KillCreature:
                 return s.engage;  // KillCreatureEngage seeks + pulls across gaps
             case EventStepKind::MoveTo:
-                return s.instanceDataId >= 0;  // instance-data garrison gate
+                // a garrison gate of either flavour holds across the whole fight
+                return s.instanceDataId >= 0 || s.persistentDataId >= 0;
             default:
                 return false;
         }
@@ -587,6 +588,94 @@ TEST(DungeonEventIntegrityTest, DrivesInCombatIsConfinedToVettedWaveEncounters)
             << " sets DrivesInCombat() but is Anchored — the flag only has an"
                " effect on Conditional events (DungeonClearEventDueCombatTrigger).";
     }
+}
+
+// The Mechanar bridge gauntlet is a DEFENSIVE set-piece: three scripted waves
+// DoZoneInCombat the party from up the bridge and run down to it, and Pathaleon
+// only becomes attackable once the four wave-3 deaths have ticked the instance
+// script's persistent counter to 4. Every property below encodes "hold the camp,
+// let them come" — the previous shape walked the tank up the bridge into the
+// oncoming wave and on toward the boss, which is what this pins shut.
+TEST(DungeonEventIntegrityTest, MechanarBridgeIsHeldAsACampNotWalked)
+{
+    DungeonEvent const* ev = DungeonEventRegistry::Find(/*map*/ 554, /*eventId*/ 3);
+    ASSERT_NE(ev, nullptr) << "The Mechanar (554) event 3 (bridge gauntlet) is missing";
+    EXPECT_TRUE(ev->persistent)
+        << "the camp spans the whole gauntlet's combat; a rewind restarts it at step 0";
+
+    // No advance and no sweep. A ClearRadius drives EngageDirect into its volume,
+    // and a second MoveTo to a point further up the deck IS the aggressive walk.
+    // The waves come to the party; the combat engine does the killing.
+    for (EventStep const& s : ev->steps)
+        EXPECT_NE(s.kind, EventStepKind::ClearRadius)
+            << "a ClearRadius here walks the party up the bridge into the next wave";
+
+    // Exactly one garrison, gated on the PERSISTENT counter. instance_mechanar
+    // stores DATA_BRIDGE_MOB_DEATH_COUNT in the persistent vector and never
+    // overrides GetData, so an instanceDataId gate would read 0 forever.
+    EventStep const* camp = nullptr;
+    int garrisons = 0;
+    for (EventStep const& s : ev->steps)
+        if (s.kind == EventStepKind::MoveTo &&
+            (s.persistentDataId >= 0 || s.instanceDataId >= 0 || s.creatureEntry != 0))
+        {
+            camp = &s;
+            ++garrisons;
+        }
+    ASSERT_NE(camp, nullptr) << "the bridge must be held by a garrison step";
+    EXPECT_EQ(garrisons, 1) << "one camp; a second garrison further up is an advance";
+    EXPECT_EQ(camp->persistentDataId, 0)
+        << "the gate must read DATA_BRIDGE_MOB_DEATH_COUNT (persistent index 0)";
+    EXPECT_EQ(camp->instanceDataId, -1)
+        << "instance_mechanar never overrides GetData — this gate would never clear";
+    EXPECT_EQ(camp->persistentDataMin, 4u)
+        << "only the four wave-3 deaths write the counter, so 4 means 'last wave down'";
+
+    // The camp sits on the bridge deck's centre line (x130..146), PAST the wave-1
+    // cluster (y37.3..41.2) and SHORT of wave 3 (y100..112). Past wave 1 is the
+    // arrivability property: an anchored event drives only out of combat, and the
+    // gauntlet leaves no out-of-combat gap once wave 1 is up, so an anchor short of
+    // wave 1 is never reached and the event never starts (tr-20260816-105518-10).
+    // Short of wave 3 is the "don't walk up the bridge to meet them" property.
+    EXPECT_GT(camp->y, 41.2f) << "an anchor short of wave 1 is never arrived at";
+    EXPECT_LT(camp->y, 100.0f) << "the camp is up among the wave-3 spawns";
+    EXPECT_GT(camp->x, 130.0f);
+    EXPECT_LT(camp->x, 146.0f);
+    // A garrison radius is a leash, not a dead band (the Ring of Law lesson).
+    EXPECT_LE(camp->radius, 8.0f) << "too wide to re-centre the tank between waves";
+
+    // Every step before the camp must be an approach to the SAME spot: anything
+    // else is a second position the party is walked to before the waves are down.
+    for (EventStep const& s : ev->steps)
+    {
+        if (&s == camp)
+            break;
+        ASSERT_EQ(s.kind, EventStepKind::MoveTo)
+            << "only a walk-in may precede the camp";
+        EXPECT_FLOAT_EQ(s.x, camp->x);
+        EXPECT_FLOAT_EQ(s.y, camp->y);
+    }
+
+    // The boss is taken only after the camp. The seek must reach him from the camp
+    // (he is at (139.5, 149.3), ~105yd away) and must NOT reach much further: the
+    // combat-side stealth-breaker arms off this step's entry+radius, and Pathaleon
+    // is greater-invisible until the counter hits 4, so a wide radius makes him look
+    // like a stuck stealthed sapper from anywhere on the floor and the tank sprints
+    // at him mid-fight. Both guards below were the tp-20260816-105517-2 regression.
+    ASSERT_FALSE(ev->steps.empty());
+    EventStep const& last = ev->steps.back();
+    EXPECT_EQ(last.kind, EventStepKind::KillCreature);
+    EXPECT_TRUE(last.engage);
+    EXPECT_EQ(last.creatureEntry, 19220u) << "Pathaleon the Calculator";
+    float const dx = 139.5f - camp->x, dy = 149.3f - camp->y;
+    float const campToBoss = std::sqrt(dx * dx + dy * dy);
+    EXPECT_GE(last.radius, campToBoss)
+        << "the seek radius must reach Pathaleon from the camp (" << campToBoss << "yd)";
+    EXPECT_LE(last.radius, campToBoss + 40.0f)
+        << "a seek radius this wide arms the combat stealth-breaker across the floor";
+    EXPECT_TRUE(last.engageOnlyWhenActive)
+        << "Pathaleon is invisible by script until the gauntlet ends — without this"
+           " the combat-side stealth-breaker walks the tank at him mid-fight";
 }
 
 // The BRD Ring of Law, pinned to the two properties tr-20260808-150405-10 broke

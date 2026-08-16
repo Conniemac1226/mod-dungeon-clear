@@ -167,6 +167,19 @@ EventBuilder& EventBuilder::MoveToHoldUntilInstanceData(float x, float y, float 
     return *this;
 }
 
+EventBuilder& EventBuilder::MoveToHoldUntilPersistentData(float x, float y, float z, float radius,
+                                                          uint32 dataId, uint32 minValue)
+{
+    EventStep& s = Add(EventStepKind::MoveTo);
+    s.x = x;
+    s.y = y;
+    s.z = z;
+    s.radius = radius;
+    s.persistentDataId = static_cast<int32>(dataId);  // >= 0 => persistent-data gate
+    s.persistentDataMin = minValue;
+    return *this;
+}
+
 EventBuilder& EventBuilder::WhileHolding(uint32 hookId)
 {
     if (!_ev.steps.empty())
@@ -246,6 +259,13 @@ EventBuilder& EventBuilder::KillCreatureEngage(uint32 creatureEntry, uint32 coun
     s.count = count;
     s.radius = searchRadius;
     s.engage = true;
+    return *this;
+}
+
+EventBuilder& EventBuilder::EngageOnlyWhenActive()
+{
+    if (!_ev.steps.empty())
+        _ev.steps.back().engageOnlyWhenActive = true;
     return *this;
 }
 

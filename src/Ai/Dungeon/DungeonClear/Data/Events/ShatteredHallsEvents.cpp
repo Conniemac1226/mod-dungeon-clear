@@ -59,8 +59,9 @@
 //     real mini-boss Porung (20923) sits at the same far spot and IS a kill.
 //
 // Per the user this must be a continuous PUSH, not stop-and-kill on every pack
-// (far too slow while fire rains). So — exactly like the Mechanar bridge gauntlet
-// — a PERSISTENT anchored event stands the pull pipeline down and drives the run:
+// (far too slow while fire rains) — the OPPOSITE call from the Mechanar bridge,
+// where the waves come to a held camp and advancing is the mistake. So here a
+// PERSISTENT anchored event stands the pull pipeline down and drives the run:
 // walk onto the corridor (arms the Scout), CLEAR the near cluster at the midpoint,
 // advance, then CLEAR the far cluster (archers + far zealots + Blood Guard/Porung)
 // on the fire-free ledge. Folding the far boss into the ClearRadius (user's call)
