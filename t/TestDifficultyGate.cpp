@@ -132,6 +132,16 @@ TEST(DcDifficultyGateTest, ShatteredHallsHeroicReordersHallwaySweep)
     // ...and the gauntlet objective still precedes Porung.
     EXPECT_LT(indexOf(BossRosterRegistry::ObjectiveEntry(2)), indexOf(20923));
 
+    // The lone O'mrogg-approach sentinel (OBJ(4), normal key 1) must be re-keyed
+    // to 2 on heroic so it lands AFTER Porung. Left on key 1 it sorts ahead of
+    // him, which would send the tank ~260yd south through the training yard with
+    // Porung still alive — and only his death cancels the scout's 45s zealot
+    // summons, so the party would walk that whole leg with waves chasing and
+    // then walk back north for him.
+    uint32 const objSentinel = BossRosterRegistry::ObjectiveEntry(4);
+    EXPECT_LT(indexOf(20923), indexOf(objSentinel));
+    EXPECT_LT(indexOf(objSentinel), indexOf(16809));
+
     // On NORMAL (no Porung row, hallway keeps key 2) the sweep still precedes
     // Kargath — the heroic patch must not leak into normal ordering.
     std::vector<DungeonBossInfo> normalBase = {
@@ -151,6 +161,13 @@ TEST(DcDifficultyGateTest, ShatteredHallsHeroicReordersHallwaySweep)
     };
     EXPECT_LT(normalIndexOf(16809), normalIndexOf(objHallway));
     EXPECT_LT(normalIndexOf(objHallway), normalIndexOf(16808));
+
+    // And on normal the sentinel keeps its own key-1 slot: gauntlet -> sentinel
+    // -> O'mrogg, with no Porung row in between. The heroic re-key must not have
+    // moved it here.
+    EXPECT_LT(normalIndexOf(BossRosterRegistry::ObjectiveEntry(2)),
+              normalIndexOf(objSentinel));
+    EXPECT_LT(normalIndexOf(objSentinel), normalIndexOf(16809));
 }
 
 // --- Route registry falls back to normal ----------------------------------

@@ -55,6 +55,11 @@ namespace DcKey
     // fed to the unit resolver is a silent nullptr, i.e. a hazard that reads as
     // clean ground. See DungeonClearGroundHazardsValue.
     inline constexpr char const* GroundHazards           = "dungeon clear ground hazards";
+    // Ground TRAPS (GameObjects) near the bot — the Shattered Halls Blaze. A
+    // third key for the third resolver: a GameObject guid is neither a Unit nor a
+    // DynamicObject, so both of the accessors above return nullptr on it and the
+    // fire reads as clean ground. See DungeonClearTrapHazardsValue.
+    inline constexpr char const* TrapHazards             = "dungeon clear trap hazards";
     inline constexpr char const* RoomTrashRemaining      = "dungeon clear room trash remaining";
     inline constexpr char const* BlockingDoor            = "dungeon clear blocking door";
     inline constexpr char const* EngageTrashTarget       = "dungeon clear engage trash target";

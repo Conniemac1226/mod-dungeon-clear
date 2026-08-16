@@ -16,6 +16,7 @@
 #include "Ai/Dungeon/DungeonClear/Value/DungeonClearLiveBossValue.h"
 #include "Ai/Dungeon/DungeonClear/Value/DungeonClearLongPathValue.h"
 #include "Ai/Dungeon/DungeonClear/Value/DungeonClearPartyTankValue.h"
+#include "Ai/Dungeon/DungeonClear/Value/DungeonClearTrapHazardsValue.h"
 #include "Ai/Dungeon/DungeonClear/Value/DungeonClearPullModeCurrentValue.h"
 #include "Ai/Dungeon/DungeonClear/Value/DungeonClearHealTargetValue.h"
 #include "Ai/Dungeon/DungeonClear/Value/DungeonClearPartyMemberToHealValue.h"
@@ -50,6 +51,7 @@ public:
         creators[DcKey::FarTargets] = &DungeonClearValueContext::dungeon_clear_far_targets;
         creators[DcKey::Hazards] = &DungeonClearValueContext::dungeon_clear_hazards;
         creators[DcKey::GroundHazards] = &DungeonClearValueContext::dungeon_clear_ground_hazards;
+        creators[DcKey::TrapHazards] = &DungeonClearValueContext::dungeon_clear_trap_hazards;
         creators[DcKey::RoomTrashRemaining] = &DungeonClearValueContext::dungeon_clear_room_trash_remaining;
         creators[DcKey::BlockingDoor] = &DungeonClearValueContext::dungeon_clear_blocking_door;
         creators[DcKey::EngageTrashTarget] = &DungeonClearValueContext::dungeon_clear_engage_trash_target;
@@ -96,6 +98,7 @@ private:
     static UntypedValue* dungeon_clear_far_targets(PlayerbotAI* ai) { return new DungeonClearFarTargetsValue(ai); }
     static UntypedValue* dungeon_clear_hazards(PlayerbotAI* ai) { return new DungeonClearHazardsValue(ai); }
     static UntypedValue* dungeon_clear_ground_hazards(PlayerbotAI* ai) { return new DungeonClearGroundHazardsValue(ai); }
+    static UntypedValue* dungeon_clear_trap_hazards(PlayerbotAI* ai) { return new DungeonClearTrapHazardsValue(ai); }
     static UntypedValue* dungeon_clear_room_trash_remaining(PlayerbotAI* ai) { return new DungeonClearRoomTrashValue(ai); }
     static UntypedValue* dungeon_clear_blocking_door(PlayerbotAI* ai) { return new DungeonClearBlockingDoorValue(ai); }
     static UntypedValue* dungeon_clear_engage_trash_target(PlayerbotAI* ai) { return new DungeonClearEngageTrashTargetValue(ai); }

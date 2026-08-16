@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
@@ -676,6 +677,113 @@ TEST(DungeonEventIntegrityTest, MechanarBridgeIsHeldAsACampNotWalked)
     EXPECT_TRUE(last.engageOnlyWhenActive)
         << "Pathaleon is invisible by script until the gauntlet ends — without this"
            " the combat-side stealth-breaker walks the tank at him mid-fight";
+}
+
+// The Shattered Halls flame gauntlet is the OPPOSITE call from the Mechanar
+// bridge above, and the contrast is the point: there, nothing forces the party
+// forward and holding is correct; here the fire is unavoidable in the corridor
+// (an unbroken x~261..497 band once the 20 wandering Flame Arrow anchors' 12-17yd
+// wander and 15yd trigger are added up) and only exists while the two archers
+// live, so holding is strictly worse the longer it lasts. The answer is neither
+// a camp nor a sprint: BOUNDS.
+//
+// Every property below encodes "fight, then push, ~40yd at a time, and turn the
+// fire off before the big fight". The shape this replaced ran entry->ledge in one
+// 90yd hop and cost three deaths with the party strung out (tr-20260816-144504-8).
+TEST(DungeonEventIntegrityTest, ShatteredHallsGauntletIsFoughtInBounds)
+{
+    DungeonEvent const* ev = DungeonEventRegistry::Find(/*map*/ 540, /*eventId*/ 2);
+    ASSERT_NE(ev, nullptr) << "The Shattered Halls (540) event 2 (flame gauntlet) is missing";
+    EXPECT_TRUE(ev->persistent)
+        << "the gauntlet spans minutes of wave combat; a rewind restarts it at step 0";
+
+    ASSERT_GE(ev->steps.size(), 7u) << "entry + bounds + staging + archers + ledge";
+
+    // Step 0 is the entry walk-in. It both arms the encounter (the scout at
+    // (341.3, 314.9) triggers on any player within 50yd 2D at z > -3) and bumps
+    // stepIndex so the persistence sticky-trigger latches.
+    EXPECT_EQ(ev->steps[0].kind, EventStepKind::MoveTo);
+    EXPECT_NEAR(ev->steps[0].x, 300.0f, 1.0f);
+    float const scoutDist = 341.3f - ev->steps[0].x;
+    EXPECT_LT(scoutDist, 50.0f)
+        << "the entry anchor must be inside the scout's 50yd trigger, or the party"
+           " stands there waiting for a gauntlet that never starts";
+
+    // The bounds march monotonically EAST and none of them is a long hop. A leg
+    // longer than ~45yd is where the party strings out and meets a wave with the
+    // tank alone at the front.
+    float prevX = ev->steps[0].x;
+    int bounds = 0;
+    for (std::size_t i = 1; i < ev->steps.size(); ++i)
+    {
+        EventStep const& s = ev->steps[i];
+        if (s.kind != EventStepKind::ClearRadius && s.kind != EventStepKind::MoveTo)
+            continue;
+        EXPECT_GT(s.x, prevX)
+            << "step " << i << " walks BACK down the corridor";
+        EXPECT_LE(s.x - prevX, 45.0f)
+            << "step " << i << " is a " << (s.x - prevX) << "yd hop — long enough for"
+               " the party to string out across it";
+        prevX = s.x;
+        if (s.kind == EventStepKind::ClearRadius)
+            ++bounds;
+    }
+    EXPECT_GE(bounds, 4) << "fewer bounds than this is a sprint with extra steps";
+
+    // The archers are killed BY ENTRY and BEFORE the ledge is cleared: their
+    // death is the off-switch for the fire (FireArrows() stops re-arming once no
+    // 17427 is alive), so doing it first is what makes the last fight safe.
+    std::size_t archerStep = ev->steps.size();
+    std::size_t ledgeStep = ev->steps.size();
+    for (std::size_t i = 0; i < ev->steps.size(); ++i)
+    {
+        EventStep const& s = ev->steps[i];
+        if (s.kind == EventStepKind::KillCreature && s.creatureEntry == 17427u)
+            archerStep = i;
+        if (s.kind == EventStepKind::ClearRadius && s.x > 500.0f)
+            ledgeStep = i;
+    }
+    ASSERT_LT(archerStep, ev->steps.size()) << "nothing kills the Shattered Hand Archers";
+    ASSERT_LT(ledgeStep, ev->steps.size()) << "nothing clears the far ledge";
+    EXPECT_LT(archerStep, ledgeStep)
+        << "the fire must be switched off before the 12-zealot pack fight, not after";
+    EXPECT_TRUE(ev->steps[archerStep].engage)
+        << "the archers stand behind the pack — the step has to SEEK them";
+    EXPECT_TRUE(ev->steps[archerStep].engageOnlyWhenActive)
+        << "keep the combat-side stealth-breaker from arming off this step out of"
+           " turn (the Mechanar/Pathaleon lesson)";
+
+    // The staging step immediately before the archer kill sits on the scout's own
+    // waypoint terminus: past every flame anchor's reach (the last two spawn at
+    // x467.5/x468.7 with 13yd wander, so x481.7 worst case) and short of the
+    // nearest far-pack zealot at x498.9. That is the only fire-free ground within
+    // aggro reach of the pack, and Blizzard's own script marks it.
+    ASSERT_GT(archerStep, 0u);
+    EventStep const& stage = ev->steps[archerStep - 1];
+    EXPECT_EQ(stage.kind, EventStepKind::MoveTo);
+    EXPECT_GT(stage.x, 482.0f) << "the staging point is still inside the fire band";
+    EXPECT_LT(stage.x, 498.9f) << "the staging point is inside the far pack";
+
+    // The seek must reach the archers (514.5, 319.7) from there.
+    float const adx = 514.5f - stage.x, ady = 319.7f - stage.y;
+    EXPECT_GE(ev->steps[archerStep].radius, std::sqrt(adx * adx + ady * ady));
+
+    // The ledge clear is the last step and its volume covers the whole far pack
+    // (zealots x498.9..515.1, y292.4..340.4, plus the Blood Guard at 512.7/315.7
+    // whose death cancels the wave scheduler on normal).
+    EXPECT_EQ(ledgeStep, ev->steps.size() - 1);
+    EventStep const& ledge = ev->steps[ledgeStep];
+    EXPECT_GE(ledge.radius, 30.0f) << "too tight to cover the spread-out far pack";
+    for (auto const& pack : { std::pair<float, float>{498.9f, 309.1f},
+                              std::pair<float, float>{515.1f, 339.8f},
+                              std::pair<float, float>{510.7f, 292.4f},
+                              std::pair<float, float>{512.7f, 315.7f} })
+    {
+        float const dx = pack.first - ledge.x, dy = pack.second - ledge.y;
+        EXPECT_LE(std::sqrt(dx * dx + dy * dy), ledge.radius)
+            << "far-pack spawn (" << pack.first << "," << pack.second
+            << ") falls outside the ledge clear";
+    }
 }
 
 // The BRD Ring of Law, pinned to the two properties tr-20260808-150405-10 broke

@@ -208,6 +208,64 @@ namespace
         // Noxious Cloud — dropped in combat AND on death by both Maraudon slimes.
         { 349, 21070, 8.0f, 6.0f, 5.0f, 2.0f, 6.0f },
     }};
+
+    // ---- the trap table --------------------------------------------------
+    //
+    // The Shattered Halls (map 540), GameObject 181915 "Blaze" — the fire patch
+    // the flame-arrow gauntlet rains on the corridor between Nethekurse and
+    // O'mrogg. This is THE reason the trap table exists: it is the only hazard
+    // shape dungeon-clear meets that is a plain GameObject, and until this row
+    // existed "never stand in the fire" was a comment in ShatteredHallsEvents.cpp
+    // with nothing behind it.
+    //
+    // How a Blaze gets there, end to end (boss_porung.cpp + the world DB):
+    //   1. A Shattered Hand Archer (17427, two of them at x~514) casts 30952
+    //      "Shoot Flame Arrow" — a 2s cast, script effect, whose implicit target
+    //      TARGET_UNIT_SRC_AREA_ENTRY is narrowed by `conditions` to creature
+    //      entry 17687 "Flame Arrow" (20 invisible trigger spawns wandering the
+    //      corridor between x290 and x469).
+    //   2. spell_tsh_shoot_flame_arrow::FilterTargets drops every anchor with no
+    //      player inside 15yd, every anchor that already has a Blaze inside 6yd,
+    //      and the last one used, then RandomResizes to ONE. So a volley lands on
+    //      exactly one anchor, and only ever one the party is standing near.
+    //   3. The chosen anchor casts 30953 "Explosion" on itself: 657-844 fire in a
+    //      10yd radius RIGHT NOW, plus effect 76 SPELL_EFFECT_TRANS_DOOR spawning
+    //      GameObject 181915 for its 60s duration.
+    //   4. The Blaze is a GAMEOBJECT_TYPE_TRAP: trap.diameter 4 (so a 2yd trigger
+    //      circle in GameObject::Update), trap.spellId 30979 "Flames" (875-1126
+    //      fire, EffectRadiusIndex 15 = 3.0yd), trap.cooldown 2 (re-arms every
+    //      2s). ~1000 damage every two seconds for a minute, to anyone within 3yd.
+    //
+    // Sizing follows the two pool rows above:
+    //   vacateRadius 3.5 = the CAST spell's 3.0yd splash plus half a yard, NOT
+    //     the 2yd trigger circle. A bot standing 2.8yd off still eats the splash
+    //     when the melee on top of the Blaze sets it off, so the trigger radius
+    //     is the wrong number to flee by.
+    //   radius 5 (placement keep-out) leaves a 4.5yd gap to the 9.5yd retreat aim
+    //     point (vacate 3.5 + slack 6), well clear of the pool rows' 3yd budget —
+    //     deliberately generous here because up to ~20 Blazes can be alive at once
+    //     (one per volley, volleys every 2-9.75s, each lasting 60s) and a retreat
+    //     that cannot find an accepted spot in a 25yd-wide corridor thrashes.
+    //   zBand 6 keeps the corridor (z~2) separate from Nethekurse's chamber
+    //     (z~-8) ten yards below it, which the route crosses on the way in.
+    //
+    // The keep-out is deliberately SMALL relative to the damage. The party has to
+    // fight its way down this corridor, the fire follows the party by design (an
+    // anchor only qualifies with a player within 15yd), and there is no
+    // anchor-free standing spot between x~261 and x~497 once the anchors' 12-17yd
+    // wander is accounted for. Fencing hard would freeze the run; stepping off the
+    // patch is the whole available answer, and it is enough.
+    //
+    // The real END of the fire is not avoidance at all: FireArrows() returns false
+    // once no Shattered Hand Archer is left alive, and killing the far-end Blood
+    // Guard (17461 normal, SmartAI on-death SetData 2) or Porung (20923 heroic,
+    // boss_porung::JustDied) cancels the scout's whole scheduler — waves and
+    // arrows together. See ShatteredHallsEvents.cpp, which sequences exactly that.
+    constexpr std::array<DcTrapHazard, 1> kTrapHazards = {{
+        //                   radius  zBand  vacate  hold  slack
+        // Blaze — the 60s fire patch a flame arrow leaves on the gauntlet floor.
+        { 540, 181915, 5.0f, 6.0f, 3.5f, 2.0f, 6.0f },
+    }};
 }
 
 bool DcHazardRegistry::HasEmitters(uint32 mapId)
@@ -226,9 +284,17 @@ bool DcHazardRegistry::HasGroundHazards(uint32 mapId)
     return false;
 }
 
+bool DcHazardRegistry::HasTrapHazards(uint32 mapId)
+{
+    for (auto const& t : kTrapHazards)
+        if (t.mapId == mapId)
+            return true;
+    return false;
+}
+
 bool DcHazardRegistry::HasAnyHazard(uint32 mapId)
 {
-    return HasEmitters(mapId) || HasGroundHazards(mapId);
+    return HasEmitters(mapId) || HasGroundHazards(mapId) || HasTrapHazards(mapId);
 }
 
 DcHazardEmitter const* DcHazardRegistry::Find(uint32 mapId, uint32 creatureEntry)
@@ -245,6 +311,23 @@ DcGroundHazard const* DcHazardRegistry::FindGround(uint32 mapId, uint32 spellId)
         if (g.mapId == mapId && g.spellId == spellId)
             return &g;
     return nullptr;
+}
+
+DcTrapHazard const* DcHazardRegistry::FindTrap(uint32 mapId, uint32 goEntry)
+{
+    for (auto const& t : kTrapHazards)
+        if (t.mapId == mapId && t.goEntry == goEntry)
+            return &t;
+    return nullptr;
+}
+
+std::vector<uint32> DcHazardRegistry::TrapEntries(uint32 mapId)
+{
+    std::vector<uint32> entries;
+    for (auto const& t : kTrapHazards)
+        if (t.mapId == mapId)
+            entries.push_back(t.goEntry);
+    return entries;
 }
 
 bool DcHazardRegistry::PointInCylinder(float radius, float zBand,
@@ -311,4 +394,19 @@ bool DcHazardRegistry::SegmentClips(DcGroundHazard const& g,
                                     float bx, float by, float bz)
 {
     return SegmentClipsCylinder(g.radius, g.zBand, ex, ey, ez, ax, ay, az, bx, by, bz);
+}
+
+bool DcHazardRegistry::PointInside(DcTrapHazard const& t,
+                                   float ex, float ey, float ez,
+                                   float px, float py, float pz)
+{
+    return PointInCylinder(t.radius, t.zBand, ex, ey, ez, px, py, pz);
+}
+
+bool DcHazardRegistry::SegmentClips(DcTrapHazard const& t,
+                                    float ex, float ey, float ez,
+                                    float ax, float ay, float az,
+                                    float bx, float by, float bz)
+{
+    return SegmentClipsCylinder(t.radius, t.zBand, ex, ey, ez, ax, ay, az, bx, by, bz);
 }

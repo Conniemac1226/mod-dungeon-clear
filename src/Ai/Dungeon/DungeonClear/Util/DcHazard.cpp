@@ -6,6 +6,7 @@
 #include "DcHazard.h"
 
 #include "DynamicObject.h"
+#include "GameObject.h"
 #include "Playerbots.h"
 #include "Ai/Dungeon/DungeonClear/DcValueKeys.h"
 #include "Ai/Dungeon/DungeonClear/Data/DcHazardRegistry.h"
@@ -92,6 +93,41 @@ namespace
         }
         return false;
     }
+
+    // The GAMEOBJECT-TRAP twin of the two walkers above. Same shape again, but
+    // the guids resolve through GetGameObject — a trap is neither a unit nor a
+    // dynamic object, so BOTH of the resolvers above return nullptr on one of
+    // these guids and the fire would read as clean ground.
+    template <typename Test>
+    bool AnyTrapHazard(Player* bot, Test&& test)
+    {
+        if (!DcHazardRegistry::HasTrapHazards(bot->GetMapId()))
+            return false;
+
+        AiObjectContext* ctx = ContextOf(bot);
+        if (!ctx)
+            return false;
+
+        GuidVector const& traps = ctx->GetValue<GuidVector>(DcKey::TrapHazards)->Get();
+        for (ObjectGuid guid : traps)
+        {
+            GameObject* go = ObjectAccessor::GetGameObject(*bot, guid);
+            if (!go)
+                continue;
+
+            // Same staleness guard as the other two — and, as with a pool, the
+            // guid going dead IS how expiry is observed: a Blaze is removed when
+            // its 60s duration runs out, so GetGameObject failing above is the
+            // fire burning out, not an error.
+            DcTrapHazard const* t = DcHazardRegistry::FindTrap(go->GetMapId(), go->GetEntry());
+            if (!t || go->GetMapId() != bot->GetMapId())
+                continue;
+
+            if (test(*t, go))
+                return true;
+        }
+        return false;
+    }
 }
 
 bool DcHazard::PointIsHot(Player* bot, float x, float y, float z)
@@ -107,10 +143,18 @@ bool DcHazard::PointIsHot(Player* bot, float x, float y, float z)
         }))
         return true;
 
-    return AnyGroundHazard(bot, [&](DcGroundHazard const& g, DynamicObject* d)
+    if (AnyGroundHazard(bot, [&](DcGroundHazard const& g, DynamicObject* d)
+        {
+            return DcHazardRegistry::PointInside(g,
+                                                 d->GetPositionX(), d->GetPositionY(), d->GetPositionZ(),
+                                                 x, y, z);
+        }))
+        return true;
+
+    return AnyTrapHazard(bot, [&](DcTrapHazard const& t, GameObject* go)
     {
-        return DcHazardRegistry::PointInside(g,
-                                             d->GetPositionX(), d->GetPositionY(), d->GetPositionZ(),
+        return DcHazardRegistry::PointInside(t,
+                                             go->GetPositionX(), go->GetPositionY(), go->GetPositionZ(),
                                              x, y, z);
     });
 }
@@ -129,10 +173,18 @@ bool DcHazard::SegmentIsHot(Player* bot, float ax, float ay, float az,
         }))
         return true;
 
-    return AnyGroundHazard(bot, [&](DcGroundHazard const& g, DynamicObject* d)
+    if (AnyGroundHazard(bot, [&](DcGroundHazard const& g, DynamicObject* d)
+        {
+            return DcHazardRegistry::SegmentClips(g,
+                                                  d->GetPositionX(), d->GetPositionY(), d->GetPositionZ(),
+                                                  ax, ay, az, bx, by, bz);
+        }))
+        return true;
+
+    return AnyTrapHazard(bot, [&](DcTrapHazard const& t, GameObject* go)
     {
-        return DcHazardRegistry::SegmentClips(g,
-                                              d->GetPositionX(), d->GetPositionY(), d->GetPositionZ(),
+        return DcHazardRegistry::SegmentClips(t,
+                                              go->GetPositionX(), go->GetPositionY(), go->GetPositionZ(),
                                               ax, ay, az, bx, by, bz);
     });
 }
@@ -198,6 +250,30 @@ namespace
 
                 fn(LiveVacate{ d->GetPositionX(), d->GetPositionY(), d->GetPositionZ(),
                                g->vacateRadius, g->zBand, g->holdBand, g->retreatSlack });
+            }
+        }
+
+        if (DcHazardRegistry::HasTrapHazards(bot->GetMapId()))
+        {
+            // Traps have no liveness flag either — a Blaze exists until its 60s
+            // duration expires and the GameObject is removed, so resolving the
+            // guid IS the liveness check. Its loot state is deliberately not
+            // consulted: a trap cycles READY -> ACTIVATED -> READY every couple
+            // of seconds, and "mid-cast right now" is not the difference between
+            // safe and unsafe ground.
+            GuidVector const& traps = ctx->GetValue<GuidVector>(DcKey::TrapHazards)->Get();
+            for (ObjectGuid guid : traps)
+            {
+                GameObject* go = ObjectAccessor::GetGameObject(*bot, guid);
+                if (!go)
+                    continue;
+
+                DcTrapHazard const* t = DcHazardRegistry::FindTrap(go->GetMapId(), go->GetEntry());
+                if (!t || t->vacateRadius <= 0.0f || go->GetMapId() != bot->GetMapId())
+                    continue;
+
+                fn(LiveVacate{ go->GetPositionX(), go->GetPositionY(), go->GetPositionZ(),
+                               t->vacateRadius, t->zBand, t->holdBand, t->retreatSlack });
             }
         }
     }

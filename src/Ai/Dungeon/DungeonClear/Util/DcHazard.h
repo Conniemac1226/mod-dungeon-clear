@@ -14,17 +14,19 @@ class Player;
 // persistent damage aura?" See DcHazardRegistry.h for the mechanism and why it
 // is split from the route half.
 //
-// Covers BOTH emitter kinds transparently — the creature-carried pulses
-// (DcHazardEmitter, via DungeonClearHazardsValue) and the persistent-area-aura
-// ground pools (DcGroundHazard, via DungeonClearGroundHazardsValue). A caller
+// Covers ALL THREE emitter kinds transparently — the creature-carried pulses
+// (DcHazardEmitter, via DungeonClearHazardsValue), the persistent-area-aura
+// ground pools (DcGroundHazard, via DungeonClearGroundHazardsValue) and the
+// gameobject traps (DcTrapHazard, via DungeonClearTrapHazardsValue). A caller
 // asks "is this spot hot" and never has to know which kind answered.
 //
-// MAP THREAD ONLY. These resolve live creature / dynamic-object positions
-// through those two 500ms-cached values and must never be called from the
+// MAP THREAD ONLY. These resolve live creature / dynamic-object / gameobject
+// positions through those three 500ms-cached values and must never be called from the
 // DcPathWorker thread — the route producer avoids the creature emitters via the
 // DcNavPenaltyRegistry boxes instead, which need no game state at all. Ground
-// pools have no route-half counterpart at all: their positions are not known
-// until a mob dies, so the live predicates are the whole defence.
+// pools and traps have no route-half counterpart at all: their positions are not
+// known until a mob dies / an arrow lands, so the live predicates are the whole
+// defence.
 //
 // Every entry point takes a cheap DcHazardRegistry map early-out first, so a map
 // with no rows of either kind pays one bool per call and nothing else.
@@ -76,9 +78,10 @@ namespace DcHazard
     bool LegIsHot(Player* bot, float x, float y, float z);
 
     // The nearest live active-vacate hazard whose radius the bot is standing
-    // inside (same-floor) — either a creature emitter with vacateRadius > 0 (the
-    // Destroyed Sentinel's persistent pulse) or any ground pool (Scholomance's
-    // Cloud of Disease). Returned as its live position + the raw pulse radius, so
+    // inside (same-floor) — a creature emitter with vacateRadius > 0 (the
+    // Destroyed Sentinel's persistent pulse), any ground pool (Scholomance's
+    // Cloud of Disease), or any gameobject trap (the Shattered Halls Blaze).
+    // Returned as its live position + the raw pulse radius, so
     // the retreat action can compute a point to clear to. `ok == false` when the
     // bot is clear of everything.
     //
