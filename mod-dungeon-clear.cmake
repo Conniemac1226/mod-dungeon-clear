@@ -76,6 +76,7 @@ if (BUILD_TESTING)
             "${MOD_PATH}/t/TestNavGeometry.cpp"
             "${MOD_PATH}/t/TestSplineWindow.cpp"
             "${MOD_PATH}/t/TestMechanarElevatorProbe.cpp"
+            "${MOD_PATH}/t/TestRampartsLedgeProbe.cpp"
             "${MOD_PATH}/t/TestStrategyGate.cpp"
             "${MOD_PATH}/t/TestRelevanceLadder.cpp"
             "${MOD_PATH}/t/TestSettingsRegistry.cpp"

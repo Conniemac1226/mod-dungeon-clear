@@ -66,6 +66,18 @@ void RegisterStratholmeEvents(std::vector<DungeonEvent>& out);
 void RegisterUldamanEvents(std::vector<DungeonEvent>& out);
 void RegisterScholomanceEvents(std::vector<DungeonEvent>& out);
 void RegisterDireMaulEvents(std::vector<DungeonEvent>& out);
+// Hellfire Ramparts (map 543) final-approach gate — see HellfireRampartsEvents.cpp
+// for the measurements. Exposed so t/TestRampartsLedgeProbe can assert against the
+// real navmesh that the zone-in platform lies outside the gate; the numbers are
+// only meaningful together with that probe.
+namespace DcHellfireRamparts
+{
+    // How far to scan for the Hellfire Sentries / Vazruden.
+    constexpr float FINAL_APPROACH_SCAN = 45.0f;
+    // Floor Z the bot must be above: the upper level the final platform sits on.
+    constexpr float FINAL_APPROACH_MIN_Z = 76.0f;
+}
+
 void RegisterHellfireRampartsEvents(std::vector<DungeonEvent>& out);
 void RegisterBloodFurnaceEvents(std::vector<DungeonEvent>& out);
 void RegisterSlavePensEvents(std::vector<DungeonEvent>& out);
