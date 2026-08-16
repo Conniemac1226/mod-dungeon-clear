@@ -207,18 +207,36 @@ namespace
         // rebuilds next tick (the primary normally succeeds), which is far better
         // than stranding the party up a wall. HasVolumes gates the per-point loop
         // so maps without a volume — i.e. almost all — pay nothing.
+        //
+        // The screen rejects a corridor that ENTERS a region, never one that is
+        // LEAVING one. A party can legitimately be standing inside a fence — the
+        // Hellfire Ramparts wall covers ordinary room floor a few yards from the
+        // zone-in point — and rejecting every probe from in there strands them:
+        // each tier fails the same screen, so the party is walled into the spot
+        // the fence was only ever meant to keep routes out of. So when this
+        // stride's own start is inside a region, its leading points are allowed to
+        // be too; the screen arms the moment the corridor first reaches clear
+        // ground, and any point that goes back in after that is still rejected.
+        // Strides chain from the previous clean end, so a stride that starts
+        // outside is screened exactly as before.
         if (DcNavPenaltyRegistry::HasVolumes(mapId))
         {
+            bool walkingOut = DcNavPenaltyRegistry::IsInsideRegion(mapId, cx, cy, cz);
             for (G3D::Vector3 const& p : candidate)
             {
-                if (DcNavPenaltyRegistry::PenaltyAt(mapId, p.x, p.y, p.z) > 1.0f)
+                if (!DcNavPenaltyRegistry::IsInsideRegion(mapId, p.x, p.y, p.z))
                 {
-                    LOG_DEBUG("playerbots.dungeonclear",
-                              "[dungeon-clear] probe rejected: corridor enters a no-go volume on "
-                              "map {} (type=0x{:x}); trying next tier",
-                              mapId, outType);
-                    return false;
+                    walkingOut = false;   // clear ground reached — the screen is live
+                    continue;
                 }
+                if (walkingOut)
+                    continue;             // still on the way out of the start region
+
+                LOG_DEBUG("playerbots.dungeonclear",
+                          "[dungeon-clear] probe rejected: corridor enters a no-go volume on "
+                          "map {} (type=0x{:x}); trying next tier",
+                          mapId, outType);
+                return false;
             }
         }
 
