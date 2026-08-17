@@ -379,7 +379,9 @@ TEST(BossRosterRegistryTest, RingOfLawObjectiveSortsBetweenGrebmarAndLoregrain)
     {
         if (out[i].entry == 9319)
             grebmarIdx = i;
-        if (out[i].kind == DungeonAnchorKind::Objective)
+        // Key on the event id, not on "is an objective": map 230 carries a
+        // second objective (the Shadowforge Lock, event 2) further down the list.
+        if (out[i].kind == DungeonAnchorKind::Objective && out[i].eventId == 1u)
             ringIdx = i;
         if (out[i].entry == 9024)
             loregrainIdx = i;
@@ -391,6 +393,40 @@ TEST(BossRosterRegistryTest, RingOfLawObjectiveSortsBetweenGrebmarAndLoregrain)
     EXPECT_LT(ringIdx, loregrainIdx) << "Ring of Law must precede Loregrain";
     EXPECT_EQ(out[ringIdx].encounterIndex, 3u);
     EXPECT_EQ(out[ringIdx].eventId, 1u);
+}
+
+// Blackrock Depths: the Shadowforge Lock objective SHARES General Angerforge's
+// bit (9) — it has no encounter of its own — so the objective-before-boss
+// tie-break is what puts the lever after Bael'Gar (bit 8) and before Angerforge.
+// Sharing a live boss's bit is only safe because NextDungeonBossValue consults
+// the completion mask for Boss anchors alone; assert the ordering here so a
+// change to that tie-break can't silently strand the lever behind Angerforge.
+TEST(BossRosterRegistryTest, ShadowforgeLockSortsBetweenBaelGarAndAngerforge)
+{
+    std::vector<DungeonBossInfo> base = {
+        Boss(9016, 8, "Bael'Gar", 230),
+        Boss(9033, 9, "General Angerforge", 230),
+    };
+    std::vector<DungeonBossInfo> out = BossRosterRegistry::Apply(230, DUNGEON_DIFFICULTY_NORMAL, base);
+
+    int baelIdx = -1, lockIdx = -1, angerIdx = -1;
+    for (int i = 0; i < (int)out.size(); ++i)
+    {
+        if (out[i].entry == 9016)
+            baelIdx = i;
+        if (out[i].kind == DungeonAnchorKind::Objective && out[i].eventId == 2u)
+            lockIdx = i;
+        if (out[i].entry == 9033)
+            angerIdx = i;
+    }
+    ASSERT_GE(lockIdx, 0) << "Shadowforge Lock objective missing";
+    ASSERT_GE(baelIdx, 0);
+    ASSERT_GE(angerIdx, 0);
+    EXPECT_LT(baelIdx, lockIdx) << "the lever must be pulled after Bael'Gar";
+    EXPECT_LT(lockIdx, angerIdx) << "the lever must be pulled before Angerforge";
+    EXPECT_EQ(out[lockIdx].encounterIndex, 9u);
+    EXPECT_EQ(out[lockIdx].kind, DungeonAnchorKind::Objective);
+    EXPECT_EQ(out[angerIdx].encounterIndex, 9u) << "Angerforge keeps kill-bit 9";
 }
 
 // Deadmines: the Defias Cannon objective shares Mr. Smite's bit (3); the

@@ -81,6 +81,30 @@ namespace
     // trigger if arrival alone didn't start the encounter (all-bot party / no
     // human on the trigger).
     constexpr uint32 BRD_ENSURE_RING_STARTED_HOOK = 1;
+
+    // --- Shadowforge Lock (event 2) ---------------------------------------
+    // The lever in the East Garrison, and the Giant Doors it drives. GOState
+    // values are spelled out locally so this TU needn't pull SharedDefines:
+    // GO_STATE_ACTIVE = 0, GO_STATE_READY = 1.
+    constexpr uint32 BRD_GO_SHADOWFORGE_LOCK = 161460;
+    constexpr uint32 BRD_GO_GIANT_DOORS = 157923;
+    constexpr uint32 BRD_GO_STATE_READY = 1;
+
+    // The lever's own spawn point, dropped onto the garrison floor (the mmaps
+    // surface under it is z -59.82; the GO sits at -60.06 on the wall). The
+    // objective anchor delivers the tank here and the UseGO step's own 5yd
+    // approach closes whatever is left.
+    constexpr float BRD_LOCK_X = 615.61f;
+    constexpr float BRD_LOCK_Y = -49.78f;
+    constexpr float BRD_LOCK_Z = -59.82f;
+    constexpr float BRD_LOCK_RADIUS = 4.0f;
+
+    // Search radius for the Giant Doors from the lever. They are 113yd away at
+    // (723.1,-105.9,-71.5) but in the SAME map grid as the lever (both fall in
+    // grid 30/32), so the cell visit always has them loaded — this is a state
+    // read, not a proximity gate.
+    constexpr float BRD_GIANT_DOOR_SCAN = 200.0f;
+    constexpr uint32 BRD_GIANT_DOOR_TIMEOUT_MS = 30000;
 }
 
 void RegisterBlackrockDepthsEvents(std::vector<DungeonEvent>& out)
@@ -106,6 +130,48 @@ void RegisterBlackrockDepthsEvents(std::vector<DungeonEvent>& out)
                                          /*minValue*/ BRD_RING_DONE)
             .WhileHolding(BRD_ENSURE_RING_STARTED_HOOK)
             .Timeout(600000)
+            .Build());
+
+    // --- the SHADOWFORGE LOCK, ANCHORED between Bael'Gar and Angerforge ---
+    // The Giant Doors at (723.1,-105.9,-71.5) spawn OPEN, and the lower passage
+    // they stand in is the way north to Bael'Gar. Closing them is a separate,
+    // deliberate act: you walk back to the East Garrison — through the East
+    // Garrison Door (170570, lock 680, waived in DcEventDoorRegistry) — and pull
+    // the lever at the far end of the room. That is the whole event.
+    //
+    // OFF-PATH OPENER, so it is ANCHORED rather than Conditional: the lever is
+    // 113yd from the doors it moves and a floor above them, so nothing about
+    // standing at the doors can bring the party to it (see the door-event-type
+    // rule). Boss-nav has to deliver the tank to the lever, which is what an
+    // objective anchor is for.
+    //
+    // The lever needs no key logic here: EventStepKind::UseGameObject calls
+    // GameObject::Use() directly, and the DOOR branch of Use() has no lock check
+    // at all (locks are adjudicated client-side and, for bots, by
+    // BotCanOpenDoorLikePlayer — which the exemption covers for the walk-in
+    // case). Use() -> UseDoorOrButton -> SetLootState(GO_ACTIVATED) fires the
+    // lever's SmartAI chain SYNCHRONOUSLY, which activates the mechanism, the
+    // Giant Doors, and the two collision hulls in one go.
+    //
+    // NOT persistent, and it does not need to be: every step is idempotent under
+    // a rewind. MoveTo re-arrives, UseGO early-returns Done on a lever that is no
+    // longer GO_STATE_READY (so a second click can never re-open the doors), and
+    // the state check is a plain read.
+    out.push_back(
+        EventBuilder(230, 2, "Shadowforge Lock")
+            .Anchored(/*orderIndex*/ 9)
+            // 1. Settle at the lever inside the East Garrison.
+            .MoveTo(BRD_LOCK_X, BRD_LOCK_Y, BRD_LOCK_Z, BRD_LOCK_RADIUS)
+            // 2. Pull it.
+            .UseGO(BRD_GO_SHADOWFORGE_LOCK, /*searchRadius*/ 15.0f)
+            // 3. Confirm the machine actually moved. Gating on the DOORS rather
+            //    than on the lever is the point: the lever flipping only proves
+            //    the click landed, while GO_STATE_READY on 157923 proves the
+            //    SmartAI chain ran and the path is open. If the world DB is
+            //    missing that chain this step burns its timeout and stalls
+            //    visibly instead of latching the objective on a no-op.
+            .WaitForGOState(BRD_GO_GIANT_DOORS, BRD_GO_STATE_READY,
+                            BRD_GIANT_DOOR_TIMEOUT_MS, BRD_GIANT_DOOR_SCAN)
             .Build());
 }
 
@@ -136,6 +202,22 @@ void RegisterBlackrockDepthsRoster(std::vector<BossRosterPatch>& t)
             MakeObjective(OBJ(1), /*encounterIndex*/ 3, 230, "Ring of Law",
                           596.432f, -188.498f, -53.9f, /*arriveRadius*/ 12.0f,
                           /*gateEntry*/ 0, /*hook*/ 0, /*eventId*/ 1),
+            // --- Blackrock Depths — the Shadowforge Lock ------------------
+            // The lever that closes the Giant Doors, carrying map-230 event 2.
+            // It has no DungeonEncounter of its own; encounterIndex 9 is an
+            // ordering hint only (NextDungeonBossValue consults the completion
+            // mask for Boss anchors ONLY, precisely so an objective sharing a
+            // boss's bit can't vanish when that bit flips), and 9 is General
+            // Angerforge's bit. Sharing it is what puts the lever between
+            // Bael'Gar (bit 8) and Angerforge: on Bael'Gar's death the picker
+            // advances to the lowest key strictly greater than 8, and the
+            // roster sort's objective-before-boss tie-break hands over the
+            // lever first. arriveRadius 8 is the garrison room, not the wall —
+            // the event's own MoveTo (radius 4) plus the UseGO 5yd approach do
+            // the fine positioning.
+            MakeObjective(OBJ(2), /*encounterIndex*/ 9, 230, "Shadowforge Lock",
+                          615.61f, -49.78f, -59.82f, /*arriveRadius*/ 8.0f,
+                          /*gateEntry*/ 0, /*hook*/ 0, /*eventId*/ 2),
         };
         t.push_back(std::move(p));
     }
