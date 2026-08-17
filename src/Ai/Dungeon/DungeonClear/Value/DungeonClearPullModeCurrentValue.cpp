@@ -19,6 +19,8 @@
 
 bool DungeonClearPullModeCurrentValue::Calculate()
 {
+    DcPullContext& pull = context->GetValue<DcPullContext&>(DcKey::PullContext)->Get();
+
     // While a PERSISTENT anchored event drives (ZulFarrak's temple), the event
     // owns the tank: force the EFFECTIVE pull mode Off so the whole dynamic/
     // advanced pull system stands down as one — no camp-drag kiting the tank off
@@ -29,8 +31,31 @@ bool DungeonClearPullModeCurrentValue::Calculate()
     // that replaces per-mechanic suppressions — the event needs exactly "pull Off"
     // behaviour. The stored pull-setting preference is untouched (the addon status
     // still shows it, and it resumes the instant the event completes).
+    //
+    // CLEAR THE STANDING VERDICT, don't just stop reporting it. This return skips
+    // DcPullPlanner::UpdateDynamicPullMode below — and that function is the only
+    // writer of the Dynamic verdict, so a bare `return false` freezes whatever
+    // `decision` happened to be latched on the tick the event started rather than
+    // standing it down. `decision == PatrolHold` is the one that bites: the pull
+    // trigger keeps its rung live on that code by design (pull mode reads off, but
+    // the tank must still hold at commit range while it waits a patrol out), so the
+    // pull action re-planted the tank at DcRel::Pull (35) every tick, above
+    // DcRel::AtObjective (30), and the event never got another tick to drive its own
+    // steps. The patrol-wait timeout cannot break the tie either — ShouldWaitForPatrol
+    // is only evaluated inside the governor we just skipped.
+    //
+    // Live: tr-20260817-100413-43/44/45, all three stalled identically in Shattered
+    // Halls. The tank latched "patrol-contended" on the Shattered Hand Champion pack
+    // (17671) at the assassin hallway's mouth — contended by the very stealthed
+    // Assassins (17695) the sweep event exists to kill — one second before the sweep
+    // event's step 0 completed and armed this stand-down. `decision` then read
+    // PatrolHold for 913 seconds, the sweep never advanced past step 0, and the run
+    // failed the 600s no-progress watchdog with the party standing in the hallway.
     if (DungeonEventExecutor::IsPersistentAnchoredEventActive(context))
+    {
+        pull.ClearDynamicVerdict();
         return false;
+    }
 
     // SCRIPTED PULL STAGE (ScriptedPullRegistry) — the mirror image of the override
     // above: force the pull system ON for the plan's duration, whatever the player's
@@ -50,7 +75,6 @@ bool DungeonClearPullModeCurrentValue::Calculate()
     // Leader-only, like the Dynamic governor: a follower's own copy of the bool
     // drives nothing, and writing it there would just add churn.
     bool const isLeader = DcLeaderSignal::IsDungeonClearLeader(bot);
-    DcPullContext& pull = context->GetValue<DcPullContext&>(DcKey::PullContext)->Get();
     if (isLeader && DcTickMemoAccess::ScriptedStage(bot, context) != nullptr)
     {
         if (!pull.scriptedForced)

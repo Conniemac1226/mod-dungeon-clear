@@ -369,6 +369,31 @@ struct DcPullContext
 
     void Reset() { *this = DcPullContext{}; }
 
+    // Tear down the standing Dynamic verdict and every latch that feeds it.
+    //
+    // The governor (DcPullPlanner::UpdateDynamicPullMode) is the ONLY writer of
+    // these fields, so anything that stops the governor from running FREEZES the
+    // verdict — it does not clear it. That is exactly how tr-20260817-100413-43/44/45
+    // wedged: DungeonClearPullModeCurrentValue stands the pull system down while a
+    // persistent anchored event drives, and it early-returned BEFORE the governor
+    // call, leaving `decision == PatrolHold` latched from the tick before. The pull
+    // trigger keeps its rung live on that code by design ("off-but-held"), so the
+    // pull action re-planted the tank every tick at DcRel::Pull (35) — above
+    // DcRel::AtObjective (30) — and the event's own steps never got another tick.
+    // The patrol-wait timeout could not save it either: ShouldWaitForPatrol is only
+    // ever evaluated inside the governor.
+    //
+    // So a stand-down must clear the verdict, not merely stop reporting it. Cheap
+    // and idempotent: safe to call on every tick the stand-down holds.
+    void ClearDynamicVerdict()
+    {
+        decision        = DcPullDecisionCode::None;
+        decisionTarget  = ObjectGuid::Empty;
+        decisionSince   = 0;
+        patrolWaitSince = 0;
+        targetLostSince = 0;
+    }
+
     // The ONLY way to transition into Engage (used by DcSetPullPhase and
     // DcLeaderSignal::AbortLeaderPull, which live in different TUs). Entering
     // Engage ends the pull — camp arrival, CC-abort, evade release, return-leg
