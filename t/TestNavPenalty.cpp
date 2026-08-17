@@ -5,9 +5,12 @@
 
 #include "gtest/gtest.h"
 #include "Ai/Dungeon/DungeonClear/Data/DcNavPenaltyRegistry.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcRouteFilter.h"
 
-// Pure tests for the hand-authored no-go volume table. No navmesh / map data
-// required, so these run in every build (unlike the Tier-2 nav geometry suite).
+// Pure tests for the hand-authored no-go volume table, plus the one decision the
+// route filter makes off it (does the fence apply to this query at all). No
+// navmesh / map data required, so these run in every build (unlike the Tier-2 nav
+// geometry suite).
 
 TEST(DcNavPenaltyRegistry, ReportsMapsWithVolumes)
 {
@@ -15,6 +18,7 @@ TEST(DcNavPenaltyRegistry, ReportsMapsWithVolumes)
     EXPECT_TRUE(DcNavPenaltyRegistry::HasVolumes(556));   // Sethekk Halls
     EXPECT_TRUE(DcNavPenaltyRegistry::HasVolumes(546));   // Underbog
     EXPECT_TRUE(DcNavPenaltyRegistry::HasVolumes(543));   // Hellfire Ramparts
+    EXPECT_TRUE(DcNavPenaltyRegistry::HasVolumes(389));   // Ragefire Chasm
     EXPECT_FALSE(DcNavPenaltyRegistry::HasVolumes(0));     // no rows
     EXPECT_FALSE(DcNavPenaltyRegistry::HasVolumes(230));   // BRD — no rows
     EXPECT_FALSE(DcNavPenaltyRegistry::HasVolumes(560));   // Old Hillsbrad — no rows
@@ -62,11 +66,12 @@ TEST(DcNavPenaltyRegistry, FencesTheSethekkFallThroughCorner)
 TEST(DcNavPenaltyRegistry, FencesTheHellfireRampartsCorridorWall)
 {
     // A point on the wall line's midpoint (≈(-1351.55, 1656.98) at floor z68) sits
-    // squarely inside the thin strip laid along the wall, so it must be taxed.
+    // squarely inside the strip laid along the wall, so it must be taxed.
     EXPECT_GT(DcNavPenaltyRegistry::PenaltyAt(543, -1351.55f, 1656.98f, 68.46f), 1.0f);
 
     // A few yards off the wall, into the corridor centre (offset ~5yd along the
-    // strip's outward perpendicular): clear of the thin footprint, so untaxed.
+    // strip's inboard perpendicular): clear of the footprint, so untaxed. The
+    // re-cut moved only the strip's FAR side, so this side is unchanged.
     EXPECT_FLOAT_EQ(DcNavPenaltyRegistry::PenaltyAt(543, -1348.58f, 1652.96f, 68.46f), 1.0f);
 
     // Same XY as the wall midpoint but well below the Z band → a different level is
@@ -75,6 +80,121 @@ TEST(DcNavPenaltyRegistry, FencesTheHellfireRampartsCorridorWall)
 
     // Geometrically on the wall, but a different map → no region applies.
     EXPECT_FLOAT_EQ(DcNavPenaltyRegistry::PenaltyAt(0, -1351.55f, 1656.98f, 68.46f), 1.0f);
+}
+
+TEST(DcNavPenaltyRegistry, RampartsStripLeavesNoWalkableFloorBehindIt)
+{
+    // Regression: the strip used to be the measured line inflated ±2yd, but that
+    // line is a straight chord across a navmesh edge that BOWS away from it, so
+    // the middle of the strip ran 2-3yd inboard of the real drop-off and marooned
+    // ≈29 sq yd of ordinary room floor between the strip and the cliff — floor a
+    // party can stand on, reachable only by crossing a hard-reject region.
+    //
+    // (-1349.00, 1662.00) is in that pocket: real navmesh floor at z 68.70,
+    // measured 2.5yd on the far side of the chord. It must be INSIDE the strip
+    // now — not because the party should never be there, but so that "behind the
+    // strip" is over the drop everywhere and there is no pocket left to be cut
+    // off in the first place.
+    EXPECT_GT(DcNavPenaltyRegistry::PenaltyAt(543, -1349.0f, 1662.0f, 68.70f), 1.0f);
+
+    // ...and so is the deepest floor the pocket reached: (-1353.57, 1662.63) at
+    // z 68.61, 5.75yd out, the furthest any walkable sample gets from the chord.
+    EXPECT_GT(DcNavPenaltyRegistry::PenaltyAt(543, -1353.57f, 1662.63f, 68.61f), 1.0f);
+
+    // The far boundary is 10yd out — past any floor, over the drop — so a point
+    // beyond THAT is off the mesh entirely and needs no fencing.
+    EXPECT_FLOAT_EQ(DcNavPenaltyRegistry::PenaltyAt(543, -1358.48f, 1666.77f, 68.46f), 1.0f);
+
+    // The zone-in point itself is well clear of the strip and stays untaxed —
+    // an ordinary start must route normally.
+    EXPECT_FLOAT_EQ(DcNavPenaltyRegistry::PenaltyAt(543, -1355.24f, 1641.12f, 68.25f), 1.0f);
+}
+
+TEST(DcNavPenaltyRegistry, IsInsideRegionAgreesWithPenaltyAt)
+{
+    // The named predicate both consumers ask "is the party standing in a fence?"
+    // with. It must be exactly "PenaltyAt says taxed", on every kind of row.
+    EXPECT_TRUE(DcNavPenaltyRegistry::IsInsideRegion(543, -1351.55f, 1656.98f, 68.46f));  // polygon
+    EXPECT_TRUE(DcNavPenaltyRegistry::IsInsideRegion(229, -126.1f, -390.3f, 44.4f));      // box
+    EXPECT_TRUE(DcNavPenaltyRegistry::IsInsideRegion(389, -271.13f, -20.04f, -57.4f));    // RFC wall
+
+    EXPECT_FALSE(DcNavPenaltyRegistry::IsInsideRegion(543, -1355.24f, 1641.12f, 68.25f)); // clear floor
+    EXPECT_FALSE(DcNavPenaltyRegistry::IsInsideRegion(543, -1351.55f, 1656.98f, 50.0f));  // wrong Z
+    EXPECT_FALSE(DcNavPenaltyRegistry::IsInsideRegion(0, -1351.55f, 1656.98f, 68.46f));   // no rows
+}
+
+// A fence says where routes may GO. It must never cage a party that is already
+// standing inside one — which happens for real: the Ramparts strip covers ordinary
+// room floor a few yards from where players zone in, so "started the run on the
+// wrong side of the invisible wall" is a routine start, and taxing the way out at
+// 40x is what sends the tank round the far side of the room instead.
+TEST(DcRouteFilterTest, FenceIsLiveForAnOrdinaryStart)
+{
+    // Map with rows, start on clear floor → the fence applies as before.
+    DcRouteFilter const filter(543, -1355.24f, 1641.12f, 68.25f);
+    EXPECT_TRUE(filter.IsFenceActive());
+}
+
+TEST(DcRouteFilterTest, FenceStandsDownWhenTheRouteStartsInsideIt)
+{
+    // Start inside the Ramparts strip → the fence is off for this query, so the
+    // A* can cost the way out at face value and leave.
+    DcRouteFilter const rampart(543, -1351.55f, 1656.98f, 68.46f);
+    EXPECT_FALSE(rampart.IsFenceActive());
+
+    // Same for a box row (LBRS chasm) and for the RFC funnel wall — the rule is a
+    // property of the registry, not of one hand-authored spot.
+    DcRouteFilter const lbrs(229, -126.1f, -390.3f, 44.4f);
+    EXPECT_FALSE(lbrs.IsFenceActive());
+
+    DcRouteFilter const rfc(389, -271.13f, -20.04f, -57.4f);
+    EXPECT_FALSE(rfc.IsFenceActive());
+}
+
+TEST(DcRouteFilterTest, MapsWithoutRowsNeverArmTheFence)
+{
+    // No rows on the map → nothing to test per edge, whatever the start.
+    DcRouteFilter const none(0, 0.0f, 0.0f, 0.0f);
+    EXPECT_FALSE(none.IsFenceActive());
+}
+
+TEST(DcNavPenaltyRegistry, FencesTheRagefireChasmFunnelWall)
+{
+    // The four measured points the wall is drawn through. Each must be taxed —
+    // including the two outer ends, which is why every leg is extended past its
+    // endpoints instead of terminating exactly on them (a point sitting on the
+    // polygon's boundary edge is ill-defined for the even-odd test).
+    EXPECT_GT(DcNavPenaltyRegistry::PenaltyAt(389, -283.38f, -37.05f, -58.46f), 1.0f);
+    EXPECT_GT(DcNavPenaltyRegistry::PenaltyAt(389, -277.23f, -22.82f, -58.18f), 1.0f);
+    EXPECT_GT(DcNavPenaltyRegistry::PenaltyAt(389, -265.03f, -17.26f, -56.65f), 1.0f);
+    EXPECT_GT(DcNavPenaltyRegistry::PenaltyAt(389, -238.73f, -22.41f, -58.18f), 1.0f);
+
+    // The midpoint of each leg — the wall is continuous along its whole length,
+    // not just at the authored corners.
+    EXPECT_GT(DcNavPenaltyRegistry::PenaltyAt(389, -280.31f, -29.94f, -58.3f), 1.0f);
+    EXPECT_GT(DcNavPenaltyRegistry::PenaltyAt(389, -271.13f, -20.04f, -57.4f), 1.0f);
+    EXPECT_GT(DcNavPenaltyRegistry::PenaltyAt(389, -251.88f, -19.84f, -57.4f), 1.0f);
+
+    // Six yards off the wall on either side (measured along leg 3's perpendicular):
+    // the strip is thin, so open floor either side of it stays untaxed. This is the
+    // point of a polygon here — leg 3's bounding box alone would be ~28x6yd and
+    // would swallow floor the party legitimately uses.
+    EXPECT_FLOAT_EQ(DcNavPenaltyRegistry::PenaltyAt(389, -253.03f, -25.72f, -58.0f), 1.0f);
+    EXPECT_FLOAT_EQ(DcNavPenaltyRegistry::PenaltyAt(389, -250.73f, -13.95f, -58.0f), 1.0f);
+
+    // Same, off leg 1 — and far enough from leg 2 that the bend's overlap does not
+    // reach it either.
+    EXPECT_FLOAT_EQ(DcNavPenaltyRegistry::PenaltyAt(389, -274.80f, -32.32f, -58.0f), 1.0f);
+
+    // On the wall in XY but well outside the Z band → a different level is not
+    // this wall, so it is untaxed.
+    EXPECT_FLOAT_EQ(DcNavPenaltyRegistry::PenaltyAt(389, -271.13f, -20.04f, -20.0f), 1.0f);
+
+    // The instance's own start position is nowhere near the wall.
+    EXPECT_FLOAT_EQ(DcNavPenaltyRegistry::PenaltyAt(389, 3.81f, -14.82f, -17.84f), 1.0f);
+
+    // Geometrically on the wall, but a different map → no region applies.
+    EXPECT_FLOAT_EQ(DcNavPenaltyRegistry::PenaltyAt(0, -271.13f, -20.04f, -57.4f), 1.0f);
 }
 
 TEST(DcNavPenaltyRegistry, PenalizesInsideTheLbrsShaft)

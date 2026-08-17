@@ -103,22 +103,69 @@ namespace
     // a legitimate lane and strand the party. costMult 40 matches the other 556
     // shortcut row (a spot a real player can't be, not a survivable hazard).
     //
-    // Hellfire Ramparts (map 543) — a wall of a narrow corridor. The measured wall
-    // runs the diagonal (-1367.45, 1645.24, 68.46) -> (-1335.65, 1668.71, 68.47)
-    // (≈39.5yd long), so an axis-aligned box hugging it would be a ~32x23yd blob
-    // spilling across the whole corner and swallowing the walkable corridor floor.
-    // A polygon lets the footprint be a THIN strip laid along the wall instead: the
-    // quad is that line inflated ±2yd on its perpendicular (≈4yd thick), so a route
-    // that clips into / along the wall is fenced while the corridor centre stays
-    // clear. Z band 62..76 straddles the ~z68 floor. costMult 40 (a spot a real
-    // player can't be, same class as the shortcut rows above).
-    constexpr std::array<DcNavPenaltyPolygon, 2> kPolygons = {{
+    // Hellfire Ramparts (map 543) — the drop-off edge along the south-west side of
+    // the zone-in room. The measured line runs the diagonal
+    // (-1367.45, 1645.24, 68.46) -> (-1335.65, 1668.71, 68.47) (≈39.5yd), so an
+    // axis-aligned box hugging it would be a ~32x23yd blob spilling across the
+    // whole corner and swallowing the walkable floor. A polygon lets the footprint
+    // be a strip laid along the edge instead, keeping routes off it while the room
+    // centre stays clear. Z band 62..76 straddles the ~z68 floor. costMult 40.
+    //
+    // THE STRIP IS ASYMMETRIC ABOUT THE MEASURED LINE, AND THAT IS THE WHOLE POINT.
+    // It was first authored as that line inflated ±2yd (a ~4yd-thick strip centred
+    // on it) and that stranded people. The measured line is a straight chord, but
+    // the navmesh edge it is supposed to trace BOWS: sampled perpendicular to the
+    // chord, walkable floor runs out anywhere from 0 to 5.5yd on the far side of
+    // it, bulging furthest around the middle. Only the two ENDS of the chord are
+    // over the void; its middle is 2-3yd inboard of the real edge. So the ±2yd
+    // strip sliced a ribbon out of the room and left ≈29 sq yd of ordinary floor
+    // marooned between the strip and the drop — reachable only by crossing the
+    // strip, which is a hard reject in the StridedPathfinder screen. A party that
+    // zoned in and drifted onto it (the zone-in point is ~11yd away) could not be
+    // routed out, and the tank set off round the far side of the room instead:
+    // the reported "starts on the wrong side of the invisible wall" symptom.
+    //
+    // The fix is to stop centring the strip on the chord and push its far side out
+    // into the void: the footprint now runs from 10yd BEYOND the chord (past the
+    // furthest the floor ever reaches, so that boundary is over the drop along the
+    // entire length) to 2yd inboard of it — where the room floor is untouched, as
+    // before. Nothing can be marooned behind a boundary that is over a cliff.
+    // Verified against the map's mmtiles: 0.0 sq yd of walkable floor now lies on
+    // the far side, down from ≈29. The inboard edge has NOT moved, so routes are
+    // steered exactly as they were; only the far side changed.
+    // Ragefire Chasm (map 389) — a funnel wall, authored from four measured
+    // points rather than a single straight run. The route producer cuts across a
+    // stretch of cave floor the party should not take; fencing the crossing sends
+    // it round the intended way. The measured polyline is
+    //     (-283.38, -37.05, -58.46) -> (-277.23, -22.82, -58.18)
+    //  -> (-265.03, -17.26, -56.65) -> (-238.73, -22.41, -58.18)
+    // (three legs, ≈15.5 / 13.4 / 26.8yd, bending ~40° at each joint). No single
+    // quad follows a bent line, so it is authored as one thin quad PER LEG — each
+    // leg inflated ±2yd on its perpendicular (≈4yd thick), same recipe as the
+    // Hellfire Ramparts wall above. Every leg is extended 2yd past each of its
+    // ends: at the two interior joints that makes consecutive quads overlap so
+    // the bend leaves no gap to squeeze through, and at the two outer ends it
+    // puts the measured endpoints strictly inside the footprint rather than on
+    // its boundary edge (where the even-odd test is ill-defined) and seals the
+    // wall against whatever geometry it abuts. Z band -64..-50 straddles the
+    // ≈-58 floor. costMult 40 (a line the party must not cross, same class as
+    // the shortcut rows above).
+    constexpr std::array<DcNavPenaltyPolygon, 5> kPolygons = {{
         { 556, 15.0f, 38.0f, 40.0f, 5,
           { -233.29f, -230.34f, -209.82f, -192.94f, -192.04f },
           {  275.04f,  309.39f,  326.92f,  305.38f,  271.93f } },
-        { 543, 62.0f, 76.0f, 40.0f, 4,
-          { -1368.64f, -1336.84f, -1334.46f, -1366.26f },
-          {  1646.85f,  1670.32f,  1667.10f,  1643.63f } },
+        { 543, 62.0f, 76.0f, 40.0f, 4,   // far side over the drop | inboard side unchanged
+          { -1373.39f, -1341.59f, -1334.46f, -1366.26f },
+          {  1653.29f,  1676.76f,  1667.10f,  1643.63f } },
+        { 389, -64.0f, -50.0f, 40.0f, 4,   // leg 1
+          { -282.34f, -274.60f, -278.27f, -286.01f },
+          {  -39.68f,  -21.78f,  -20.19f,  -38.09f } },
+        { 389, -64.0f, -50.0f, 40.0f, 4,   // leg 2
+          { -278.22f, -262.38f, -264.04f, -279.88f },
+          {  -25.47f,  -18.25f,  -14.61f,  -21.83f } },
+        { 389, -64.0f, -50.0f, 40.0f, 4,   // leg 3
+          { -267.38f, -237.15f, -236.38f, -266.61f },
+          {  -18.84f,  -24.76f,  -20.83f,  -14.91f } },
     }};
 
     // Even-odd ray cast — true iff (x,y) is inside the polygon's XY footprint.
@@ -147,6 +194,11 @@ bool DcNavPenaltyRegistry::HasVolumes(uint32 mapId)
         if (p.mapId == mapId)
             return true;
     return false;
+}
+
+bool DcNavPenaltyRegistry::IsInsideRegion(uint32 mapId, float x, float y, float z)
+{
+    return PenaltyAt(mapId, x, y, z) > 1.0f;
 }
 
 float DcNavPenaltyRegistry::PenaltyAt(uint32 mapId, float x, float y, float z)

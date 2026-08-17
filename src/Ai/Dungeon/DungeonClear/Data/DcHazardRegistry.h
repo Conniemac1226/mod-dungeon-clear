@@ -11,8 +11,8 @@
 #include "Define.h"
 
 // Static registry of persistent damage the combat AI cannot reason about on its
-// own. Two KINDS of emitter live here, because the game represents ground damage
-// two different ways:
+// own. THREE KINDS of emitter live here, because the game represents ground
+// damage three different ways:
 //
 //   * DcHazardEmitter — a CREATURE that carries a permanent pulsing aura. Keyed
 //     on (map, creature entry); resolved live off the creature's position.
@@ -22,8 +22,14 @@
 //     cast point and it ticks there until its duration expires. Keyed on (map,
 //     spell id); resolved live off the DynamicObject's position. See below.
 //
-// Both feed the same three consumers through DcHazard, so a caller never has to
-// know which kind it just avoided.
+//   * DcTrapHazard — a GAMEOBJECT_TYPE_TRAP the script drops on the ground. Not
+//     a unit and not a DynamicObject either: a real GameObject that re-arms on
+//     its own cooldown and casts its damage spell at whoever is standing on it.
+//     Keyed on (map, gameobject entry); resolved live off the GameObject's
+//     position. The Shattered Halls Blaze (181915) is the case it exists for.
+//
+// All three feed the same three consumers through DcHazard, so a caller never
+// has to know which kind it just avoided.
 //
 // --- the creature kind ---------------------------------------------------
 //
@@ -173,6 +179,59 @@ struct DcGroundHazard
     float  retreatSlack{6.0f};
 };
 
+// A GAMEOBJECT_TYPE_TRAP dropped on the floor by a script: the Shattered Halls
+// "Blaze" (181915), left where a Shattered Hand Archer's flame arrow lands.
+//
+// This is the THIRD representation of the same idea and it needs its own table
+// for the same reason the ground pools did: a GameObject is neither a Unit nor a
+// DynamicObject, so both existing resolvers return nullptr on its guid and the
+// `continue` that follows reads exactly like "no hazard here".
+//
+// A trap differs from a pool in how it fires: instead of a periodic aura it runs
+// GameObject::Update's GO_READY branch, searching for a player inside
+// `trap.diameter / 2` and, on finding one, casting `trap.spellId` (whose OWN
+// radius is what actually splashes) before re-arming after `trap.cooldown`. So
+// there are two radii to reconcile, and the one that matters for `vacateRadius`
+// is the CAST spell's — a bot standing outside the trigger circle still eats the
+// splash when a melee standing on top of it sets the trap off.
+//
+// Every trap row is a threat-2 emitter by nature: there is nothing to fight and
+// nothing to kill, so `vacateRadius` is expected on every row here.
+//
+// No DcNavPenaltyRegistry counterpart, same as the pools: the trap's position is
+// not known until an arrow lands, so there is nothing to hand-author for the
+// worker-thread router. The live predicates are the whole route defence.
+struct DcTrapHazard
+{
+    uint32 mapId{0};
+
+    // The GameObject entry of the trap. This is what GameObject::GetEntry()
+    // returns, so it is the object the script spawns — not the spell that
+    // spawned it and not the spell the trap casts.
+    uint32 goEntry{0};
+
+    // Keep-out radius (yd), 2D, for camp/standoff/skirt placement. Kept modest:
+    // traps land exactly where the party is standing and several can be alive at
+    // once, so an over-wide keep-out sterilises the corridor the party still has
+    // to fight down.
+    float  radius{0.0f};
+
+    // Vertical half-extent (yd).
+    float  zBand{6.0f};
+
+    // Active-vacate radius (yd) — the trap's CAST-spell radius, not its trigger
+    // diameter, and not the padded `radius` above. Same rule as the pool rows:
+    // the retreat aims vacateRadius + retreatSlack, and that aim point must fall
+    // outside this row's own PointIsHot cylinder or every candidate is rejected.
+    float  vacateRadius{0.0f};
+
+    // Same two bands, same invariant (retreatSlack > holdBand) as the other two
+    // tables. A trap is a fixed patch of ground, so a thin hold band is right:
+    // step just past the rim and carry on fighting.
+    float  holdBand{2.0f};
+    float  retreatSlack{6.0f};
+};
+
 class DcHazardRegistry
 {
 public:
@@ -182,9 +241,13 @@ public:
     // True iff `mapId` has at least one GROUND (persistent-area-aura) row.
     static bool HasGroundHazards(uint32 mapId);
 
-    // True iff `mapId` has a row of EITHER kind. This is the cheap early-out the
+    // True iff `mapId` has at least one TRAP (GameObject) row.
+    static bool HasTrapHazards(uint32 mapId);
+
+    // True iff `mapId` has a row of ANY kind. This is the cheap early-out the
     // live predicates and the vacate trigger gate on, so a map that registers
-    // only ground pools (Scholomance) is not skipped by a creature-only check.
+    // only ground pools (Scholomance) or only traps (Shattered Halls) is not
+    // skipped by a creature-only check.
     static bool HasAnyHazard(uint32 mapId);
 
     // The emitter row for (mapId, creatureEntry), or nullptr when that creature
@@ -194,6 +257,16 @@ public:
     // The ground row for (mapId, spellId), or nullptr when that spell does not
     // leave a registered pool. Linear scan — the table is small.
     static DcGroundHazard const* FindGround(uint32 mapId, uint32 spellId);
+
+    // The trap row for (mapId, goEntry), or nullptr when that gameobject is not
+    // a registered trap. Linear scan — the table is small.
+    static DcTrapHazard const* FindTrap(uint32 mapId, uint32 goEntry);
+
+    // Every registered trap GameObject entry on `mapId`, in table order. Empty
+    // when the map registers none. The live value sweeps by entry rather than
+    // sweeping every gameobject and filtering, because a dungeon floor carries
+    // hundreds of doors, chairs and torches and only a handful of them burn.
+    static std::vector<uint32> TrapEntries(uint32 mapId);
 
     // Pure geometry: true when (px,py,pz) lies inside a keep-out cylinder of
     // `radius`/`zBand` centred on (ex,ey,ez). No game state — unit-testable.
@@ -226,6 +299,15 @@ public:
                             float px, float py, float pz);
 
     static bool SegmentClips(DcGroundHazard const& g,
+                             float ex, float ey, float ez,
+                             float ax, float ay, float az,
+                             float bx, float by, float bz);
+
+    static bool PointInside(DcTrapHazard const& t,
+                            float ex, float ey, float ez,
+                            float px, float py, float pz);
+
+    static bool SegmentClips(DcTrapHazard const& t,
                              float ex, float ey, float ez,
                              float ax, float ay, float az,
                              float bx, float by, float bz);

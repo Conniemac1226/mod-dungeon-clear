@@ -1749,6 +1749,44 @@ bool DcObjectiveArriveAction::Execute(Event /*event*/)
         if (idx < ev->steps.size())
         {
             EventStep const& step = ev->steps[idx];
+            // A GARRISON MoveTo that has already arrived is a CAMP: the tank stands
+            // on the spot for as long as the gate takes, which on a wave gauntlet
+            // means the whole encounter. This rung sits at DcRel::AtObjective (30),
+            // above NeedsRest (26.5), so without an explicit yield the tank alone
+            // can never eat or drink between waves — the followers already can (the
+            // rest trigger defers them until they have regrouped on the tank, see
+            // DungeonClearTriggers' persistent-event branch), which is how a party
+            // ends up camped with a full group and an empty-mana tank. Same fix,
+            // and the same Yield/Hold pair, as the UseItemOnGO branch below.
+            //
+            // Only once ARRIVED: while still walking in, the move is the work.
+            // Excluded when the garrison carries a WhileHolding hook (the Ring of
+            // Law): there the hold's per-tick hook is the only thing that notices
+            // the encounter resetting behind the party, so it must not be yielded.
+            bool const garrisoned =
+                step.kind == EventStepKind::MoveTo && step.hookId == 0 &&
+                (step.creatureEntry != 0 || step.instanceDataId >= 0 ||
+                 step.persistentDataId >= 0) &&
+                bot->GetExactDist(step.x, step.y, step.z) <=
+                    (step.radius > 0.0f ? step.radius : 4.0f);
+            if (garrisoned)
+            {
+                switch (EventRestDecision())
+                {
+                    case EventRest::Yield:
+                        DcMovement::StopBot(bot, DcMovement::Stop::Hold);
+                        SetPhase(context, "objective");
+                        ClearStall(context);
+                        return false;  // NeedsRest (26.5) wins -> the tank drinks/eats
+                    case EventRest::Hold:
+                        DcMovement::StopBot(bot, DcMovement::Stop::Hold);
+                        SetPhase(context, "objective");
+                        ClearStall(context);
+                        return true;   // own the tick; wait for the party to recover
+                    case EventRest::None:
+                        break;
+                }
+            }
             if (step.kind == EventStepKind::KillCreature && step.engage && step.creatureEntry)
             {
                 float const search = step.radius > 0.0f ? step.radius : 250.0f;
@@ -2275,9 +2313,24 @@ bool DungeonClearDoorBlockedAction::Execute(Event event)
     // that made no progress) and can fire anywhere across the up-to-80yd
     // approach the blocking-door value looks ahead over. The distinction gates
     // the blocked-state watchdog below; see the comment there.
+    std::string const waitReason =
+        "A gate has closed on us — waiting for it to open.";
+
     auto parkAndStall = [&](bool atDoor)
     {
         DcMovement::StopBot(bot, DcMovement::Stop::Soft);
+
+        // Self-clearing script barriers (Stratholme's two gate traps) shut for a
+        // bounded 20s under instance-script control and reopen themselves. There
+        // is nothing to click and nothing for a player to come and solve, so the
+        // pause path below is simply wrong: hold, report, and let the door's own
+        // timer free us. Checked FIRST so neither the click ladder nor the
+        // blocked-state watchdog ever sees one.
+        if (door && DcEventDoorRegistry::IsSelfClearing(door->GetEntry()))
+        {
+            StallDungeonClear(botAI, waitReason);
+            return true;
+        }
 
         // Script-only event doors (e.g. SFK's Courtyard Door 18895) wear a
         // plainly-clickable empty-lock template but the client only opens them
@@ -2298,6 +2351,14 @@ bool DungeonClearDoorBlockedAction::Execute(Event event)
                 // noticed yet. Drop the stall immediately so the status panel
                 // stops reporting Blocked at an open door; Advance resumes the
                 // moment the value refreshes empty.
+                //
+                // Also end the blocked-state watchdog window: we have direct
+                // proof the door opens for us, so a later re-close (autoclose
+                // gates) must start counting from scratch rather than resume an
+                // old window. See DcApproachState::ClearDoorStall.
+                context->GetValue<DcApproachState&>(DcKey::ApproachState)
+                    ->Get()
+                    .ClearDoorStall();
                 ClearStall(context);
                 return true;
             }

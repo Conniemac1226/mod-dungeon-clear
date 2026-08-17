@@ -21,10 +21,19 @@
 // One row per known-bad spot: an axis-aligned world-space box on a map plus a
 // cost multiplier. DcRouteFilter::getCost multiplies the cost of any A* edge
 // whose midpoint falls inside the box by that factor, so the search prefers the
-// legitimate way around. The box is a COST, never a hard rejection (passFilter is
-// untouched), so an over-sized box degrades to "the bot routes slower" rather
-// than "the bot is stranded" — if the boxed edge is genuinely the only way
-// through, the route still uses it.
+// legitimate way around. In the primary producer that is a COST, never a hard
+// rejection (passFilter is untouched) — if the boxed edge is genuinely the only
+// way through, the route still uses it. The StridedPathfinder fallback is the
+// exception: it builds its corridor with the stock engine PathGenerator, which is
+// blind to route costs, so there the region is a hard reject on any probe that
+// ENTERS it.
+//
+// A ROW IS NEVER A CAGE. Both consumers exempt a route that BEGINS inside a
+// region, because a party can legitimately be standing in one and a fence is only
+// ever an instruction about where routes may GO. Author rows on that basis: an
+// over-sized row costs you a slower route or a wider berth, not a stranded party.
+// What it must NOT do is leave a pocket of walkable floor cut off on its far side
+// — check the row against the navmesh, not against eyeballed wall coordinates.
 //
 // Mirrors RoomAggroRegistry / BossRosterRegistry: adding a fix is a single table
 // edit inside DungeonClear/, never an mmap regen or a core change.
@@ -64,6 +73,12 @@ public:
     // (x,y,z), or 1.0 when the point lies in no region. Pure (no game state) —
     // unit-testable.
     static float PenaltyAt(uint32 mapId, float x, float y, float z);
+
+    // True iff (x,y,z) lies inside some region on `mapId`. The one place the
+    // "penalised" threshold is spelled, so the consumers that ask "is the party
+    // standing in a fence?" — the question that decides whether the fence applies
+    // to a route at all — can't drift apart from PenaltyAt.
+    static bool IsInsideRegion(uint32 mapId, float x, float y, float z);
 };
 
 #endif

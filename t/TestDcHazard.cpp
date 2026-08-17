@@ -4,6 +4,8 @@
  */
 
 #include "gtest/gtest.h"
+
+#include <vector>
 #include "Ai/Dungeon/DungeonClear/Data/DcHazardRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Data/DcNavPenaltyRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearTuning.h"
@@ -49,6 +51,116 @@ TEST(DcHazardRegistry, ReportsMapsWithEmitters)
     EXPECT_TRUE(DcHazardRegistry::HasEmitters(349));
     EXPECT_TRUE(DcHazardRegistry::HasGroundHazards(349));
     EXPECT_TRUE(DcHazardRegistry::HasAnyHazard(349));
+
+    // The Shattered Halls is the mirror image of Scholomance for the THIRD kind:
+    // its only hazard is a gameobject trap (the flame-gauntlet Blaze), so both
+    // the creature probe and the ground-pool probe must say no for it while the
+    // combined probe — the one the vacate trigger gates on — says yes.
+    EXPECT_FALSE(DcHazardRegistry::HasEmitters(540));
+    EXPECT_FALSE(DcHazardRegistry::HasGroundHazards(540));
+    EXPECT_TRUE(DcHazardRegistry::HasTrapHazards(540));
+    EXPECT_TRUE(DcHazardRegistry::HasAnyHazard(540));
+
+    // ...and no other map carries a trap row today.
+    EXPECT_FALSE(DcHazardRegistry::HasTrapHazards(289));
+    EXPECT_FALSE(DcHazardRegistry::HasTrapHazards(349));
+    EXPECT_FALSE(DcHazardRegistry::HasTrapHazards(552));
+    EXPECT_FALSE(DcHazardRegistry::HasTrapHazards(0));
+}
+
+TEST(DcHazardShatteredHallsTest, BlazeIsKeyedOnBothMapAndGameObjectEntry)
+{
+    DcTrapHazard const* blaze = DcHazardRegistry::FindTrap(540, 181915);
+    ASSERT_NE(blaze, nullptr);
+    EXPECT_EQ(blaze->mapId, 540u);
+    EXPECT_EQ(blaze->goEntry, 181915u);
+
+    // The retreat flees the CAST spell's radius (30979 "Flames", 3.0yd from
+    // Spell.dbc EffectRadiusIndex 15), not the trap's 2yd trigger circle: a bot
+    // standing 2.8yd off still eats the splash when the melee on top of the
+    // Blaze sets it off.
+    EXPECT_FLOAT_EQ(blaze->vacateRadius, 3.5f);
+    // ...and the padded keep-out drives camp/standoff placement.
+    EXPECT_FLOAT_EQ(blaze->radius, 5.0f);
+
+    EXPECT_EQ(DcHazardRegistry::FindTrap(540, 181914), nullptr);  // right map, wrong GO
+    EXPECT_EQ(DcHazardRegistry::FindTrap(289, 181915), nullptr);  // right GO, wrong map
+}
+
+TEST(DcHazardShatteredHallsTest, EveryTrapIsActivelyVacatedAndOvershootsItsHoldBand)
+{
+    // Same two invariants the ground pools carry, for the same reasons: a trap
+    // cannot be fought (there is no unit to target), so a row with no
+    // vacateRadius would be avoided during placement and then stood in anyway;
+    // and retreatSlack <= holdBand would land the retreat still in danger and
+    // thrash. Written as a loop over TrapEntries so a new row cannot slip in
+    // without satisfying both.
+    std::vector<uint32> const entries = DcHazardRegistry::TrapEntries(540);
+    ASSERT_FALSE(entries.empty());
+    for (uint32 entry : entries)
+    {
+        DcTrapHazard const* t = DcHazardRegistry::FindTrap(540, entry);
+        ASSERT_NE(t, nullptr);
+        EXPECT_GT(t->vacateRadius, 0.0f);
+        EXPECT_GT(t->retreatSlack, t->holdBand);
+
+        // The retreat aims vacateRadius + retreatSlack; that point must read
+        // clean against this row's OWN placement cylinder or the vacate action
+        // rejects every candidate it generates.
+        float const aim = t->vacateRadius + t->retreatSlack;
+        EXPECT_GT(aim, t->radius);
+        EXPECT_FALSE(DcHazardRegistry::PointInside(*t, 0.0f, 0.0f, 0.0f, aim, 0.0f, 0.0f));
+        // Standing on the fire does not.
+        EXPECT_TRUE(DcHazardRegistry::PointInside(*t, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f));
+    }
+}
+
+TEST(DcHazardShatteredHallsTest, TrapGeometryUsesTheSamePrimitives)
+{
+    DcTrapHazard t{540, 181915, /*radius*/ 5.0f, /*zBand*/ 6.0f, /*vacate*/ 3.5f};
+
+    // Inside the keep-out, and just clear of it.
+    EXPECT_TRUE(DcHazardRegistry::PointInside(t, 0.0f, 0.0f, 0.0f, 4.5f, 0.0f, 0.0f));
+    EXPECT_FALSE(DcHazardRegistry::PointInside(t, 0.0f, 0.0f, 0.0f, 5.5f, 0.0f, 0.0f));
+
+    // The gauntlet corridor sits at z~2 and Nethekurse's chamber at z~-8, ten
+    // yards below it: fire up here must not sterilise the route down there.
+    EXPECT_FALSE(DcHazardRegistry::PointInside(t, 0.0f, 0.0f, 2.0f, 0.0f, 0.0f, -8.0f));
+
+    // A leg whose endpoints are both clear but which walks straight over the
+    // Blaze — the case a point-only check misses, and the common one here since
+    // the fire lands between the party and the next bound.
+    EXPECT_TRUE(DcHazardRegistry::SegmentClips(t, 0.0f, 0.0f, 0.0f,
+                                               -30.0f, 0.0f, 0.0f,
+                                                30.0f, 0.0f, 0.0f));
+    EXPECT_FALSE(DcHazardRegistry::SegmentClips(t, 0.0f, 0.0f, 0.0f,
+                                                -30.0f, 20.0f, 0.0f,
+                                                 30.0f, 20.0f, 0.0f));
+}
+
+TEST(DcHazardShatteredHallsTest, TrapsHaveNoNavPenaltyBoxes)
+{
+    // A Blaze's position is not known until an archer's arrow picks one of the
+    // 20 wandering Flame Arrow anchors, so — exactly like the ground pools —
+    // there is nothing to hand-author for the worker-thread router, and the live
+    // predicates plus the retreat are the whole defence. If someone adds a
+    // volume to map 540 they have either guessed at a dynamic position or they
+    // are fencing something unrelated to the fire; either way this test is where
+    // they have to argue for it.
+    EXPECT_FALSE(DcNavPenaltyRegistry::HasVolumes(540));
+}
+
+TEST(DcHazardShatteredHallsTest, TrapEntriesIsMapScoped)
+{
+    // The live value sweeps BY ENTRY rather than sweeping every gameobject in
+    // sight and filtering, because a dungeon floor carries hundreds of doors and
+    // torches. That only works if the accessor is honestly map-scoped.
+    std::vector<uint32> const onMap = DcHazardRegistry::TrapEntries(540);
+    ASSERT_EQ(onMap.size(), 1u);
+    EXPECT_EQ(onMap.front(), 181915u);
+
+    EXPECT_TRUE(DcHazardRegistry::TrapEntries(289).empty());
+    EXPECT_TRUE(DcHazardRegistry::TrapEntries(0).empty());
 }
 
 TEST(DcHazardRegistry, FindIsKeyedOnBothMapAndEntry)

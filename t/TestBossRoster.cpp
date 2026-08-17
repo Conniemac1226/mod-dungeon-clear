@@ -1129,3 +1129,47 @@ TEST(BossRosterRegistryTest, MaraudonDropsRotgrip)
     ASSERT_NE(princess, nullptr);
     EXPECT_EQ(princess->encounterIndex, 7u);
 }
+
+// --- Apply: Dire Maul North drops Cho'Rush -------------------------------
+
+// Cho'Rush the Observer carries a real DungeonEncounter row but his SmartAI
+// sets faction 35 (friendly to all) 5s after spawn and never reverts, so his
+// kill-bit can never be set. Left in, he is the anchor the North clear parks on
+// forever (tr-20260816-061103-16 idled on him for 40 minutes after King Gordok
+// died). The rest of the North roster must survive untouched and in order.
+TEST(BossRosterRegistryTest, DireMaulNorthDropsChoRush)
+{
+    // The auto-derived North list as BossSpawnIndex emits it (DBC bits).
+    std::vector<DungeonBossInfo> base = {
+        Boss(14326, 1, "Guard Mol'dar", 429),
+        Boss(14322, 2, "Stomper Kreeg", 429),
+        Boss(14321, 3, "Guard Fengus", 429),
+        Boss(14323, 4, "Guard Slip'kik", 429),
+        Boss(14325, 5, "Captain Kromcrush", 429),
+        Boss(14324, 6, "Cho'Rush the Observer", 429),
+        Boss(11501, 7, "King Gordok", 429),
+    };
+
+    std::vector<DungeonBossInfo> const out =
+        BossRosterRegistry::Apply(429, DUNGEON_DIFFICULTY_NORMAL, base);
+
+    EXPECT_EQ(Find(out, 14324), nullptr)
+        << "Cho'Rush is permanently friendly — he must not be in the clear list";
+
+    // The North bosses that remain keep their DBC order. (Dire Maul shares ONE
+    // map-429 patch across wings, so Apply() also appends the East/West
+    // objectives — filter to real creatures before checking the order.)
+    std::vector<uint32> kept;
+    for (DungeonBossInfo const& b : out)
+        if (b.kind != DungeonAnchorKind::Objective)
+            kept.push_back(b.entry);
+
+    std::vector<uint32> const expected = {14326, 14322, 14321, 14323, 14325, 11501};
+    EXPECT_EQ(kept, expected) << "North clear order changed";
+
+    // King Gordok (the real end boss, one bit after Cho'Rush) keeps his own
+    // kill-bit: removing Cho'Rush must not renumber anything.
+    DungeonBossInfo const* gordok = Find(out, 11501);
+    ASSERT_NE(gordok, nullptr);
+    EXPECT_EQ(gordok->encounterIndex, 7u);
+}

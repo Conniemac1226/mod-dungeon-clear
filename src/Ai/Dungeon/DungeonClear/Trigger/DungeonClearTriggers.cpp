@@ -1922,7 +1922,8 @@ bool DungeonClearHazardVacateTrigger::IsActive()
 
     // Cheap map early-out before anything else touches game state. HasAnyHazard,
     // not HasEmitters: Scholomance registers only a ground pool (Cloud of
-    // Disease), and a creature-only gate would make the retreat inert there.
+    // Disease) and the Shattered Halls only a gameobject trap (the flame-arrow
+    // Blaze), and a creature-only gate would make the retreat inert on both.
     if (!DcHazardRegistry::HasAnyHazard(bot->GetMapId()))
         return false;
 

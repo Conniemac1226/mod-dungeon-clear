@@ -20,6 +20,9 @@ AC_ADD_CONFIG_FILE("${CMAKE_CURRENT_LIST_DIR}/conf/mod_dungeon_clear.conf.dist")
 # New files added: Value/DungeonClearGroundHazardsValue.{h,cpp} (live
 #   persistent-area-aura ground pools — DynamicObjects, not creatures — near the
 #   bot; the DcHazard half that covers Scholomance's Cloud of Disease),
+# Value/DungeonClearTrapHazardsValue.{h,cpp} (live GAMEOBJECT_TYPE_TRAP hazards
+#   near the bot — the third resolver, for objects that are neither units nor
+#   dynamic objects; covers the Shattered Halls flame-gauntlet Blaze 181915),
 # Util/DcFirstContact.{h,cpp} (records the enemy that STARTED
 #   each fight, off the OnPlayerEnterCombat `enemy` parameter DC had been
 #   discarding — the pull record only covers fights DC pulled),

@@ -325,6 +325,20 @@ StepResult DungeonEventExecutor::RunStep(Player* bot, AiObjectContext* context,
                 uint32 const v = inst ? inst->GetData(static_cast<uint32>(step.instanceDataId)) : 0;
                 return (v >= step.instanceDataMin) ? StepResult::Done : StepResult::Running;
             }
+            // Persistent-data gate: identical contract, different store. Scripts
+            // that keep a wave counter in the InstanceScript persistent vector
+            // (SetPersistentDataCount/StorePersistentData) usually never override
+            // GetData, so the instance-data gate above would read a permanent 0
+            // there. The Mechanar bridge gauntlet is exactly that shape — every
+            // far-wave death bumps DATA_BRIDGE_MOB_DEATH_COUNT, and 4 is what makes
+            // Pathaleon attackable. See EventStep::persistentDataId.
+            if (step.persistentDataId >= 0)
+            {
+                InstanceScript* inst = DcTargeting::GetInstanceScript(bot);
+                uint32 const v =
+                    inst ? inst->GetPersistentData(static_cast<uint32>(step.persistentDataId)) : 0;
+                return (v >= step.persistentDataMin) ? StepResult::Done : StepResult::Running;
+            }
             // Creature gate: hold until the gate creature matches wantAlive.
             if (step.creatureEntry != 0)
             {
@@ -1067,6 +1081,20 @@ EventDriveOutcome DungeonEventExecutor::Drive(Player* bot, AiObjectContext* cont
                           inst ? inst->GetData(static_cast<uint32>(active.instanceDataId)) : 0u,
                           active.instanceDataMin);
             }
+            // Same for the persistent-data gate — "result 0" for five minutes on
+            // the Mechanar bridge camp reads the same whether the waves are still
+            // walking down or the gauntlet never tripped at all.
+            if (active.persistentDataId >= 0 && result != StepResult::Done)
+            {
+                InstanceScript* inst = DcTargeting::GetInstanceScript(bot);
+                LOG_DEBUG("playerbots.dungeonclear",
+                          "[DC:{}] event '{}' step {} persistent gate: data({})={} (need >= {})",
+                          bot->GetName(), ev.name, prog.stepIndex, active.persistentDataId,
+                          inst ? inst->GetPersistentData(
+                                     static_cast<uint32>(active.persistentDataId))
+                               : 0u,
+                          active.persistentDataMin);
+            }
             prog.lastLoggedStep = static_cast<int32>(prog.stepIndex);
             prog.lastLoggedResult = static_cast<int32>(result);
             prog.lastLogMs = now;
@@ -1245,9 +1273,16 @@ bool DungeonEventExecutor::ActiveEngageStep(AiObjectContext* context, uint32& ou
     // tank reaches the anchor and the non-combat driver advances stepIndex to the
     // engage step. Without this, the combat rung stands down for exactly that
     // window and the run wedges "in combat, no detectable victim".
+    //
+    // Steps flagged engageOnlyWhenActive opt OUT of this fallback: their target is
+    // undetectable BY DESIGN until the earlier steps have run, which is the same
+    // signature the stealth-breaker keys on but the opposite situation — engaging
+    // is wrong, not overdue. See EventStep::engageOnlyWhenActive (the Mechanar
+    // bridge, where it sent the tank sprinting the length of the bridge at an
+    // invisible Pathaleon the moment the party took a scratch anywhere on floor 2).
     if (anyStep)
         for (EventStep const& step : ev->steps)
-            if (reportEngage(step))
+            if (!step.engageOnlyWhenActive && reportEngage(step))
                 return true;
 
     return false;

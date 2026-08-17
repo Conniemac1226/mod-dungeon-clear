@@ -242,3 +242,36 @@ TEST(DcDoorPolicyTest, SteamvaultAccessPanelsAreNavigationIgnored)
     EXPECT_FALSE(DcEventDoorRegistry::IsNavigationIgnored(18895));   // SFK courtyard
     EXPECT_FALSE(DcEventDoorRegistry::IsNavigationIgnored(0));
 }
+
+// --- Self-clearing script barriers ------------------------------------------
+//
+// Stratholme's two gate traps. instance_stratholme watches (3612.3,-3335.4)
+// Scarlet side and (3919.9,-3547.3) undead side; a non-GM player within 5.5yd
+// slams the matching PAIR of portcullises shut, spawns plagued critters 2s
+// later, and reopens both gates 20s after that. Nothing to click, nothing for a
+// player to solve, and a hard 20s ceiling — so the door-blocked action must hold
+// rather than auto-pause. Run tr-20260816-151006-14 walked its tank over the
+// Crusaders' Square trigger and auto-paused 13.1yd from the portcullis, burning
+// 36s of a 60s pause budget waiting for a gate that was always going to reopen.
+TEST(DcDoorPolicyTest, StratholmeGateTrapPortcullisesAreSelfClearing)
+{
+    EXPECT_TRUE(DcEventDoorRegistry::IsSelfClearing(175350));  // trap 1, Scarlet
+    EXPECT_TRUE(DcEventDoorRegistry::IsSelfClearing(175351));  // trap 1, Scarlet
+    EXPECT_TRUE(DcEventDoorRegistry::IsSelfClearing(175354));  // trap 2, undead
+    EXPECT_TRUE(DcEventDoorRegistry::IsSelfClearing(175355));  // trap 2, undead
+
+    // Stratholme's EARNED gates are not self-clearing: nothing reopens them but
+    // the party's own progress, so a hold there would never end.
+    EXPECT_FALSE(DcEventDoorRegistry::IsSelfClearing(175352));  // King's Square Gate
+    EXPECT_FALSE(DcEventDoorRegistry::IsSelfClearing(175353));  // King's Square Gate
+    EXPECT_FALSE(DcEventDoorRegistry::IsSelfClearing(175356));  // Gauntlet Gate
+    EXPECT_FALSE(DcEventDoorRegistry::IsSelfClearing(175357));  // Gauntlet Gate
+    EXPECT_FALSE(DcEventDoorRegistry::IsSelfClearing(175368));  // Service Entrance
+    EXPECT_FALSE(DcEventDoorRegistry::IsSelfClearing(0));
+
+    // The trap gates ride the other lists' exclusions too: they are lock-free
+    // and script-driven, so nothing else in the registry claims them either.
+    EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(175351));
+    EXPECT_FALSE(DcEventDoorRegistry::IsLockFreeClickable(175351));
+    EXPECT_FALSE(DcEventDoorRegistry::IsNavigationIgnored(175351));
+}

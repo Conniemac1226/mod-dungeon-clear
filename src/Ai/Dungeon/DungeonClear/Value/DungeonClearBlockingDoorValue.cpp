@@ -4,6 +4,7 @@
  */
 
 #include "DungeonClearBlockingDoorValue.h"
+#include "Ai/Dungeon/DungeonClear/DcApproachState.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcRun.h"
 
 #include <algorithm>
@@ -315,6 +316,17 @@ ObjectGuid DungeonClearBlockingDoorValue::Calculate()
     if (best != _lastFlagged)
     {
         _lastFlagged = best;
+        // The blocker CHANGED — the corridor cleared, or a different door is on
+        // it now. Either way the door-blocked action's blocked-state watchdog is
+        // measuring a stall that has ended, so end its window here: the next
+        // arrival park arms a fresh one. This is the guaranteed half of the fix
+        // (the action's own reset only fires if the 500ms value cache happens to
+        // still name a door the tick after it swings open); without it an
+        // auto-closing gate accumulates its successful opens into one long
+        // "stall" and auto-pauses the run. See DcApproachState::ClearDoorStall.
+        context->GetValue<DcApproachState&>(DcKey::ApproachState)
+            ->Get()
+            .ClearDoorStall();
         if (bestGo)
             LOG_INFO("playerbots.dungeonclear",
                      "[DC:{}] blocking-door: flagged {} '{}' (entry {}) "

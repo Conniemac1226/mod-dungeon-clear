@@ -7,9 +7,16 @@
 
 #include "Ai/Dungeon/DungeonClear/Data/DcNavPenaltyRegistry.h"
 
-DcRouteFilter::DcRouteFilter(uint32 mapId)
+DcRouteFilter::DcRouteFilter(uint32 mapId, float startX, float startY, float startZ)
     : _mapId(mapId)
-    , _hasVolumes(DcNavPenaltyRegistry::HasVolumes(mapId))
+    // The fence is live only when the map has rows AND the route does not begin
+    // inside one of them. Starting inside is the "party zoned in on the wrong side
+    // of the wall" case: from in there the fence has nothing left to protect (the
+    // bad spot is already underfoot) and taxing the way out at 40x is what buys
+    // the absurd detour instead. Dropping it for this one query is safe because it
+    // is re-evaluated on every rebuild — one step outside and the fence is back.
+    , _fenceActive(DcNavPenaltyRegistry::HasVolumes(mapId)
+                   && !DcNavPenaltyRegistry::IsInsideRegion(mapId, startX, startY, startZ))
 {
 }
 
@@ -23,7 +30,7 @@ float DcRouteFilter::getCost(float const* pa, float const* pb,
     float const base = dtQueryFilterExt::getCost(pa, pb,
         prevRef, prevTile, prevPoly, curRef, curTile, curPoly, nextRef, nextTile, nextPoly);
 
-    if (!_hasVolumes)
+    if (!_fenceActive)
         return base;
 
     // Edge midpoint back in world space (undo Detour's {y, z, x} vertex order),
