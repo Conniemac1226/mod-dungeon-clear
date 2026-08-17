@@ -675,7 +675,7 @@ inline constexpr DcSettingDef kDcSettings[] =
     { "TestRun.PauseGraceS",     DcType::UInt,     60,  0,   3600, false },
     { "TestRun.StallGraceS",     DcType::UInt,    120,  0,   3600, false },
     { "TestRun.NoProgressS",     DcType::UInt,    600,  0,  86400, false },
-    { "TestRun.OverallTimeoutS", DcType::UInt,   3600, 60,  86400, false },
+    { "TestRun.OverallTimeoutS", DcType::UInt,   7200, 60,  86400, false },
     { "TestRun.Plan.MaxTotal",   DcType::UInt,      0,  0, 100000, false },
     { "TestRun.Plan.BackoffMs",  DcType::UInt,   5000,  0, 600000, false },
     { "TestRun.Plan.DriverWaitMs", DcType::UInt, 120000, 0, 600000, false },

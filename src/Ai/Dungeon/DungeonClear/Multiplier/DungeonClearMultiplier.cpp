@@ -11,6 +11,7 @@
 #include "Player.h"
 #include "Playerbots.h"
 #include "Position.h"
+#include "Ai/Dungeon/DungeonClear/DcPullContext.h"
 #include "Ai/Dungeon/DungeonClear/Settings/DcSettings.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcSmartRest.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearUtil.h"
@@ -221,7 +222,47 @@ float DungeonClearCombatMultiplier::GetValue(Action* action)
     // same-map and attackable but merely out of LOS (still being closed on). A dead /
     // despawned / truly-invalid target is NOT out-of-LOS-only, so it still drops
     // normally and the bot moves on or leaves combat cleanly.
-    if (PlayerbotAI::IsHeal(bot) || !DcLeaderSignal::IsLeaderFightAssistWanted(bot))
+    // SECOND CASE, same mechanism one role over: the LEADER mid-drag. An LOS-break
+    // pull (ComputeSafeCamp's ranged branch) walks the camp back along the trail
+    // until the tank can no longer SEE the mob it just tagged — that is the entire
+    // point of it. But "can no longer see it" is precisely InvalidTargetValue's
+    // out-of-LOS clause, so the maneuver's own success condition fires drop target
+    // on the tank the moment it rounds the corner, and the tank leaves the combat
+    // engine. `dungeon clear pull maneuver` is a COMBAT-engine trigger, so the pull
+    // FSM stops being ticked at all: it freezes in Returning with its return-leg
+    // watchdog — the thing whose whole job is to fall out to "fight in place" —
+    // unreachable, because that watchdog is evaluated inside the action that no
+    // longer runs. Nothing times out and the run deadlocks until the overall budget.
+    //
+    // Live (tp-20260815-162044-2, Deadmines workshop, 3 of 5 runs): the tank tagged
+    // a Goblin Engineer (622), dragged 21.8yd to an LOS-break camp, and went silent
+    // — no log line of any kind for the remaining 130-215s, phase stuck at Returning
+    // (forMs 130368 / 163495 / 215454), party parked passive at camp, everyone at
+    // 100% HP. The engineers never came either: their SmartAI does
+    // SET_COMBAT_MOVE(0) in the 5-30yd band (smart_scripts 622 id 1), so breaking
+    // LOS does not bring them — UNIT_STATE_NO_COMBAT_MOVEMENT means there is no
+    // chase generator left to notice. Both sides of the fight stood still.
+    //
+    // Deliberately gated THREE ways so this cannot touch an ordinary pull:
+    //   - losPull: stamped at commit only when ComputeSafeCamp took its ranged
+    //     branch and walked the camp back to break LOS on purpose. Every other
+    //     pull keeps the mob glued to the tank and in sight the whole way home, so
+    //     it never reaches the out-of-LOS test below and is bit-for-bit unchanged.
+    //   - leader-only: a follower mid-drag is the OTHER case above, already handled.
+    //   - HOLDING phases only (Forming/Advancing/Returning). At Engage the maneuver
+    //     is over and an out-of-LOS target drops normally, as in any other fight.
+    bool losBreakDrag = false;
+    if (DcLeaderSignal::IsDungeonClearLeader(bot))
+    {
+        DcPullContext const& pull = AI_VALUE(DcPullContext&, DcKey::PullContext);
+        losBreakDrag = pull.losPull &&
+                       (pull.phase == DcPullPhase::Forming ||
+                        pull.phase == DcPullPhase::Advancing ||
+                        pull.phase == DcPullPhase::Returning);
+    }
+
+    if (!losBreakDrag &&
+        (PlayerbotAI::IsHeal(bot) || !DcLeaderSignal::IsLeaderFightAssistWanted(bot)))
         return 1.0f;
 
     Unit* tgt = AI_VALUE(Unit*, DcKey::Stock::CurrentTarget);

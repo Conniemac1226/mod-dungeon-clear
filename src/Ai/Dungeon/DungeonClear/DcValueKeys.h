@@ -49,6 +49,12 @@ namespace DcKey
     inline constexpr char const* CurrentHop              = "dungeon clear current hop";
     inline constexpr char const* FarTargets              = "dungeon clear far targets";
     inline constexpr char const* Hazards                 = "dungeon clear hazards";
+    // Ground pools (persistent-area-aura DynamicObjects) near the bot. A SEPARATE
+    // key from Hazards because the guids resolve through a different accessor —
+    // ObjectAccessor::GetDynamicObject, not GetUnit — and a DynamicObject guid
+    // fed to the unit resolver is a silent nullptr, i.e. a hazard that reads as
+    // clean ground. See DungeonClearGroundHazardsValue.
+    inline constexpr char const* GroundHazards           = "dungeon clear ground hazards";
     inline constexpr char const* RoomTrashRemaining      = "dungeon clear room trash remaining";
     inline constexpr char const* BlockingDoor            = "dungeon clear blocking door";
     inline constexpr char const* EngageTrashTarget       = "dungeon clear engage trash target";

@@ -254,6 +254,40 @@ void DungeonClearStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         "dungeon clear break stuck combat",
         { NextAction("dungeon clear break stuck combat", DcRel::BreakStuckCombat) }));
 
+    // Pull maneuver, NON-combat side — a LIVENESS NET, not a second driver.
+    //
+    // Every watchdog the maneuver owns — the tag-leg and return-leg timeouts, the
+    // CC abort, the turn-and-plant debounce, the arrive-at-camp release — is
+    // evaluated INSIDE DungeonClearPullManeuverAction::Execute. So they only exist
+    // on ticks where that action actually runs, and while the trigger was
+    // combat-only that meant "only while the tank is on the combat engine". The
+    // hatch above recovers a bot with NOTHING to fight; this covers the other half,
+    // where the fight is entirely real and the tank has simply been moved off the
+    // engine that steers it.
+    //
+    // Which is exactly what an LOS-break pull does to itself: the camp is chosen so
+    // the tank cannot see the mob it tagged, and that is InvalidTargetValue's
+    // out-of-LOS clause, so stock `drop target` (99) flips the tank to this engine
+    // mid-drag. DungeonClearCombatMultiplier now suppresses that drop, but the
+    // suppression is a prevention and this is the backstop: ANY future path onto the
+    // non-combat engine mid-maneuver would otherwise re-freeze the FSM in a holding
+    // phase with no clock running at all. Live before the fix
+    // (tp-20260815-162044-2, Deadmines workshop): phase pinned at Returning for
+    // 130-215s across three runs, zero log lines emitted, party passive at camp,
+    // nobody below 100% HP — a 10s return-leg watchdog sat unreachable the whole time.
+    //
+    // Contention: none. The non-combat pull DRIVER ("dungeon clear pull", 35) gates
+    // on !IsInCombat for every non-Idle phase and this trigger requires
+    // IsInCombat(), so the two are partitioned by the combat flag and can never be
+    // armed on the same tick. 60 sits above HazardVacate (55) — a maneuver in
+    // flight outranks stepping off a pulse — and below BreakStuckCombat (65), which
+    // is inert whenever anything is fightable. Same node as the combat side: every
+    // gate (leader-only, run enabled, pull mode, holding phase) lives in the
+    // trigger, so this widens WHERE the maneuver can be ticked, not WHEN.
+    triggers.push_back(new TriggerNode(
+        "dungeon clear pull maneuver",
+        { NextAction("dungeon clear pull maneuver", DcRel::PullManeuver) }));
+
     // Hazard vacate, NON-combat side — the essential half. After the party kills
     // an Arcatraz Sentinel, the Destroyed Sentinel (21761) summon pulses 15yd/1s
     // at the corpse and combat usually drops (it is NOT_SELECTABLE, so it does not

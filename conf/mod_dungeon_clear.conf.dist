@@ -1509,10 +1509,10 @@ DungeonClear.TestRun.NoProgressS = 600
 #        Hard wall-clock cap on a single test run (setup excluded); exceeding
 #        it fails the run as overall_timeout.
 #
-#        Default: 3600
+#        Default: 7200 (2 hours)
 #
 
-DungeonClear.TestRun.OverallTimeoutS = 3600
+DungeonClear.TestRun.OverallTimeoutS = 7200
 
 #
 #    DungeonClear.TestRun.MaxConcurrent

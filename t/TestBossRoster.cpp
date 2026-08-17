@@ -1090,3 +1090,42 @@ TEST(BossRosterRegistryTest, SethekkAnzuSweepSpansTheWholeAnteChamber)
     EXPECT_NEAR(ev->steps[settleIdx].x, -88.0f, 1.0f);
     EXPECT_NEAR(ev->steps[settleIdx].y, 288.0f, 1.0f);
 }
+
+// --- Apply: Maraudon drops Rotgrip ---------------------------------------
+
+// Rotgrip lives in the Pristine Waters lake — open water the party cannot be
+// navigated to — so he is removed from the clear entirely. The rest of the
+// Maraudon roster must survive the patch untouched and stay in clear order.
+TEST(BossRosterRegistryTest, MaraudonDropsRotgrip)
+{
+    // The auto-derived Maraudon list as BossSpawnIndex emits it (DBC bits).
+    std::vector<DungeonBossInfo> base = {
+        Boss(13282, 0, "Noxxion", 349),
+        Boss(12258, 1, "Razorlash", 349),
+        Boss(12236, 2, "Lord Vyletongue", 349),
+        Boss(12225, 3, "Celebras the Cursed", 349),
+        Boss(12203, 4, "Landslide", 349),
+        Boss(13601, 5, "Tinkerer Gizlock", 349),
+        Boss(13596, 6, "Rotgrip", 349),
+        Boss(12201, 7, "Princess Theradras", 349),
+    };
+
+    std::vector<DungeonBossInfo> const out =
+        BossRosterRegistry::Apply(349, DUNGEON_DIFFICULTY_NORMAL, base);
+
+    EXPECT_TRUE(BossRosterRegistry::HasPatch(349));
+    EXPECT_EQ(Find(out, 13596), nullptr)
+        << "Rotgrip is unreachable (open water) — he must not be in the clear list";
+    ASSERT_EQ(out.size(), base.size() - 1);
+
+    // Everything else survives, in DBC-bit order — the patch removes only.
+    uint32 const expected[] = {13282, 12258, 12236, 12225, 12203, 13601, 12201};
+    for (size_t i = 0; i < out.size(); ++i)
+        EXPECT_EQ(out[i].entry, expected[i]) << "clear order changed at slot " << i;
+
+    // Princess Theradras (the real end boss, one bit after Rotgrip) must keep
+    // her own kill-bit: removing Rotgrip must not renumber anything.
+    DungeonBossInfo const* princess = Find(out, 12201);
+    ASSERT_NE(princess, nullptr);
+    EXPECT_EQ(princess->encounterIndex, 7u);
+}

@@ -6,6 +6,7 @@
 #include "gtest/gtest.h"
 #include "Ai/Dungeon/DungeonClear/Data/DcHazardRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Data/DcNavPenaltyRegistry.h"
+#include "Ai/Dungeon/DungeonClear/Util/DungeonClearTuning.h"
 
 // Pure tests for the hazard-emitter table and its geometry predicates. No map
 // data or live game state required, so these run in every build.
@@ -27,6 +28,27 @@ TEST(DcHazardRegistry, ReportsMapsWithEmitters)
     EXPECT_TRUE(DcHazardRegistry::HasEmitters(552));    // The Arcatraz
     EXPECT_FALSE(DcHazardRegistry::HasEmitters(0));
     EXPECT_FALSE(DcHazardRegistry::HasEmitters(554));   // The Mechanar — no rows
+
+    // Scholomance carries a GROUND pool and no creature emitter, so the
+    // creature-only probe must say no for it...
+    EXPECT_FALSE(DcHazardRegistry::HasEmitters(289));
+    EXPECT_TRUE(DcHazardRegistry::HasGroundHazards(289));
+    EXPECT_FALSE(DcHazardRegistry::HasGroundHazards(552));
+
+    // ...and the combined probe — the one every live predicate and the vacate
+    // trigger actually gate on — must say yes for both maps. Gating on
+    // HasEmitters alone is what would make the retreat inert in Scholomance.
+    EXPECT_TRUE(DcHazardRegistry::HasAnyHazard(289));
+    EXPECT_TRUE(DcHazardRegistry::HasAnyHazard(552));
+    EXPECT_FALSE(DcHazardRegistry::HasAnyHazard(554));
+    EXPECT_FALSE(DcHazardRegistry::HasAnyHazard(0));
+
+    // Maraudon is the first map to carry BOTH kinds at once — the Creeping
+    // Sludge's permanent Poison Shock sphere and the Noxious Cloud pool both
+    // slimes drop.
+    EXPECT_TRUE(DcHazardRegistry::HasEmitters(349));
+    EXPECT_TRUE(DcHazardRegistry::HasGroundHazards(349));
+    EXPECT_TRUE(DcHazardRegistry::HasAnyHazard(349));
 }
 
 TEST(DcHazardRegistry, FindIsKeyedOnBothMapAndEntry)
@@ -57,6 +79,101 @@ TEST(DcHazardRegistry, FindIsKeyedOnBothMapAndEntry)
 
     EXPECT_EQ(DcHazardRegistry::Find(552, 99999), nullptr);   // right map, wrong entry
     EXPECT_EQ(DcHazardRegistry::Find(0, 20869), nullptr);     // right entry, wrong map
+}
+
+// ---- the ground-pool half -----------------------------------------------
+// Scholomance's "Cloud of Disease" (17742): a persistent area aura, i.e. a
+// DynamicObject and not a creature, dropped where a Diseased Ghoul (10495) dies.
+// 350 nature damage per second in 5yd for 20s.
+
+TEST(DcHazardRegistry, FindGroundIsKeyedOnBothMapAndSpell)
+{
+    DcGroundHazard const* cloud = DcHazardRegistry::FindGround(289, 17742);
+    ASSERT_NE(cloud, nullptr);
+    EXPECT_EQ(cloud->mapId, 289u);
+    EXPECT_EQ(cloud->spellId, 17742u);
+
+    // The RAW 5yd aura radius drives the retreat...
+    EXPECT_FLOAT_EQ(cloud->vacateRadius, 5.0f);
+    // ...and the padded keep-out drives camp/standoff placement.
+    EXPECT_FLOAT_EQ(cloud->radius, 8.0f);
+
+    EXPECT_EQ(DcHazardRegistry::FindGround(289, 29047), nullptr);  // right map, sibling spell id
+    EXPECT_EQ(DcHazardRegistry::FindGround(552, 17742), nullptr);  // right spell, wrong map
+}
+
+TEST(DcHazardRegistry, EveryGroundPoolIsActivelyVacated)
+{
+    // A ground pool cannot be fought — there is no unit to target — so a row with
+    // no vacateRadius would be avoided during placement and then stood in anyway
+    // the moment a ghoul died under the party. Guard the invariant: every ground
+    // row drives the retreat.
+    DcGroundHazard const* cloud = DcHazardRegistry::FindGround(289, 17742);
+    ASSERT_NE(cloud, nullptr);
+    EXPECT_GT(cloud->vacateRadius, 0.0f);
+
+    DcGroundHazard const* noxious = DcHazardRegistry::FindGround(349, 21070);
+    ASSERT_NE(noxious, nullptr);
+    EXPECT_GT(noxious->vacateRadius, 0.0f);
+}
+
+TEST(DcHazardRegistry, GroundPoolRetreatPointClearsItsOwnKeepOut)
+{
+    // The retreat aims vacateRadius + the row's own retreatSlack. If that lands
+    // INSIDE the row's own PointIsHot cylinder, the vacate action rejects every
+    // candidate it generates and falls through to its unvalidated last resort.
+    // This is the exact trap the Destroyed Sentinel row's comment warns about.
+    for (DcGroundHazard const* pool : { DcHazardRegistry::FindGround(289, 17742),
+                                        DcHazardRegistry::FindGround(349, 21070) })
+    {
+        ASSERT_NE(pool, nullptr);
+
+        float const aim = pool->vacateRadius + pool->retreatSlack;
+        EXPECT_GT(aim, pool->radius);
+
+        // And the aim point really does read clean against the row's geometry.
+        EXPECT_FALSE(DcHazardRegistry::PointInside(*pool, 0.0f, 0.0f, 0.0f, aim, 0.0f, 0.0f));
+        // The pool centre, where the mob died and the party is standing, does not.
+        EXPECT_TRUE(DcHazardRegistry::PointInside(*pool, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f));
+    }
+}
+
+TEST(DcHazardRegistry, GroundPoolGeometryUsesTheSamePrimitives)
+{
+    DcGroundHazard g{289, 17742, /*radius*/ 8.0f, /*zBand*/ 6.0f, /*vacate*/ 5.0f};
+
+    // Inside the keep-out, and just clear of it.
+    EXPECT_TRUE(DcHazardRegistry::PointInside(g, 0.0f, 0.0f, 0.0f, 7.5f, 0.0f, 0.0f));
+    EXPECT_FALSE(DcHazardRegistry::PointInside(g, 0.0f, 0.0f, 0.0f, 8.5f, 0.0f, 0.0f));
+
+    // Scholomance stacks rooms: a pool on the floor below is not a hazard.
+    EXPECT_FALSE(DcHazardRegistry::PointInside(g, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 20.0f));
+
+    // A leg whose endpoints are both clear but which walks straight through the
+    // pool — the case a point-only check misses.
+    EXPECT_TRUE(DcHazardRegistry::SegmentClips(g, 0.0f, 0.0f, 0.0f,
+                                               -30.0f, 0.0f, 0.0f,
+                                                30.0f, 0.0f, 0.0f));
+    EXPECT_FALSE(DcHazardRegistry::SegmentClips(g, 0.0f, 0.0f, 0.0f,
+                                                -30.0f, 20.0f, 0.0f,
+                                                 30.0f, 20.0f, 0.0f));
+}
+
+TEST(DcHazardRegistry, GroundPoolsHaveNoNavPenaltyBoxes)
+{
+    // A pool's position is not known until a ghoul dies on it, so there is
+    // nothing to hand-author for the worker-thread router — unlike the rooted
+    // Arcatraz Sentinels. Scholomance must therefore carry no hazard boxes; the
+    // live predicates plus the retreat are the whole defence. If someone ever
+    // adds a box here they have guessed at a dynamic position.
+    EXPECT_FALSE(DcNavPenaltyRegistry::HasVolumes(289));
+
+    // Maraudon has the same prohibition for BOTH of its rows: the Noxious Cloud
+    // pool for the reason above, and the Creeping Sludge because — unlike the
+    // rooted dormant Sentinels — every one of its 24 spawns wanders
+    // (MovementType != 0, wander_distance 1-5), so there is no author-time
+    // position to box either.
+    EXPECT_FALSE(DcNavPenaltyRegistry::HasVolumes(349));
 }
 
 TEST(DcHazardRegistry, PointInsideRespectsRadius)
@@ -209,6 +326,208 @@ TEST(DcHazardArcatrazTest, EredarRoomIsNotRegisteredAsEmitters)
     // these instead.
     EXPECT_EQ(DcHazardRegistry::Find(552, 21595), nullptr);
     EXPECT_EQ(DcHazardRegistry::Find(552, 21594), nullptr);
+}
+
+// ===== Maraudon's slimes =====
+//
+// The instance's biggest source of wipes, and the first map to need both emitter
+// kinds at once:
+//
+//   * Creeping Sludge (12222) carries the PERMANENT addon aura 22638 "Poison
+//     Shock" — PERIODIC_TRIGGER_SPELL every 2000ms firing 22595 for 181-221 nature
+//     in 5.0yd, ticking idle as well as in combat. It is a creature row.
+//   * Both slimes drop 21070 "Noxious Cloud" — a PERSISTENT_AREA_AURA, 151 nature
+//     per second in 5.0yd for 20s — in combat AND on death. It is a pool row, and
+//     one row covers both casters because the key is the spell.
+
+TEST(DcHazardMaraudonTest, CreepingSludgeIsFledAndStayedAwayFrom)
+{
+    DcHazardEmitter const* sludge = DcHazardRegistry::Find(349, 12222);
+    ASSERT_NE(sludge, nullptr);
+    EXPECT_EQ(sludge->mapId, 349u);
+    EXPECT_EQ(sludge->creatureEntry, 12222u);
+    // 5yd Poison Shock (22595) + 3yd drift margin for placement...
+    EXPECT_FLOAT_EQ(sludge->radius, 8.0f);
+    // ...and the RAW 5yd pulse for the retreat.
+    EXPECT_FLOAT_EQ(sludge->vacateRadius, 5.0f);
+
+    // The invariant that matters, and the one tr-20260815-134844-3/-5 was lost to
+    // when this row carried vacateRadius 0. Melee reach is 3D < 4.75yd against a
+    // 5.0yd pulse, so "in melee" and "in the aura" are the same place: there is no
+    // stance from which a melee bot trades with this mob for free. It moves at
+    // 2.0 yd/s, so nobody has to — the party leaves it standing and shoots it.
+    //
+    // holdBand must therefore be WIDER than melee reach, or the bot's own
+    // MoveChase simply walks it back in and it oscillates through the aura.
+    EXPECT_GT(sludge->holdBand, 4.75f);
+    EXPECT_FLOAT_EQ(sludge->holdBand, 6.0f);
+    EXPECT_FLOAT_EQ(sludge->retreatSlack, 9.0f);
+}
+
+TEST(DcHazardMaraudonTest, SludgeRetreatOvershootsItsOwnHoldBand)
+{
+    // The retreat must land somewhere the trigger will NOT re-fire, or the bot
+    // flees on arrival and never stops. That means aim > hold, with margin, and the
+    // aim point also has to clear the placement keep-out the action screens against.
+    DcHazardEmitter const* sludge = DcHazardRegistry::Find(349, 12222);
+    ASSERT_NE(sludge, nullptr);
+
+    float const hold = sludge->vacateRadius + sludge->holdBand;      // 11 — still in danger
+    float const aim  = sludge->vacateRadius + sludge->retreatSlack;  // 14 — where it runs to
+    EXPECT_GT(aim, hold);
+    EXPECT_GT(aim, sludge->radius);
+    EXPECT_GE(aim - hold, 2.0f);  // arrival margin, so a yard of snap-back is survivable
+}
+
+TEST(DcHazardMaraudonTest, EveryVacateRowOvershootsItsHoldBand)
+{
+    // Same invariant across the whole table, both kinds. A row with
+    // retreatSlack <= holdBand retreats to a point that still reads in-danger:
+    // the trigger re-fires, the action re-plots, and the bot thrashes in place
+    // until something kills it.
+    for (DcHazardEmitter const* e : { DcHazardRegistry::Find(552, 21761),
+                                      DcHazardRegistry::Find(349, 12222) })
+    {
+        ASSERT_NE(e, nullptr);
+        ASSERT_GT(e->vacateRadius, 0.0f);
+        EXPECT_GT(e->retreatSlack, e->holdBand);
+    }
+
+    for (DcGroundHazard const* g : { DcHazardRegistry::FindGround(289, 17742),
+                                     DcHazardRegistry::FindGround(349, 21070) })
+    {
+        ASSERT_NE(g, nullptr);
+        ASSERT_GT(g->vacateRadius, 0.0f);
+        EXPECT_GT(g->retreatSlack, g->holdBand);
+    }
+}
+
+TEST(DcHazardMaraudonTest, FoughtEmittersKeepTheThinDefaultBands)
+{
+    // Rows that are NOT actively fled must not have grown a hold band by copy-paste
+    // — the bands only mean anything alongside a vacateRadius, and a stray wide one
+    // here would read as intent that isn't there.
+    for (DcHazardEmitter const* e : { DcHazardRegistry::Find(552, 20869),
+                                      DcHazardRegistry::Find(552, 21303),
+                                      DcHazardRegistry::Find(552, 21304) })
+    {
+        ASSERT_NE(e, nullptr);
+        EXPECT_FLOAT_EQ(e->vacateRadius, 0.0f);
+        EXPECT_FLOAT_EQ(e->holdBand, 2.0f);
+        EXPECT_FLOAT_EQ(e->retreatSlack, 6.0f);
+    }
+
+    // And the Destroyed Sentinel keeps the THIN hold band on purpose: it is
+    // unattackable, so once the party is past it nothing pulls anyone back and the
+    // run should carry onward rather than be pinned at the rim.
+    DcHazardEmitter const* destroyed = DcHazardRegistry::Find(552, 21761);
+    ASSERT_NE(destroyed, nullptr);
+    EXPECT_FLOAT_EQ(destroyed->holdBand, 2.0f);
+}
+
+TEST(DcHazardMaraudonTest, NoxiousSlimeIsNotACreatureEmitter)
+{
+    // 12221 "Noxious Slime" has a NULL creature_template_addon auras column — it
+    // emits nothing on its own and runs at normal speed. Its whole threat is the
+    // Noxious Cloud pool, which is keyed on the spell and so already covers it.
+    // A creature row here would fence off a mob that is not emitting.
+    EXPECT_EQ(DcHazardRegistry::Find(349, 12221), nullptr);
+}
+
+TEST(DcHazardMaraudonTest, NoxiousCloudCoversBothSlimesThroughOneSpellRow)
+{
+    DcGroundHazard const* cloud = DcHazardRegistry::FindGround(349, 21070);
+    ASSERT_NE(cloud, nullptr);
+    EXPECT_EQ(cloud->mapId, 349u);
+    EXPECT_EQ(cloud->spellId, 21070u);
+
+    // Same 5yd aura as Scholomance's Cloud of Disease, so the same 8/5 split and
+    // the same 3yd gap to the 11yd retreat aim point.
+    EXPECT_FLOAT_EQ(cloud->vacateRadius, 5.0f);
+    EXPECT_FLOAT_EQ(cloud->radius, 8.0f);
+
+    EXPECT_EQ(DcHazardRegistry::FindGround(349, 17742), nullptr);  // right map, Scholomance's spell
+    EXPECT_EQ(DcHazardRegistry::FindGround(289, 21070), nullptr);  // right spell, wrong map
+}
+
+TEST(DcHazardMaraudonTest, SludgeSphereRejectsACampAndTheWalkToIt)
+{
+    // What the creature row actually buys: a camp planted inside the sphere is
+    // rejected, and so is a clean camp whose drag-back walks the pack through one.
+    DcHazardEmitter const* sludge = DcHazardRegistry::Find(349, 12222);
+    ASSERT_NE(sludge, nullptr);
+
+    EXPECT_TRUE(DcHazardRegistry::PointInside(*sludge, 0.0f, 0.0f, -50.0f, 6.0f, 0.0f, -50.0f));
+    EXPECT_FALSE(DcHazardRegistry::PointInside(*sludge, 0.0f, 0.0f, -50.0f, 12.0f, 0.0f, -50.0f));
+
+    // Maraudon stacks its wings — the Noxious Slime tier sits ~30yd below the
+    // sludge tier — so a sludge on the floor below must not sterilise the walkway
+    // above it.
+    EXPECT_FALSE(DcHazardRegistry::PointInside(*sludge, 0.0f, 0.0f, -50.0f, 0.0f, 0.0f, -80.0f));
+
+    // Both endpoints clear, the leg straight through: the case a point-only check
+    // misses.
+    EXPECT_TRUE(DcHazardRegistry::SegmentClips(*sludge, 0.0f, 0.0f, -50.0f,
+                                               -30.0f, 0.0f, -50.0f,
+                                                30.0f, 0.0f, -50.0f));
+}
+
+// ===== the retreat's detour bound =====
+//
+// "A path exists" cannot tell a point 6yd away from a point 6yd away THROUGH A
+// WALL — both are PATHFIND_NORMAL, the second one just leaves the room and comes
+// back. tr-20260815-154816-5 committed to one of those and walked it for 47
+// seconds, carrying the tank ~60yd across the cavern with twelve sludges behind
+// and wiping the party strung out over 100yd. These pin the numbers that stop it.
+
+TEST(DcHazardVacateDetourTest, RejectsTheLongWayRoundAWall)
+{
+    // The forcing case: a Creeping Sludge retreat aims vacate+slack = 14yd, so a
+    // candidate typically sits ~14yd out. Around a doorway or a pillar the real
+    // walk is a few yards longer and must still be taken...
+    float const bound = DcDetourBound(14.0f, DC_VACATE_DETOUR_RATIO, DC_VACATE_DETOUR_SLACK);
+    EXPECT_GE(bound, 20.0f);
+    EXPECT_GT(bound, 18.0f);   // a 4yd corner detour survives
+
+    // ...but the way round a wall does not.
+    EXPECT_LT(bound, 60.0f);
+    EXPECT_LT(bound, 30.0f);
+}
+
+TEST(DcHazardVacateDetourTest, SlackCarriesTheShortRangeCase)
+{
+    // At close range a pure ratio is far too strict — a bot 2yd from its aim point
+    // rounding any corner blows past 1.5x — so the slack term has to dominate
+    // there, and the ratio only takes over further out.
+    EXPECT_FLOAT_EQ(DcDetourBound(2.0f, DC_VACATE_DETOUR_RATIO, DC_VACATE_DETOUR_SLACK), 10.0f);
+    EXPECT_GT(DcDetourBound(2.0f, DC_VACATE_DETOUR_RATIO, DC_VACATE_DETOUR_SLACK),
+              2.0f * DC_VACATE_DETOUR_RATIO);
+
+    // The crossover, and beyond it the ratio is the binding term.
+    float const crossover = DC_VACATE_DETOUR_SLACK / (DC_VACATE_DETOUR_RATIO - 1.0f);
+    EXPECT_FLOAT_EQ(crossover, 16.0f);
+    EXPECT_FLOAT_EQ(DcDetourBound(40.0f, DC_VACATE_DETOUR_RATIO, DC_VACATE_DETOUR_SLACK), 60.0f);
+}
+
+TEST(DcHazardVacateDetourTest, IsStricterThanTheTrashTargetingGate)
+{
+    // The two gates are the same shape but not the same job. Trash targeting can
+    // afford a long approach — the tank is going to walk there anyway. A retreat
+    // cannot: its whole purpose is to open a few yards NOW, so anything but a
+    // short hop defeats it. Guard against someone unifying the constants.
+    EXPECT_LT(DC_VACATE_DETOUR_RATIO, DC_TRASH_DETOUR_RATIO);
+    EXPECT_LT(DC_VACATE_DETOUR_SLACK, DC_TRASH_DETOUR_SLACK);
+    EXPECT_LT(DcDetourBound(14.0f, DC_VACATE_DETOUR_RATIO, DC_VACATE_DETOUR_SLACK),
+              DcDetourBound(14.0f, DC_TRASH_DETOUR_RATIO, DC_TRASH_DETOUR_SLACK));
+}
+
+TEST(DcHazardVacateDetourTest, CommitIsCappedShorterThanTheMarchItReplaced)
+{
+    // The commitment exists so the retreat stops re-plotting its spline every
+    // tick, not so it can stop looking. 47s of unsupervised ride is what the
+    // uncapped version produced; a valid bounded walk is a few seconds.
+    EXPECT_LE(DC_VACATE_COMMIT_MAX_MS, 5000u);
+    EXPECT_GE(DC_VACATE_COMMIT_MAX_MS, 1000u);
 }
 
 TEST(DcHazardArcatrazTest, RegisteredEmittersStillRejectLegs)

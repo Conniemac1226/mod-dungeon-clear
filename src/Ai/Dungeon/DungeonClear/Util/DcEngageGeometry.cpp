@@ -1202,6 +1202,33 @@ bool DcEngageGeometry::IsNavReachable(Player* bot, Position const& p)
     gen.CalculatePath(p.GetPositionX(), p.GetPositionY(), p.GetPositionZ());
     return gen.GetPathType() == PATHFIND_NORMAL;
 }
+
+bool DcEngageGeometry::IsNavReachableWithin(Player* bot, Position const& p,
+                                            float ratio, float slack,
+                                            float* pathLen)
+{
+    if (pathLen)
+        *pathLen = 0.0f;
+    if (!bot)
+        return false;
+
+    PathGenerator gen(bot);
+    gen.CalculatePath(p.GetPositionX(), p.GetPositionY(), p.GetPositionZ());
+    if (gen.GetPathType() != PATHFIND_NORMAL)
+        return false;
+
+    // The wall test. A complete route to a point 5yd away that measures 60yd is
+    // not a route to a nearby point — it is a route out of the room and back, and
+    // the only reason it exists is that something solid sits on the straight line.
+    float const straight = bot->GetExactDist(&p);
+    float const len = gen.getPathLength();
+    if (len > DcDetourBound(straight, ratio, slack))
+        return false;
+
+    if (pathLen)
+        *pathLen = len;
+    return true;
+}
 bool DcEngageGeometry::ClosedDoorBetween(WorldObject* from, float tx, float ty,
                                          float tz, float /*corridorWidth*/)
 {
@@ -1460,7 +1487,7 @@ bool DcEngageGeometry::IsEngageReachable(Player* bot, Unit* u, bool requireDirec
     // detours alive at close range, where the pure ratio is too strict.
     float const straight = bot->GetDistance(u);
     return gen.getPathLength() <=
-           std::max(straight * DC_TRASH_DETOUR_RATIO, straight + DC_TRASH_DETOUR_SLACK);
+           DcDetourBound(straight, DC_TRASH_DETOUR_RATIO, DC_TRASH_DETOUR_SLACK);
 }
 bool DcEngageGeometry::ComputeCorridor(Player* bot,
                                        float bx, float by, float bz,

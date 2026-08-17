@@ -352,6 +352,61 @@ TEST(DungeonClearCcAssistTest, ZeroNowLatchesToOne)
 }
 
 // ---------------------------------------------------------------------------
+// ShouldAbandonPlantedDrag — the pack-cannot-follow gate. A mob holding
+// UNIT_STATE_NO_COMBAT_MOVEMENT has no chase generator, so a drag-back cannot
+// work at any distance and the tank must turn around and fight it where it
+// stands. Shares the ShouldAbortPullForCc latch contract by delegation; these
+// pin the behaviour at THIS call site so a future re-implementation that stops
+// delegating still has to honour it.
+// ---------------------------------------------------------------------------
+using DungeonClearMath::ShouldAbandonPlantedDrag;
+
+// A mob that is chasing normally never abandons the drag, and clears any latch.
+TEST(DungeonClearPlantedDragTest, ChasingPackKeepsTheDrag)
+{
+    std::uint32_t out = 4321u;
+    EXPECT_FALSE(ShouldAbandonPlantedDrag(false, 3000u, 9000u, 1500u, out));
+    EXPECT_EQ(out, 0u);
+}
+
+// First planted tick arms the streak but keeps dragging — the state may be the
+// transient kind (a caster planting only for the duration of a cast).
+TEST(DungeonClearPlantedDragTest, FirstPlantedTickArmsButKeepsDragging)
+{
+    std::uint32_t out = 0u;
+    EXPECT_FALSE(ShouldAbandonPlantedDrag(true, 0u, 8000u, 1500u, out));
+    EXPECT_EQ(out, 8000u);
+}
+
+// Held for the confirm window: the drag is abandoned. 1500ms is the shipped
+// value and lands well inside the 10s return-leg watchdog it pre-empts.
+TEST(DungeonClearPlantedDragTest, SustainedPlantAbandonsAfterConfirmWindow)
+{
+    std::uint32_t out = 0u;
+    EXPECT_FALSE(ShouldAbandonPlantedDrag(true, 8000u, 9499u, 1500u, out));
+    EXPECT_EQ(out, 8000u);
+    EXPECT_TRUE(ShouldAbandonPlantedDrag(true, 8000u, 9500u, 1500u, out));
+    EXPECT_EQ(out, 8000u);
+}
+
+// A creature that toggles combat movement off only while it casts must NOT lose
+// its drag: each pause re-arms fresh, so brief plants never accumulate.
+TEST(DungeonClearPlantedDragTest, TransientPlantDoesNotAccumulate)
+{
+    std::uint32_t out = 0u;
+    // Plants at 8000, resumes chasing at 8900 (streak cleared), plants again at
+    // 9200 — the window restarts there, not at 8000.
+    EXPECT_FALSE(ShouldAbandonPlantedDrag(true, 0u, 8000u, 1500u, out));
+    EXPECT_FALSE(ShouldAbandonPlantedDrag(false, out, 8900u, 1500u, out));
+    EXPECT_EQ(out, 0u);
+    EXPECT_FALSE(ShouldAbandonPlantedDrag(true, out, 9200u, 1500u, out));
+    EXPECT_EQ(out, 9200u);
+    // Had 8000 counted, this would already have fired; it must not.
+    EXPECT_FALSE(ShouldAbandonPlantedDrag(true, out, 10699u, 1500u, out));
+    EXPECT_TRUE(ShouldAbandonPlantedDrag(true, out, 10700u, 1500u, out));
+}
+
+// ---------------------------------------------------------------------------
 // ShouldTripCampSafety — the camp-safety valve gate (attribution + grace).
 // Mirrors the ShouldAbortPullForCc fixture: same latch/clear contract.
 // ---------------------------------------------------------------------------
@@ -1775,6 +1830,48 @@ TEST(DungeonClearAssistRangeTest, MeleeKeepsItsOwnReachInclusiveThreshold)
     EXPECT_FALSE(DungeonClearMath::IsWithinAssistAttackRange(true, 5.0f, /*meleeRange*/ 4.2f, 28.5f, 3.2f));
     // Well inside spell range but outside melee reach: still not engageable.
     EXPECT_FALSE(DungeonClearMath::IsWithinAssistAttackRange(true, 20.0f, /*meleeRange*/ 4.2f, 28.5f, 3.2f));
+}
+
+TEST(DungeonClearAssistRangeTest, TriggerStandDownUsesTheSameWindowAsTheAction)
+{
+    // Issue #18. S1116 fixed the ACTION but left ShouldAssistCampFight (the trigger
+    // that gates it) on a bare `dist <= GetRange("spell")`, so the dead band moved
+    // into the trigger: the action engaged from <= spell + reachSum while the
+    // stand-down needed <= spell. A ranged follower in between made the trigger fire
+    // forever on a mob the action had already decided was in range.
+    //
+    // Live trace: SpellDistance 28.5, casters pinned at 29.0-31.0yd with the two
+    // biggest clusters at 30.6 and 30.8. reachSum is read off the trace rather than
+    // guessed — the action engaged out to 31.0yd, so spell + reachSum >= 31.0.
+    float const spell = 28.5f;
+    float const reachSum = 2.5f;
+
+    for (float dist : {29.0f, 30.1f, 30.6f, 30.8f})
+    {
+        EXPECT_TRUE(DungeonClearMath::IsWithinAssistAttackRange(
+            /*isMelee*/ false, dist, /*meleeRange*/ 4.0f, spell, reachSum))
+            << "trigger must stand down at " << dist
+            << "yd — the action already engages there and stock will not close";
+        EXPECT_GT(dist, spell) << "the old bare-spell test would have kept firing here";
+    }
+}
+
+TEST(DungeonClearAssistRangeTest, MeleeTriggerArmStaysWiderThanTheActionArm)
+{
+    // The trigger keeps `reach + 5.0` for melee on purpose. It must remain LOOSER
+    // than the action's `reachSum + 1.0` so the two overlap; if this ever inverts,
+    // melee gains the gap that ranged just lost.
+    float const botReach = 1.5f;
+    float const targetReach = 2.1f;
+    float const triggerMeleeRange = botReach + 5.0f;
+    float const actionMeleeRange = botReach + targetReach + 1.0f;
+    EXPECT_GT(triggerMeleeRange, actionMeleeRange);
+
+    // A melee bot between the two thresholds stands down and lets stock reach-melee
+    // (stop point reachSum + 0.75) walk it the rest of the way.
+    float const between = 0.5f * (actionMeleeRange + triggerMeleeRange);
+    EXPECT_TRUE(DungeonClearMath::IsWithinAssistAttackRange(
+        /*isMelee*/ true, between, triggerMeleeRange, 28.5f, botReach + targetReach));
 }
 
 // --- DecideChase (the chase leash) ---------------------------------------

@@ -288,6 +288,39 @@ constexpr float DC_CORRIDOR_Z_BAND = 8.0f;
 constexpr float DC_TRASH_DETOUR_RATIO = 2.0f;
 constexpr float DC_TRASH_DETOUR_SLACK = 20.0f;
 
+// The same guard, far tighter, for the hazard-vacate retreat
+// (DungeonClearHazardVacateAction). A retreat point is only ever ~14yd from the
+// emitter, and its whole job is to open a few yards NOW — so a candidate whose
+// real walk is a long way round is not a retreat at all, it is an evacuation of
+// the room. "A path exists" was the only test, and tr-20260815-154816-5 is what
+// that allowed: a point a few yards away through a wall, reachable the long way,
+// committed to and then walked for 47 SECONDS, carrying the tank ~60yd across
+// the cavern with twelve Creeping Sludges in tow. The party wiped strung out
+// over 100yd.
+//
+// Ratio alone is too strict at these distances (a bot 3yd from its aim point
+// rounding a corner trivially exceeds any ratio), hence the slack term — sized
+// to a doorway or a pillar, not to a wall.
+constexpr float DC_VACATE_DETOUR_RATIO = 1.5f;
+constexpr float DC_VACATE_DETOUR_SLACK = 8.0f;
+
+// How long the retreat may ride one committed destination before re-looking.
+// Bounded by the detour gate above, a valid retreat walk is a few seconds at
+// most; anything longer means the world moved out from under the commitment
+// (the emitter drifted, the bot wedged) and re-deciding beats riding it out.
+constexpr uint32 DC_VACATE_COMMIT_MAX_MS = 4000;
+
+// The bound both detour gates apply: a route may be `ratio` times the straight
+// line, or `slack` yards longer than it, whichever is more generous. Shared so
+// the two call sites cannot drift, and so the numbers above can be pinned by a
+// test without needing a live bot to path with.
+constexpr float DcDetourBound(float straight, float ratio, float slack)
+{
+    float const byRatio = straight * ratio;
+    float const bySlack = straight + slack;
+    return byRatio > bySlack ? byRatio : bySlack;
+}
+
 // Smart Rest failsafes (DcSmartRest::UpdateLatch). A latched rest normally
 // releases when every bot reaches full hp/mana — but a member that CANNOT get
 // there (an AFK human who never drinks, a bot with no food when the food cheat

@@ -5,6 +5,7 @@
 
 #include "DcHazard.h"
 
+#include "DynamicObject.h"
 #include "Playerbots.h"
 #include "Ai/Dungeon/DungeonClear/DcValueKeys.h"
 #include "Ai/Dungeon/DungeonClear/Data/DcHazardRegistry.h"
@@ -14,23 +15,25 @@
 
 namespace
 {
-    // Walk the cached emitter set, calling `test(row, emitterPosition)` on each.
-    // Returns true on the first hit. Centralises the map lookup, the registry
-    // early-out and the guid resolution so the two public predicates differ only
-    // in their geometry.
+    // Resolve the bot's value context, or nullptr. Every walker below needs it.
+    AiObjectContext* ContextOf(Player* bot)
+    {
+        if (!bot)
+            return nullptr;
+        PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+        return botAI ? botAI->GetAiObjectContext() : nullptr;
+    }
+
+    // Walk the cached CREATURE emitter set, calling `test(row, emitterPosition)`
+    // on each. Returns true on the first hit. Centralises the registry early-out
+    // and the guid resolution so the public predicates differ only in geometry.
     template <typename Test>
     bool AnyEmitter(Player* bot, Test&& test)
     {
-        if (!bot)
-            return false;
         if (!DcHazardRegistry::HasEmitters(bot->GetMapId()))
             return false;
 
-        PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
-        if (!botAI)
-            return false;
-
-        AiObjectContext* ctx = botAI->GetAiObjectContext();
+        AiObjectContext* ctx = ContextOf(bot);
         if (!ctx)
             return false;
 
@@ -54,14 +57,60 @@ namespace
         }
         return false;
     }
+
+    // The GROUND-POOL twin of AnyEmitter. Same shape, but the guids resolve
+    // through GetDynamicObject — a persistent area aura is not a unit, so
+    // ObjectAccessor::GetUnit on one of these guids returns nullptr and the pool
+    // would read as clean ground.
+    template <typename Test>
+    bool AnyGroundHazard(Player* bot, Test&& test)
+    {
+        if (!DcHazardRegistry::HasGroundHazards(bot->GetMapId()))
+            return false;
+
+        AiObjectContext* ctx = ContextOf(bot);
+        if (!ctx)
+            return false;
+
+        GuidVector const& pools = ctx->GetValue<GuidVector>(DcKey::GroundHazards)->Get();
+        for (ObjectGuid guid : pools)
+        {
+            DynamicObject* d = ObjectAccessor::GetDynamicObject(*bot, guid);
+            if (!d)
+                continue;
+
+            // Same staleness guard as the creature walker — plus, for a pool, the
+            // guid going dead IS how expiry is observed: a DynamicObject is
+            // removed when its duration runs out, so GetDynamicObject failing
+            // above is the pool ending, not an error.
+            DcGroundHazard const* g = DcHazardRegistry::FindGround(d->GetMapId(), d->GetSpellId());
+            if (!g || d->GetMapId() != bot->GetMapId())
+                continue;
+
+            if (test(*g, d))
+                return true;
+        }
+        return false;
+    }
 }
 
 bool DcHazard::PointIsHot(Player* bot, float x, float y, float z)
 {
-    return AnyEmitter(bot, [&](DcHazardEmitter const& e, Unit* u)
+    if (!bot)
+        return false;
+
+    if (AnyEmitter(bot, [&](DcHazardEmitter const& e, Unit* u)
+        {
+            return DcHazardRegistry::PointInside(e,
+                                                 u->GetPositionX(), u->GetPositionY(), u->GetPositionZ(),
+                                                 x, y, z);
+        }))
+        return true;
+
+    return AnyGroundHazard(bot, [&](DcGroundHazard const& g, DynamicObject* d)
     {
-        return DcHazardRegistry::PointInside(e,
-                                             u->GetPositionX(), u->GetPositionY(), u->GetPositionZ(),
+        return DcHazardRegistry::PointInside(g,
+                                             d->GetPositionX(), d->GetPositionY(), d->GetPositionZ(),
                                              x, y, z);
     });
 }
@@ -69,10 +118,21 @@ bool DcHazard::PointIsHot(Player* bot, float x, float y, float z)
 bool DcHazard::SegmentIsHot(Player* bot, float ax, float ay, float az,
                             float bx, float by, float bz)
 {
-    return AnyEmitter(bot, [&](DcHazardEmitter const& e, Unit* u)
+    if (!bot)
+        return false;
+
+    if (AnyEmitter(bot, [&](DcHazardEmitter const& e, Unit* u)
+        {
+            return DcHazardRegistry::SegmentClips(e,
+                                                  u->GetPositionX(), u->GetPositionY(), u->GetPositionZ(),
+                                                  ax, ay, az, bx, by, bz);
+        }))
+        return true;
+
+    return AnyGroundHazard(bot, [&](DcGroundHazard const& g, DynamicObject* d)
     {
-        return DcHazardRegistry::SegmentClips(e,
-                                              u->GetPositionX(), u->GetPositionY(), u->GetPositionZ(),
+        return DcHazardRegistry::SegmentClips(g,
+                                              d->GetPositionX(), d->GetPositionY(), d->GetPositionZ(),
                                               ax, ay, az, bx, by, bz);
     });
 }
@@ -86,57 +146,128 @@ bool DcHazard::LegIsHot(Player* bot, float x, float y, float z)
                         x, y, z);
 }
 
+namespace
+{
+    // One live active-vacate emitter, flattened out of whichever table it came
+    // from so the two consumers below don't each re-walk both guid lists.
+    struct LiveVacate
+    {
+        float x, y, z;
+        float vacateRadius, zBand, holdBand, retreatSlack;
+    };
+
+    // Walk every live emitter on this map that carries a vacate radius — creature
+    // rows and ground pools alike — calling `fn(LiveVacate)` on each. Rows with
+    // vacateRadius 0 (a fought creature, a plain placement avoid) never reach `fn`.
+    template <typename Fn>
+    void ForEachVacate(Player* bot, AiObjectContext* ctx, Fn&& fn)
+    {
+        if (DcHazardRegistry::HasEmitters(bot->GetMapId()))
+        {
+            GuidVector const& hazards = ctx->GetValue<GuidVector>(DcKey::Hazards)->Get();
+            for (ObjectGuid guid : hazards)
+            {
+                Unit* u = ObjectAccessor::GetUnit(*bot, guid);
+                if (!u || !u->IsAlive())
+                    continue;
+
+                DcHazardEmitter const* e = DcHazardRegistry::Find(u->GetMapId(), u->GetEntry());
+                if (!e || e->vacateRadius <= 0.0f || u->GetMapId() != bot->GetMapId())
+                    continue;
+
+                fn(LiveVacate{ u->GetPositionX(), u->GetPositionY(), u->GetPositionZ(),
+                               e->vacateRadius, e->zBand, e->holdBand, e->retreatSlack });
+            }
+        }
+
+        if (DcHazardRegistry::HasGroundHazards(bot->GetMapId()))
+        {
+            // Ground pools have no liveness flag to test — a persistent area aura
+            // exists until its duration expires and the DynamicObject is removed,
+            // so resolving the guid IS the liveness check.
+            GuidVector const& pools = ctx->GetValue<GuidVector>(DcKey::GroundHazards)->Get();
+            for (ObjectGuid guid : pools)
+            {
+                DynamicObject* d = ObjectAccessor::GetDynamicObject(*bot, guid);
+                if (!d)
+                    continue;
+
+                DcGroundHazard const* g = DcHazardRegistry::FindGround(d->GetMapId(), d->GetSpellId());
+                if (!g || g->vacateRadius <= 0.0f || d->GetMapId() != bot->GetMapId())
+                    continue;
+
+                fn(LiveVacate{ d->GetPositionX(), d->GetPositionY(), d->GetPositionZ(),
+                               g->vacateRadius, g->zBand, g->holdBand, g->retreatSlack });
+            }
+        }
+    }
+
+    // Is (px,py,pz) inside `v`'s danger band? Same-floor, and within the row's own
+    // pulse + holdBand — so a bot already parked past the rim still reads clear
+    // and one that has drifted back toward it does not.
+    bool InDangerBand(LiveVacate const& v, float px, float py, float pz)
+    {
+        if (std::fabs(v.z - pz) > v.zBand)
+            return false;
+
+        float const reach = v.vacateRadius + v.holdBand;
+        float const dx = px - v.x, dy = py - v.y;
+        return dx * dx + dy * dy <= reach * reach;
+    }
+}
+
 DcHazard::VacateEmitter DcHazard::NearestVacate(Player* bot)
 {
     VacateEmitter best;
     if (!bot)
         return best;
-    if (!DcHazardRegistry::HasEmitters(bot->GetMapId()))
+    if (!DcHazardRegistry::HasAnyHazard(bot->GetMapId()))
         return best;
 
-    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
-    if (!botAI)
-        return best;
-    AiObjectContext* ctx = botAI->GetAiObjectContext();
+    AiObjectContext* ctx = ContextOf(bot);
     if (!ctx)
         return best;
 
     float bestDistSq = std::numeric_limits<float>::max();
-    GuidVector const& hazards = ctx->GetValue<GuidVector>(DcKey::Hazards)->Get();
-    for (ObjectGuid guid : hazards)
+
+    ForEachVacate(bot, ctx, [&](LiveVacate const& v)
     {
-        Unit* u = ObjectAccessor::GetUnit(*bot, guid);
-        if (!u || !u->IsAlive())
-            continue;
+        if (!InDangerBand(v, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()))
+            return;
 
-        DcHazardEmitter const* e = DcHazardRegistry::Find(u->GetMapId(), u->GetEntry());
-        if (!e || u->GetMapId() != bot->GetMapId())
-            continue;
+        float const dx = bot->GetPositionX() - v.x, dy = bot->GetPositionY() - v.y;
+        float const distSq = dx * dx + dy * dy;
+        if (distSq >= bestDistSq)
+            return;
 
-        // Not an active-vacate emitter (a fought creature / a plain avoid).
-        if (e->vacateRadius <= 0.0f)
-            continue;
+        bestDistSq = distSq;
+        best.ok = true;
+        best.x = v.x;
+        best.y = v.y;
+        best.z = v.z;
+        best.pulseRadius = v.vacateRadius;
+        best.retreatSlack = v.retreatSlack;
+    });
 
-        // Only if the bot is inside the danger band — the pulse radius plus the
-        // hysteresis StayBand, so a bot already parked at pulse+slack still reads
-        // as in-danger and holds there (no ping-pong). Same-floor: a pulse one
-        // level down does not reach.
-        if (std::fabs(u->GetPositionZ() - bot->GetPositionZ()) > e->zBand)
-            continue;
-        float const reach = e->vacateRadius + VacateStayBand;
-        float const distSq = bot->GetExactDist2dSq(u);
-        if (distSq > reach * reach)
-            continue;
-
-        if (distSq < bestDistSq)
-        {
-            bestDistSq = distSq;
-            best.ok = true;
-            best.x = u->GetPositionX();
-            best.y = u->GetPositionY();
-            best.z = u->GetPositionZ();
-            best.pulseRadius = e->vacateRadius;
-        }
-    }
     return best;
+}
+
+bool DcHazard::PointIsInVacateBand(Player* bot, float x, float y, float z)
+{
+    if (!bot)
+        return false;
+    if (!DcHazardRegistry::HasAnyHazard(bot->GetMapId()))
+        return false;
+
+    AiObjectContext* ctx = ContextOf(bot);
+    if (!ctx)
+        return false;
+
+    bool hot = false;
+    ForEachVacate(bot, ctx, [&](LiveVacate const& v)
+    {
+        if (!hot && InDangerBand(v, x, y, z))
+            hot = true;
+    });
+    return hot;
 }

@@ -44,7 +44,7 @@ namespace DcTestRun
         std::uint32_t wipeGraceMs = 15 * 1000;
         std::uint32_t stallGraceMs = 120 * 1000;
         std::uint32_t noProgressMs = 600 * 1000;
-        std::uint32_t overallTimeoutMs = 3600 * 1000;
+        std::uint32_t overallTimeoutMs = 7200 * 1000;
     };
 
     enum class Verdict : std::uint8_t

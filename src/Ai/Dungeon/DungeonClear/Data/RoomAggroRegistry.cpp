@@ -75,6 +75,47 @@ namespace
         { 230, 9019,  166.0f, {} }, // Blackrock Depths — Emperor Dagran Thaurissan
         { 429, 14354,  50.0f, {} }, // Dire Maul East — Pusillin
 
+        // Deadmines (36) — Gilnid, the goblin foundry.
+        //
+        // THE RADIUS IS NOT READ FROM A SCRIPT HERE, because there is no script to
+        // read: Gilnid's whole SmartAI is a Molten Metal cast, an out-of-combat
+        // yell, and a door open on death. He force-pulls nothing. This row rests on
+        // the SCHOLOMANCE precedent above — "does not pre-aggro, but the room and
+        // the boss cannot be separated by ordinary means" — and 60yd is the
+        // measured spawn envelope of the foundry, not a script constant.
+        //
+        // What makes the room undecomposable: 19 ELITES at level 18, against a
+        // level-18 party, standing 7.1-57.6yd from Gilnid. At a same-level elite's
+        // ~20yd aggro radius, 17 of the 19 form ONE connected chain — single-linkage
+        // clustering finds no pack boundary anywhere in the room, so waking any of
+        // them can cascade through the lot. The dynamic pull governor cannot see
+        // this: it sizes a pack with 6yd spread / 10yd assist windows, so on a room
+        // whose mobs sit 15-20yd apart it reports "estimated 2 aggro" and returns
+        // LEEROY every time (424 LEEROY vs 4 ADVANCED across tp-20260815-171416-1).
+        // The party then walks in, collects the room, and Gilnid — who is simply the
+        // next roster target — joins on top of it.
+        //
+        // Live (tp-20260815-171416-1): 5 of 20 runs wiped "on Gilnid" with the
+        // status line alternating fighting_boss / fighting_trash every 1-2 seconds
+        // (tr-...-10: Gilnid, Craftsman, Engineer, Remote-Controlled Golem, Craftsman
+        // in fourteen seconds). Four of those five logged EVERY death as ON BOSS
+        // with no trash on the sheet at all — Gilnid lands the killing blows, so the
+        // record reads like a boss-difficulty problem when it is a room problem.
+        //
+        // 60 sweeps all 19 (50 would leave the three western-most at 52.0/55.3/57.6).
+        // It also takes in the adjacent mine trash — 2 Defias Taskmaster, 7 Strip
+        // Miner, 1 Overseer, 1 Miner — which costs nothing in practice: the clear
+        // approaches the foundry from the west THROUGH that tunnel, so those are
+        // already dead when the gate is evaluated, and RoomClearTimeout is the valve
+        // for any straggler that is not.
+        //
+        // No skirtRadius / pullOutRadius override. The computed boss sphere already
+        // does the right thing at both ends: the two Craftsmen at 7.1 and 9.2yd fall
+        // INSIDE it and are excluded from room trash, so they come with the boss as
+        // a normal 1-boss + 2-adds pull, and everything past it is ordinary
+        // clearable room trash.
+        { 36, 1763, 60.0f, {} }, // Deadmines — Gilnid (goblin foundry)
+
         // NOTE: Tendris Warpwood (11489) is deliberately NOT a room-aggro boss.
         // The radius-around-the-boss model is the wrong tool for him: live runs
         // showed it clearing the Eldreth ghosts standing behind him (which don't

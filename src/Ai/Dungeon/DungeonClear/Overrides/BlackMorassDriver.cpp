@@ -662,8 +662,8 @@ namespace
         // Without this the run does not stop, it just stops being winnable: the
         // core waits 300s, runs CleanupInstance, respawns Medivh and replays the
         // whole encounter from rift 0. Measured 2026-07-24 that costs ~1400s per
-        // attempt against a 3600s run budget, so a party that fails twice can no
-        // longer finish inside the hour and simply burns the clock — every
+        // attempt against the run budget (3600s when measured, 7200s now), so a
+        // party that fails repeatedly can no longer finish and burns the clock — every
         // timed-out run in that batch was this, reported as the useless verdict
         // "overall_timeout" instead of naming the real failure.
         //

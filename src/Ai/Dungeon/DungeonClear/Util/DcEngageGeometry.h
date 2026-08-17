@@ -479,6 +479,25 @@ public:
     // were byte-identical file-local twins in DcPullPlanner and DcLeaderSignal.
     static bool IsNavReachable(Player* bot, Position const& p);
 
+    // IsNavReachable PLUS a bound on how far round the route is allowed to go:
+    // the generated path must also be no longer than
+    // max(straight * ratio, straight + slack).
+    //
+    // "A path exists" and "this point is near me" are different questions, and a
+    // caller that wants a SHORT move has to ask the second one. A point a few
+    // yards away on the far side of a wall is perfectly PATHFIND_NORMAL — the
+    // route just leaves the room, goes round, and comes back — so a picker that
+    // stops at IsNavReachable will happily commit a bot to a 60yd walk it thinks
+    // is a 14yd step. Same shape as the detour gate in IsLevelReachable; see
+    // DC_VACATE_DETOUR_RATIO/SLACK for the retreat's numbers and what allowing
+    // the unbounded version cost.
+    //
+    // Also reports the accepted path length through `pathLen` when non-null, so a
+    // caller can log what it committed to without re-running the query.
+    static bool IsNavReachableWithin(Player* bot, Position const& p,
+                                     float ratio, float slack,
+                                     float* pathLen = nullptr);
+
     // True if a closed `GAMEOBJECT_TYPE_DOOR` sits on the straight 2D line from
     // `from` to (tx,ty), within `corridorWidth` of it, on the from/target floor
     // (Z), and projecting to the INTERIOR of that chord. Used to veto engaging a

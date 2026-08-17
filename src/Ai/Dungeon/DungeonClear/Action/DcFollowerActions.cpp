@@ -1368,19 +1368,51 @@ bool DungeonClearHealRepositionAction::Execute(Event /*event*/)
 
 bool DungeonClearHazardVacateAction::Execute(Event /*event*/)
 {
-    // The nearest unfightable emitter whose pulse the bot is in. Re-read here
-    // (trigger/action gap); bail if it despawned or the bot cleared in between.
+    // The nearest emitter whose pulse the bot is in. Re-read here (trigger/action
+    // gap); bail if it despawned or the bot cleared in between.
     DcHazard::VacateEmitter const danger = DcHazard::NearestVacate(bot);
     if (!danger.ok)
+    {
+        _fleeToValid = false;
         return false;
+    }
 
     Map* map = bot->GetMap();
     if (!map)
         return false;
 
-    // Aim just PAST the pulse rim: far enough that a step of jitter doesn't drop
-    // the bot straight back in. Measured from the emitter centre.
-    float const clearDist = danger.pulseRadius + DcHazard::VacateRetreatSlack;
+    // COMMIT to one destination and ride it out. The trigger re-fires every tick
+    // while the bot is in the band, and recomputing from scratch each time is what
+    // turned this action into a thrash generator the moment a map had more than one
+    // emitter in play: NearestVacate returns whichever pulse is momentarily closest,
+    // so a step of drift re-elects a different centre and the away-bearing REVERSES.
+    // tr-20260815-134844-5 logged four re-issues inside one second sending the tank
+    // to (946.2,-279.2), then (968.0,-277.9) 22yd the other way, then back — net
+    // travel about zero, in the middle of eight sludges. It died there.
+    //
+    // So while the committed point is still clean and the bot is still travelling
+    // toward it, own the tick and DON'T touch the move. The re-plot is the bug.
+    //
+    // The commitment is TIME-CAPPED, because riding one is only safe as long as
+    // the point deserved it. tr-20260815-154816-5 rode a single committed point
+    // for 47 seconds — the candidate had passed "a path exists" while sitting on
+    // the far side of a wall, so the walk to it left the room, went round, and
+    // dragged the tank ~60yd with twelve sludges behind. The detour bound below is
+    // what stops such a point being chosen at all; this cap is the backstop for
+    // every other way a commitment can go stale (the emitter drifts, the bot
+    // wedges) and keeps "committed" from ever meaning "unsupervised".
+    uint32 const nowMs = getMSTime();
+    if (_fleeToValid && bot->isMoving() &&
+        GetMSTimeDiffToNow(_fleeSetAtMs) < DC_VACATE_COMMIT_MAX_MS &&
+        bot->GetExactDist2d(&_fleeTo) > 3.0f &&
+        !DcHazard::PointIsInVacateBand(bot, _fleeTo.GetPositionX(), _fleeTo.GetPositionY(),
+                                       _fleeTo.GetPositionZ()))
+        return true;
+
+    // Aim past the pulse rim by THIS row's slack — the Destroyed Sentinel's 6 to
+    // leave-and-move-on, the Creeping Sludge's 9 to clear its wide hold band with
+    // an arrival margin. Measured from the emitter centre.
+    float const clearDist = danger.pulseRadius + danger.retreatSlack;
 
     // Bearing directly away from the emitter. If the bot is somehow exactly on
     // the centre (degenerate), fall back to its own facing so the direction is
@@ -1397,6 +1429,17 @@ bool DungeonClearHazardVacateAction::Execute(Event /*event*/)
     // the rest of DC. First candidate that snaps, lands outside the pulse, and
     // is reachable wins.
     static constexpr float kFan[] = { 0.0f, 0.5f, -0.5f, 1.0f, -1.0f, 1.6f, -1.6f, 2.4f, -2.4f, 3.14159f };
+
+    // Best SECOND-CHOICE: a point that clears this emitter's own pulse and is a
+    // short walk, but still sits in something else's band. Not a solution — the
+    // trigger will fire again — but strictly better than standing here, and it is
+    // what keeps a boxed-in bot moving now that the unvalidated last resort is
+    // gone. Seeded with where the bot already stands, so it is only ever taken
+    // when it genuinely opens distance from the emitter.
+    float bestPartialClear = bot->GetExactDist2d(ex, ey);
+    float bestPartialX = 0.0f, bestPartialY = 0.0f, bestPartialZ = 0.0f;
+    bool  havePartial = false;
+
     for (float delta : kFan)
     {
         float const ang = away + delta;
@@ -1410,40 +1453,102 @@ bool DungeonClearHazardVacateAction::Execute(Event /*event*/)
         // The snap can pull the point back toward the emitter (onto the only
         // nearby mesh) — keep it only if it truly clears the pulse.
         float const dxp = snap.x - ex, dyp = snap.y - ey;
-        if (dxp * dxp + dyp * dyp < danger.pulseRadius * danger.pulseRadius)
+        float const fromEmitter = std::sqrt(dxp * dxp + dyp * dyp);
+        if (fromEmitter < danger.pulseRadius)
             continue;
 
+        // Record it as a fallback before the stricter screens below reject it.
+        // Deliberately geometry-only here — the path probe is expensive and the
+        // fallback is probed once, at the end, only if it is actually needed.
+        if (fromEmitter > bestPartialClear + 2.0f)
+        {
+            bestPartialClear = fromEmitter;
+            bestPartialX = snap.x;
+            bestPartialY = snap.y;
+            bestPartialZ = snap.z;
+            havePartial = true;
+        }
+
         // Don't flee this pulse straight into ANOTHER hazard's — Sentinels and
-        // their summons sit in overlapping clusters on this map. PointIsHot covers
-        // every live emitter's keep-out cylinder (the fled emitter's own is only
-        // its raw pulse, which this 19yd point already clears), so a candidate
-        // that trades one pulse for another is rejected and the fan tries again.
+        // their summons sit in overlapping clusters on this map, and a Maraudon
+        // sludge pack is nothing but overlap. PointIsHot covers every live
+        // emitter's PLACEMENT keep-out (the fled emitter's own is only its raw
+        // pulse, which this point already clears)...
         if (DcHazard::PointIsHot(bot, snap.x, snap.y, snap.z))
             continue;
 
+        // ...and this covers every live emitter's DANGER band, which is the one
+        // that decides whether the trigger fires again. The two are different
+        // predicates and a row whose hold band is wider than its placement radius
+        // (Creeping Sludge: 11 vs 8) passes the first and fails the second. Landing
+        // on such a point means fleeing again on arrival — forever. Reject it here
+        // and let the fan keep looking.
+        if (DcHazard::PointIsInVacateBand(bot, snap.x, snap.y, snap.z))
+            continue;
+
+        // Reachable AND actually near: the path to this point must be commensurate
+        // with the straight line to it. An unbounded reachability test cannot tell
+        // "6yd away" from "6yd away through a wall, 60yd round" — both are
+        // PATHFIND_NORMAL — and the second is not a retreat, it is a march. This is
+        // the check that was missing in tr-20260815-154816-5.
         Position const cand(snap.x, snap.y, snap.z);
-        if (!DcEngageGeometry::IsNavReachable(bot, cand))
+        float pathLen = 0.0f;
+        if (!DcEngageGeometry::IsNavReachableWithin(bot, cand, DC_VACATE_DETOUR_RATIO,
+                                                    DC_VACATE_DETOUR_SLACK, &pathLen))
             continue;
 
         DC_PULL_TRACE("[DC:{}] hazard vacate: clearing {:.0f}yd pulse, moving to "
-                      "({:.1f},{:.1f}) delta={:.1f}",
-                      bot->GetName(), danger.pulseRadius, snap.x, snap.y, delta);
+                      "({:.1f},{:.1f}) delta={:.1f} straight={:.1f}yd path={:.1f}yd",
+                      bot->GetName(), danger.pulseRadius, snap.x, snap.y, delta,
+                      bot->GetExactDist2d(snap.x, snap.y), pathLen);
         DcMoveTo(map->GetId(), snap.x, snap.y, snap.z, /*idle*/ false, /*react*/ false,
                  /*normal_only*/ false, /*exact_waypoint*/ false,
                  MovementPriority::MOVEMENT_COMBAT);
+        _fleeTo = Position(snap.x, snap.y, snap.z, 0.0f);
+        _fleeToValid = true;
+        _fleeSetAtMs = nowMs;
         return true;
     }
 
-    // No validated bearing (boxed in on every side). Last resort: drive the raw
-    // straight-away point through the mover anyway — it pathfinds and clamps, so
-    // the bot at least tries to open distance rather than standing in the pulse
-    // owning the tick for nothing.
-    float const rx = ex + clearDist * std::cos(away);
-    float const ry = ey + clearDist * std::sin(away);
-    DcMoveTo(map->GetId(), rx, ry, bot->GetPositionZ(), /*idle*/ false, /*react*/ false,
-             /*normal_only*/ false, /*exact_waypoint*/ false,
-             MovementPriority::MOVEMENT_COMBAT);
-    return true;
+    // Nothing fully clears. Take the best partial — still in someone's band, but
+    // further from THIS pulse and a short walk away — provided it is genuinely
+    // short. Probed here rather than in the loop so the fallback costs one path
+    // query, not ten.
+    _fleeToValid = false;
+    if (havePartial)
+    {
+        Position const partial(bestPartialX, bestPartialY, bestPartialZ);
+        float pathLen = 0.0f;
+        if (DcEngageGeometry::IsNavReachableWithin(bot, partial, DC_VACATE_DETOUR_RATIO,
+                                                   DC_VACATE_DETOUR_SLACK, &pathLen))
+        {
+            DC_PULL_TRACE("[DC:{}] hazard vacate: no fully-clear bearing, taking partial "
+                          "({:.1f},{:.1f}) {:.1f}yd from the {:.0f}yd pulse, path={:.1f}yd",
+                          bot->GetName(), bestPartialX, bestPartialY, bestPartialClear,
+                          danger.pulseRadius, pathLen);
+            DcMoveTo(map->GetId(), bestPartialX, bestPartialY, bestPartialZ,
+                     /*idle*/ false, /*react*/ false, /*normal_only*/ false,
+                     /*exact_waypoint*/ false, MovementPriority::MOVEMENT_COMBAT);
+            return true;
+        }
+    }
+
+    // Boxed in on every bearing. There used to be a last resort here that drove the
+    // raw straight-away point through the mover regardless, on the reasoning that
+    // trying to open distance beats standing in the pulse. That reasoning does not
+    // survive contact with a wall: the mover pathfinds, so an unvalidated point
+    // behind one produces exactly the long way round this action just spent ten
+    // candidates rejecting — and it does it with no length bound at all, which is
+    // the worst version of the tr-20260815-154816-5 march.
+    //
+    // So: yield the tick instead. The bot keeps fighting from where it stands and
+    // the trigger re-fires next tick, by which time the emitters (or the bot) will
+    // have moved and a bearing may open. Standing in a pulse for another tick is a
+    // known, bounded cost; being walked out of the room is not.
+    DC_PULL_TRACE("[DC:{}] hazard vacate: no bearing clears the {:.0f}yd pulse within "
+                  "the detour bound — holding this tick",
+                  bot->GetName(), danger.pulseRadius);
+    return false;
 }
 
 bool DungeonClearLeaderAssistAction::Execute(Event /*event*/)

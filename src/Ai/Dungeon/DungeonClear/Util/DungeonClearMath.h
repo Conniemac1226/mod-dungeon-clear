@@ -172,6 +172,23 @@ namespace DungeonClearMath
                               std::uint32_t now, std::uint32_t graceMs,
                               std::uint32_t& ccSinceOut);
 
+    // Pack-cannot-follow gate (pure). Decides whether a drag-back should be
+    // ABANDONED because the mob being dragged has no combat movement — the caller's
+    // `planted` verdict, read off UNIT_STATE_NO_COMBAT_MOVEMENT at the call site.
+    // Such a mob has had its chase generator removed, so it holds the ground it was
+    // tagged on however far the tank retreats: the drag is not slow, it is
+    // impossible, and the tank should turn around and fight it where it stands.
+    //
+    // Shares the latch/grace contract of ShouldAbortPullForCc exactly (including the
+    // now==0 corner and `confirmMs` == 0 firing on the first tick), and is delegated
+    // to it — kept as a separate name because the QUESTION is different and the two
+    // are tuned independently. The grace is a debounce, not a confidence threshold:
+    // the unit state is exact, but some creatures toggle it transiently (planting
+    // only for the duration of a cast), and those must not lose their drag.
+    bool ShouldAbandonPlantedDrag(bool planted, std::uint32_t plantedSince,
+                                  std::uint32_t now, std::uint32_t confirmMs,
+                                  std::uint32_t& plantedSinceOut);
+
     // Camp-safety valve (pure). A held passive follower should trigger the valve
     // when it is in combat below `safetyHpPct` AND that has persisted for
     // `graceMs`. `attackerIsPullTarget` is the caller's verdict that everything

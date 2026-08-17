@@ -551,14 +551,21 @@ public:
 };
 
 // ANY role, BOTH engines. Fires when the bot is standing inside the pulse of an
-// active-vacate DcHazardRegistry emitter it cannot fight — the Arcatraz
-// "Destroyed Sentinel" (21761) summoned at a Sentinel's corpse, NOT_SELECTABLE,
-// pulsing 15yd/1s until it despawns. Drives DungeonClearHazardVacateAction to
-// clear the pulse; once out, normal driving resumes and the party advances past
-// the corpse (it does NOT hold at the rim for the summon's whole lifetime — see
-// the band note in DcHazard.h). No combat gate (the pulse ticks after the kill,
-// often out of combat) and no role exemption (the summon can't be tanked). Inert
-// on maps with no emitters, while CC'd/rooted (can't move), and when
+// active-vacate DcHazardRegistry row it cannot fight. Two of those exist:
+//
+//   * the Arcatraz "Destroyed Sentinel" (21761) summoned at a Sentinel's corpse,
+//     NOT_SELECTABLE, pulsing 15yd/1s until it despawns;
+//   * Scholomance's "Cloud of Disease" (17742), the persistent area aura a dying
+//     Diseased Ghoul (10495) leaves on the ground — 5yd, 350/s, 20s. There is no
+//     creature at all here, only a DynamicObject, so nothing in the combat AI can
+//     even see it.
+//
+// Drives DungeonClearHazardVacateAction to clear the pulse; once out, normal
+// driving resumes and the party advances past the spot (it does NOT hold at the
+// rim for the emitter's whole lifetime — see the band note in DcHazard.h). No
+// combat gate (both tick after the kill, often out of combat, and the ghoul pool
+// drops mid-pack-fight) and no role exemption (neither can be tanked). Inert on
+// maps with no rows of either kind, while CC'd/rooted (can't move), and when
 // DungeonClear.HazardVacate is off. See DcHazard::NearestVacate.
 class DungeonClearHazardVacateTrigger : public Trigger
 {

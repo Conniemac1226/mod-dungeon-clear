@@ -22,8 +22,8 @@ namespace
     // event rows, roster patch, wings — in one file). This aggregator calls each
     // EXPLICITLY: same link-safety reason as the event/roster tables — a
     // self-registering initializer in a TU the program never references is
-    // stripped from the module static lib (Maraudon's file is wings-only, so the
-    // call here is what keeps it linked).
+    // stripped from the module static lib (Maraudon's file has no events, so the
+    // calls here and in BossRosterRegistry are what keep it linked).
     std::unordered_map<uint32, DungeonWingLayout> const& Store()
     {
         static std::unordered_map<uint32, DungeonWingLayout> const store = []
