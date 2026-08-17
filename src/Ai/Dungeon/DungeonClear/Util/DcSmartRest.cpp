@@ -10,6 +10,7 @@
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
 #include "Ai/Dungeon/DungeonClear/DcValueKeys.h"
 #include "Ai/Dungeon/DungeonClear/Settings/DcSettings.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcPlayerbotCompat.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcRun.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTickMemo.h"
 
@@ -47,8 +48,7 @@ namespace
                 m.manaPct = leader->GetPowerPct(POWER_MANA);
             m.isHealer = PlayerbotAI::IsHeal(leader);
             m.isTank = true;
-            PlayerbotAI* leaderAI = GET_PLAYERBOT_AI(leader);
-            m.isBot = leaderAI && !leaderAI->IsRealPlayer();
+            m.isBot = !DcPlayerbotCompat::IsHumanControlled(leader);
             out.push_back(m);
             if (players)
                 players->push_back(leader);
@@ -74,8 +74,7 @@ namespace
                 m.manaPct = member->GetPowerPct(POWER_MANA);
             m.isHealer = PlayerbotAI::IsHeal(member);
             m.isTank = member == leader;
-            PlayerbotAI* memberAI = GET_PLAYERBOT_AI(member);
-            m.isBot = memberAI && !memberAI->IsRealPlayer();
+            m.isBot = !DcPlayerbotCompat::IsHumanControlled(member);
             out.push_back(m);
             if (players)
                 players->push_back(member);
