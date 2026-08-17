@@ -1069,7 +1069,21 @@ bool DungeonClearPullTrigger::IsActive()
     // tank at commit range while it waits the patrol out. Keep the trigger live in
     // that state too. (Reading pull mode current FIRST runs the governor that may
     // set decision == 3 this tick.)
+    //
+    // NEVER off a verdict the governor can no longer revise. This rung is the one
+    // place a pull code keeps the action alive with the behavioural bool reading
+    // false, so it is also the one place a STALE code can plant the tank forever:
+    // while a persistent anchored event drives, DungeonClearPullModeCurrentValue
+    // stands the whole pull system down and the governor does not run, so nothing
+    // would ever move `decision` off PatrolHold — and the pull action (DcRel::Pull,
+    // 35) outranks the event's own rung (DcRel::AtObjective, 30), so the event could
+    // never drive another step. That is tr-20260817-100413-43/44/45 in Shattered
+    // Halls. The value now clears the verdict on its stand-down, which fixes it at
+    // the root; this reads the same stand-down so the rung can't be resurrected by a
+    // code latched between the two.
+    bool const eventOwnsTank = DungeonEventExecutor::IsPersistentAnchoredEventActive(context);
     bool const patrolWaiting =
+        !eventOwnsTank &&
         AI_VALUE(DcPullContext&, DcKey::PullContext).decision == DcPullDecisionCode::PatrolHold;
     // A PULL-BACK boss (BossPullbackRegistry) runs the maneuver REGARDLESS of the
     // player's pull setting. It isn't a tactical preference there: Ghaz'an's home

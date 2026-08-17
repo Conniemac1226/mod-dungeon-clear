@@ -275,3 +275,28 @@ TEST(DungeonClearRelevanceTest, PreviouslyTiedRungsAreNowStrictlyOrdered)
     EXPECT_NE(DcRel::HakkarFlame, DcRel::Pull);
     EXPECT_NE(DcRel::NeedsRest,   DcRel::RoomTrash);
 }
+
+// The pull rung OUTRANKS the objective rung, which is correct — a pull in flight
+// must not be interrupted by the objective driver — but it is also what turns any
+// stuck pull verdict into a stalled run: while the pull action owns the tick, an
+// anchored event never gets to drive its own steps.
+//
+// tr-20260817-100413-43/44/45 (Shattered Halls) is the live case. The governor
+// latched decision == PatrolHold, then the persistent "Sweep the assassin hallway"
+// event armed the pull stand-down — which stopped the governor from ever running
+// again, so nothing could move the code off PatrolHold. The pull trigger keeps its
+// rung live on that code, the pull action re-planted the tank every tick, and the
+// event's own rung 5 points below never fired again: 913s parked, no_progress.
+//
+// The fix is that the stand-down now CLEARS the verdict (DcPullContext::
+// ClearDynamicVerdict) and the trigger reads the same stand-down. This test pins
+// the ordering the fix assumes: pull above objective, so "the pull rung is live"
+// always means "the event is not driving".
+TEST(DungeonClearRelevanceTest, PullOutranksTheObjectiveDriverItCanStarve)
+{
+    EXPECT_GT(DcRel::Pull, DcRel::AtObjective);
+    EXPECT_GT(DcRel::Pull, DcRel::AtBoss);
+    // The event-driven rungs sit in the same band, so a stuck pull starves them
+    // all alike — the stand-down has to be authoritative, not advisory.
+    EXPECT_GT(DcRel::Pull, DcRel::EventDue);
+}
