@@ -91,6 +91,46 @@ namespace DcEventDoorRegistry
             case 184125:  // Hydromancer Thespia's panel
             case 184126:  // Mekgineer Steamrigger's panel
                 return true;
+            // Blackrock Depths — the Giant Doors apparatus (map 230). Four
+            // GAMEOBJECT_TYPE_DOOR entries make up one machine, and only the
+            // lever (161460, key-exempt below) is ever meant to be clicked. The
+            // other three are the machine's moving parts: they carry no lock, no
+            // ScriptName and no gossip, and their GO state is driven ENTIRELY by
+            // the lever's SmartAI (161460 source_type 1: on GO state changed ->
+            // SMART_ACTION_ACTIVATE_GOBJECT on guids 15639/15576/15640/15352).
+            //
+            // Their states are INVERTED with respect to each other, so whichever
+            // way the machine stands, one of them is sitting in GO_STATE_READY on
+            // the corridor and reads to the closed-door predicate as a shut gate:
+            //
+            //   doors open  (spawn state) — Giant Doors ACTIVE, Fake Collision +
+            //     BigDoorDummyCollision02 READY. The Fake Collision spawns on top
+            //     of the Giant Doors at (723.1,-105.9,-71.5) with a 18x21x25yd
+            //     model box, so it lands within the blocking-door value's 5yd
+            //     corridor band on the lower passage the route to Bael'Gar uses.
+            //     This is what ended run tr-20260817-044457-30 at 9/19 bosses:
+            //     "blocking-door: flagged ... 'Giant Door Fake Collision' (entry
+            //     161462) 78.1yd from bot as corridor-blocking" -> walk-in ->
+            //     "can't open ... -> auto-pausing".
+            //   doors closed (after the lever) — exactly the reverse, so the
+            //     Giant Doors themselves (157923) become the flagged blocker,
+            //     on the very state the Shadowforge Lock event works to reach.
+            //
+            // Neither state is ever something a player solves at the door, and
+            // neither obstructs a bot: server-side GameObject collision feeds the
+            // dynamic LoS tree only — mmaps carry no gameobjects and the movement
+            // splines are not collision-checked — and the navmesh runs straight
+            // through the doorway at z ~ -71.5 either way. So the whole apparatus
+            // is navigation-invisible; the lever alone drives it.
+            case 157923:  // Giant Doors (startOpen=1; closed by the lever)
+            case 161461:  // Giant Door Mechanism (the winding wheel, 3.3yd from
+                          // the lever — lock-free, so BotCanOpenDoorLikePlayer
+                          // refuses it and it would auto-pause the run standing
+                          // AT the objective it is part of)
+            case 161462:  // Giant Door Fake Collision (open-state collision hull)
+            case 161516:  // BigDoorDummyCollision02 (the upper-level portcullis
+                          // hull, (702.1,-125.7,-45.7))
+                return true;
             default:
                 return false;
         }
@@ -238,6 +278,38 @@ namespace DcEventDoorRegistry
             // via map-429 events 9 and 10; this one has no event because it sits
             // off the West boss path — the exemption is its only opener.
             case 179549:  // Dire Maul North — Door (lock 1562, Crescent Key)
+
+            // --- Blackrock Depths (map 230) ------------------------------
+            // Lock 680 — the Shadowforge Key (11000), or lockpicking 250. The
+            // key drops from Fineous Darkvire, so a party that killed him could
+            // in principle hold it; a bot party never does, and GO_FLAG_LOCKED
+            // (addon flags 34 on both entries) makes DcDoorPolicy suppress the
+            // lockpicking slots as well. Both are plain traversal gates: no
+            // ScriptName, no autoCloseTime, and instance_blackrock_depths only
+            // caches the lever's GUID (GoShadowLockGUID) — it never reads or
+            // writes either one's GO state.
+            //
+            // The East Garrison Door is the sole entrance to the room that holds
+            // the lever: the z ~ -60 floor runs x 552..620 / y -68..-36 and pinches
+            // to a doorway at x ~ 560, with the lever at the far (east) end. So it
+            // has to open before the Shadowforge Lock objective can be reached at
+            // all.
+            //
+            // The lever is listed for the same reason the two Gordok doors above
+            // are: map-230 event 2 clicks it (UseGO, which bypasses DcDoorPolicy),
+            // but the route to that objective ENDS on the lever, so the
+            // blocking-door value flags it first and the door-blocked action would
+            // auto-pause the run one step short of the click. Both paths end in
+            // the same GameObject::Use(); whichever fires first wins and the other
+            // is a no-op (UseDoorOrButton early-returns unless lootState is
+            // GO_READY). Clicking it is the intended sequence in full: Use() runs
+            // SmartGameObjectAI::GossipHello (which returns false) before the lock
+            // check, reaches the DOOR branch, and the resulting GO_ACTIVATED loot
+            // state fires the lever's SMART_EVENT_GO_STATE_CHANGED chain that
+            // closes the Giant Doors.
+            case 170570:  // East Garrison Door (lock 680, Shadowforge Key)
+            case 161460:  // The Shadowforge Lock (lock 680; SmartAI closes the
+                          // Giant Doors off its own state change)
                 return true;
             default:
                 return false;

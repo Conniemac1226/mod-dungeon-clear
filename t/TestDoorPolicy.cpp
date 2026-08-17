@@ -193,6 +193,29 @@ TEST(DcDoorPolicyTest, ScholomanceStratholmeAndDireMaulNorthKeyedDoorsAreExempt)
     EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(124372));  // Uldaman Ironaya seal
 }
 
+// Blackrock Depths' two lock-680 (Shadowforge Key 11000 / lockpicking 250)
+// objects on the road to General Angerforge. The East Garrison Door is the only
+// way into the room that holds the lever, and the lever is where the route to
+// the map-230 event-2 objective ENDS — so without the waiver the blocking-door
+// value flags one or the other and the run auto-pauses a step short of the
+// click that closes the Giant Doors.
+TEST(DcDoorPolicyTest, BlackrockShadowforgeLockAndGarrisonDoorAreKeyExempt)
+{
+    EXPECT_TRUE(DcEventDoorRegistry::IsKeyExempt(170570));   // East Garrison Door
+    EXPECT_TRUE(DcEventDoorRegistry::IsKeyExempt(161460));   // The Shadowforge Lock
+
+    // Not a lock-680 amnesty: the two Shadowforge Gates and The Lyceum ride the
+    // same lock and are deliberately left alone until they are verified in their
+    // own right.
+    EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(170559));  // Shadowforge Gate
+    EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(170560));  // Shadowforge Gate
+    EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(170558));  // The Lyceum
+    // And not the instance-script-driven doors, whatever their lock.
+    EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(170571));  // Bar Door (DATA_GO_BAR_DOOR)
+    EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(170573));  // Golem Room North (TYPE_LYCEUM)
+    EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(170575));  // Throne Room Doors (Magmus)
+}
+
 // --- Script-only denylist ---------------------------------------------------
 //
 // All three Shadowfang Keep gates ride the same empty lock 85 that CanOpenSlots
@@ -241,6 +264,29 @@ TEST(DcDoorPolicyTest, SteamvaultAccessPanelsAreNavigationIgnored)
     // Still not a blanket amnesty.
     EXPECT_FALSE(DcEventDoorRegistry::IsNavigationIgnored(18895));   // SFK courtyard
     EXPECT_FALSE(DcEventDoorRegistry::IsNavigationIgnored(0));
+}
+
+// Blackrock Depths' Giant Doors are ONE machine spread over four
+// GAMEOBJECT_TYPE_DOOR entries, and only the lever is meant to be clicked. The
+// three moving parts are driven entirely by the lever's SmartAI, and their
+// states are inverted with respect to each other, so whichever way the machine
+// stands one of them sits in GO_STATE_READY on the corridor and reads as a shut
+// gate. Run tr-20260817-044457-30 died on exactly that: the Fake Collision hull
+// (161462), flagged "as corridor-blocking" 78.1yd out on the passage to
+// Bael'Gar, auto-paused the run at 9/19 bosses. Closing the doors — the whole
+// point of map-230 event 2 — would have moved the same stall onto 157923.
+TEST(DcDoorPolicyTest, BlackrockGiantDoorApparatusIsNavigationIgnored)
+{
+    EXPECT_TRUE(DcEventDoorRegistry::IsNavigationIgnored(157923));  // Giant Doors
+    EXPECT_TRUE(DcEventDoorRegistry::IsNavigationIgnored(161461));  // Giant Door Mechanism
+    EXPECT_TRUE(DcEventDoorRegistry::IsNavigationIgnored(161462));  // Fake Collision
+    EXPECT_TRUE(DcEventDoorRegistry::IsNavigationIgnored(161516));  // BigDoorDummyCollision02
+
+    // The lever itself is NOT navigation-ignored — it is the one part of the
+    // machine the run must actually reach and click.
+    EXPECT_FALSE(DcEventDoorRegistry::IsNavigationIgnored(161460));  // The Shadowforge Lock
+    // Nor is the door into the room that holds it.
+    EXPECT_FALSE(DcEventDoorRegistry::IsNavigationIgnored(170570));  // East Garrison Door
 }
 
 // --- Self-clearing script barriers ------------------------------------------

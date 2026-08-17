@@ -567,6 +567,40 @@ TEST(DungeonEventRegistryTest, BlackrockRingOfLawEventShape)
         << "walk-in and hold must agree on where the centre is";
 }
 
+// Blackrock Depths Shadowforge Lock (map 230 event 2): walk to the lever in the
+// East Garrison, pull it, then confirm the Giant Doors it drives actually closed.
+// ANCHORED because the lever is 113yd from — and a floor above — the doors it
+// moves, so only boss-nav can deliver the tank to it.
+TEST(DungeonEventRegistryTest, BlackrockShadowforgeLockEventShape)
+{
+    DungeonEvent const* e = DungeonEventRegistry::Find(230, 2);
+    ASSERT_NE(e, nullptr);
+    EXPECT_EQ(e->activation, EventActivation::Anchored);
+    EXPECT_EQ(e->orderIndex, 9u);  // between Bael'Gar (8) and Angerforge (9)
+    EXPECT_TRUE(e->required);
+
+    ASSERT_EQ(e->steps.size(), 3u);
+
+    // 1. settle at the lever, on the garrison floor beneath it.
+    EXPECT_EQ(e->steps[0].kind, EventStepKind::MoveTo);
+    EXPECT_FLOAT_EQ(e->steps[0].x, 615.61f);
+    EXPECT_FLOAT_EQ(e->steps[0].y, -49.78f);
+    EXPECT_EQ(e->steps[0].instanceDataId, -1);  // plain MoveTo, no gate
+
+    // 2. pull it. UseGO goes straight through GameObject::Use(), whose DOOR
+    //    branch has no lock check — which is how the Shadowforge Key is bypassed.
+    EXPECT_EQ(e->steps[1].kind, EventStepKind::UseGameObject);
+    EXPECT_EQ(e->steps[1].goEntry, 161460u);  // The Shadowforge Lock
+
+    // 3. gate on the DOORS, not on the lever: the lever flipping only proves the
+    //    click landed, GO_STATE_READY (1) on 157923 proves its SmartAI chain ran.
+    EXPECT_EQ(e->steps[2].kind, EventStepKind::WaitForGameObjectState);
+    EXPECT_EQ(e->steps[2].goEntry, 157923u);  // Giant Doors
+    EXPECT_EQ(e->steps[2].wantState, 1u);     // GO_STATE_READY == shut
+    EXPECT_GT(e->steps[2].radius, 113.0f)
+        << "the doors are 113yd from the lever — the scan must reach them";
+}
+
 // Deadmines Defias Cannon: walk to the cannon, fire it (Custom hook 2 casts the
 // gunpowder spell at GO 16398), then hold until the Iron Clad Door (16397) opens.
 TEST(DungeonEventRegistryTest, DeadminesCannonEventShape)
