@@ -93,17 +93,22 @@ namespace
     // cross-bot camp/party-tank reads, the multiplier), and each call walks the
     // whole group with a GET_PLAYERBOT_AI lookup per member — O(triggers x
     // members) per tick, noticeable in a 40-bot raid. The election result is
-    // stable on tick timescales, so cache it per (group, map) for a few hundred
-    // ms. Correctness is preserved by validating the cached leader on every
-    // read (alive, same map, still a tank bot, still in this group) and falling
-    // through to a full re-scan the instant validation fails — so a leader
-    // death/leave is picked up immediately; only the *election of a different
-    // eligible tank* (lower GUID joining, no current-leader change) can lag by
-    // up to the TTL, which no consumer is sensitive to. Negative results
-    // ("group has no tank bot") are cached too — groups without a tank query
-    // just as often. Mutex-guarded like the other file-scope registries: all
-    // callers run on the world/map thread today, but the lock is uncontended
-    // and keeps this correct if bot updates ever move off-thread.
+    // stable on tick timescales, so cache it per (group, map instance) for a few
+    // hundred ms. Correctness is preserved by validating the cached leader on
+    // every read (alive, same Map, still a tank bot, still in this group) and
+    // falling through to a full re-scan the instant validation fails — so a
+    // leader death/leave is picked up immediately; only the *election of a
+    // different eligible tank* (lower GUID joining, no current-leader change)
+    // can lag by up to the TTL, which no consumer is sensitive to. Negative
+    // results ("group has no tank bot") are cached too — groups without a tank
+    // query just as often.
+    //
+    // Only the GUID is memoised, never a Player*, and validation re-resolves it
+    // through ObjectAccessor — this memo is what makes it safe for the party-tank
+    // value above it to be uncached (#20). Mutex-guarded like the other
+    // file-scope registries; the critical section is the map lookup only, with
+    // validation deliberately outside it (MapUpdater threads run this
+    // concurrently for every DC bot in every instance).
     constexpr uint32 LEADER_CACHE_TTL_MS = 250;
     // Lazy janitor bound: past this many entries, stale rows (disbanded groups,
     // emptied maps) are swept on the next store.
@@ -115,11 +120,33 @@ namespace
         uint32 stampMs = 0;
     };
 
-    std::map<std::pair<uint64, uint32>, LeaderCacheEntry> g_leaderCache;
+    // Keyed on the MAP INSTANCE, not the map id: two members of one group can sit
+    // in two different copies of the same dungeon (each bound to its own instance
+    // id), which share a map id but are separate Map objects on separate
+    // MapUpdater threads. Keying on the id alone made those two copies share one
+    // cache row. Packed as (mapId << 32 | instanceId) so continents — where every
+    // instance id is 0 — still separate by map.
+    inline uint64 LeaderCacheMapKey(Player* reference)
+    {
+        return (static_cast<uint64>(reference->GetMapId()) << 32) |
+               static_cast<uint64>(reference->GetInstanceId());
+    }
+
+    std::map<std::pair<uint64, uint64>, LeaderCacheEntry> g_leaderCache;
     std::mutex g_leaderCacheMutex;
 
     // The cached GUID is only trusted while the player it names would still win
     // (or at least remain) the election from `reference`'s point of view.
+    //
+    // Resolves the GUID through ObjectAccessor rather than trusting a stored
+    // pointer, and compares the MAP OBJECT rather than the map id — a groupmate in
+    // another copy of the same dungeon passes a GetMapId() test while living on a
+    // different Map, updated by a different MapUpdater thread. Electing it as
+    // leader hands every follower a cross-thread pointer to write through (#20).
+    //
+    // Called OUTSIDE g_leaderCacheMutex: it touches no cache state, and now that
+    // the party-tank value is uncached this runs on every read, so it must not
+    // hold a global lock across two hash-map lookups.
     Player* ValidateCachedLeader(Player* reference, Group* group, ObjectGuid guid)
     {
         if (guid.IsEmpty())
@@ -127,7 +154,7 @@ namespace
         Player* leader = ObjectAccessor::FindPlayer(guid);
         if (!leader || !leader->IsAlive())
             return nullptr;
-        if (leader->GetMapId() != reference->GetMapId())
+        if (leader->GetMap() != reference->GetMap())
             return nullptr;
         if (leader->GetGroup() != group)
             return nullptr;
@@ -285,30 +312,41 @@ Player* DcLeaderSignal::FindLeaderTank(Player* reference)
                    ? reference : nullptr;
     }
 
-    // The election is per (group, map): members on another map are excluded
-    // from the candidate set, so two parties of one raid split across maps can
-    // legitimately resolve different leaders.
-    std::pair<uint64, uint32> const key(group->GetGUID().GetRawValue(),
-                                        reference->GetMapId());
+    // The election is per (group, map instance): members on another Map are
+    // excluded from the candidate set, so two parties of one raid split across
+    // maps — or across two copies of the same dungeon — legitimately resolve
+    // different leaders.
+    std::pair<uint64, uint64> const key(group->GetGUID().GetRawValue(),
+                                        LeaderCacheMapKey(reference));
     uint32 const now = getMSTime();
 
+    // Read the memo under the lock, validate outside it. The validation is two
+    // hash-map lookups and does not touch the cache, and every party-tank read
+    // now lands here (the value is uncached — see DungeonClearPartyTankValue),
+    // so keeping it inside would hold one global mutex across all of them.
+    bool fresh = false;
+    ObjectGuid memoLeader;
     {
         std::lock_guard<std::mutex> lock(g_leaderCacheMutex);
         auto it = g_leaderCache.find(key);
         if (it != g_leaderCache.end() &&
             getMSTimeDiff(it->second.stampMs, now) < LEADER_CACHE_TTL_MS)
         {
-            // Negative hit: this group/map had no eligible tank bot moments
-            // ago. Trust it for the TTL; the next restamp flips it the moment
-            // one appears.
-            if (it->second.leader.IsEmpty())
-                return nullptr;
-            // Positive hit: trust it only while it still validates. A failed
-            // validation (died / left map / left group / AI gone) falls
-            // through to a fresh scan below — never a stale leader.
-            if (Player* cached = ValidateCachedLeader(reference, group, it->second.leader))
-                return cached;
+            fresh = true;
+            memoLeader = it->second.leader;
         }
+    }
+    if (fresh)
+    {
+        // Negative hit: this group/map had no eligible tank bot moments ago.
+        // Trust it for the TTL; the next restamp flips it the moment one appears.
+        if (memoLeader.IsEmpty())
+            return nullptr;
+        // Positive hit: trust it only while it still validates. A failed
+        // validation (died / left map / left group / AI gone) falls through to a
+        // fresh scan below — never a stale leader.
+        if (Player* cached = ValidateCachedLeader(reference, group, memoLeader))
+            return cached;
     }
 
     // Candidate set: alive tank BOTS on the reference's map. GetFirstMember walks
@@ -348,7 +386,8 @@ Player* DcLeaderSignal::FindLeaderTank(Player* reference)
         Player* member = ref->GetSource();
         if (!member || !member->IsAlive())
             continue;
-        if (member->GetMapId() != reference->GetMapId())
+        // Same Map OBJECT, not merely the same map id — see ValidateCachedLeader.
+        if (member->GetMap() != reference->GetMap())
             continue;
         if (!PlayerbotAI::IsTank(member))
             continue;
