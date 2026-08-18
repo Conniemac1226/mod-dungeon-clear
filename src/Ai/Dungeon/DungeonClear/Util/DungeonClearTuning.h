@@ -376,4 +376,20 @@ constexpr uint32 DC_PARTY_YIELD_DEBOUNCE_TICKS = 3;
 // few seconds.
 constexpr uint32 DC_MAX_RESNAP_ATTEMPTS = 2;
 
+// Consecutive navmesh-nudges the stuck ladder may spend before it gives up and
+// stalls for real. The nudge is the ladder's TOP rung, so without a budget it is
+// not an escalation at all — it is an infinite escape valve that resets
+// rebuildAttempts and hides the wedge from the player forever. Two is enough for
+// the case the nudge is actually for (a bot a few yards off a walkable poly);
+// past that the geometry, not the position, is the problem.
+constexpr uint32 DC_MAX_NUDGE_ATTEMPTS = 2;
+
+// A nudge is a SIDESTEP, so its generated path must be commensurate with its
+// straight-line offset. On a ramp a blind 5yd axis probe routinely resolves to a
+// path that leaves the incline, doubles back along the corridor and returns —
+// tens of yards of travel sold as a nudge. That is the "long walk" half of the
+// ramp ping-pong (33yd, four times, in tr-20260818-073620-14). Reject any probe
+// whose path exceeds this multiple of the offset; a real sidestep is ~1x.
+constexpr float DC_NUDGE_MAX_DETOUR_RATIO = 2.5f;
+
 #endif  // _DUNGEON_CLEAR_TUNING_H

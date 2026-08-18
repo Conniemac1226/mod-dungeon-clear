@@ -138,8 +138,11 @@ DungeonPathFollower::Hop DungeonPathFollower::NextHop(Player* bot, ChunkedPathfi
             hop.isDone = true;
             return hop;
         }
-        float const d = bot->GetDistance(cur->x, cur->y, cur->z);
-        if (d > POINT_REACHED)
+        // Cylinder, not sphere: horizontal arrival with a separate (loose)
+        // vertical guard. A 3D radius conflates "still walking towards it" with
+        // "standing directly underneath it on a ramp", and the latter never
+        // resolves — see POINT_REACHED.
+        if (!PointIsReached(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), *cur))
         {
             hop.point = *cur;
             PathSegment const& seg = path.segments[state.segmentIdx];
@@ -156,6 +159,52 @@ DungeonPathFollower::Hop DungeonPathFollower::NextHop(Player* bot, ChunkedPathfi
 
     hop.isDone = true;
     return hop;
+}
+
+bool DungeonPathFollower::PointIsReached(float botX, float botY, float botZ, G3D::Vector3 const& p)
+{
+    float const dx = botX - p.x;
+    float const dy = botY - p.y;
+    if (dx * dx + dy * dy > POINT_REACHED * POINT_REACHED)
+        return false;
+    return std::fabs(botZ - p.z) <= POINT_REACHED_Z;
+}
+
+bool DungeonPathFollower::PointIsVerticallyStranded(float botX, float botY, float botZ,
+                                                    G3D::Vector3 const& p)
+{
+    float const dx = botX - p.x;
+    float const dy = botY - p.y;
+    if (dx * dx + dy * dy > POINT_REACHED * POINT_REACHED)
+        return false;  // not there in plan view — ordinary "still walking"
+    return std::fabs(botZ - p.z) > POINT_REACHED_Z;
+}
+
+bool DungeonPathFollower::SkipStrandedPoint(Player* bot, ChunkedPathfinder::Result const& path,
+                                            DungeonFollowerState& state, G3D::Vector3& skipped)
+{
+    if (!bot || path.segments.empty() || state.segmentIdx >= path.segments.size())
+        return false;
+
+    std::optional<G3D::Vector3> const cur = PointAt(path, state.segmentIdx, state.pointIdx);
+    if (!cur.has_value())
+        return false;
+
+    if (!PointIsVerticallyStranded(bot->GetPositionX(), bot->GetPositionY(),
+                                   bot->GetPositionZ(), *cur))
+        return false;
+
+    // Never skip the last point of a jump segment — that leg is a MoveJump the
+    // caller still has to drive, and a vertical gap is its NORMAL state.
+    PathSegment const& seg = path.segments[state.segmentIdx];
+    if (IsJumpSegment(seg) && IsLastPointOfSegment(seg, state.pointIdx))
+        return false;
+
+    skipped = *cur;
+    if (!AdvanceCursor(path, state.segmentIdx, state.pointIdx))
+        return false;  // route exhausted — let the hop-done ladder own it
+    state.offPathTicks = 0;
+    return true;
 }
 
 float DungeonPathFollower::RouteDeviation(Player* bot, ChunkedPathfinder::Result const& path,

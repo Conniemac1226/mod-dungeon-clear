@@ -39,9 +39,39 @@ struct DungeonFollowerState
 class DungeonPathFollower
 {
 public:
-    // Distance at which the current polyline target is considered reached
-    // and the follower advances pointIdx.
+    // HORIZONTAL distance at which the current polyline target is considered
+    // reached and the follower advances pointIdx.
+    //
+    // Deliberately 2D. The route is a FLOOR path and the bot walks the floor, so
+    // "have I arrived" is a plan-view question; the vertical axis is a separate,
+    // much looser guard (POINT_REACHED_Z) whose only job is to stop the cursor
+    // skipping a point on another storey directly overhead.
+    //
+    // This used to be a single 3D radius, and on a RAMP that wedged the cursor
+    // permanently. Recast rasterizes an incline into discrete plateaus, so a
+    // route point on a ramp routinely floats 2-3.5yd ABOVE the collision floor
+    // the bot actually stands on. The bot walks to the point in plan view,
+    // arrives directly underneath it, and the 3D distance reads just over 3.0 —
+    // so the cursor never advances, forever. Live in tr-20260818-073620-14
+    // (Blackrock Spire, the ramp below Overlord Wyrmthalak): navmesh Z at
+    // (-55,-366) is 78.74 while the bot's real floor Z is 75.6 — a 3.1yd float,
+    // one tenth of a yard outside the old tolerance. The tank sat in a 5yd box
+    // at (-54,-366,76) for nine minutes while posStuck -> resnap -> rebuild ->
+    // re-anchor -> off-line rejoin cycled 444 times without ever advancing one
+    // point. Splitting the axes is what makes a ramp arrival decidable.
     static constexpr float POINT_REACHED = 3.0f;
+
+    // Vertical half-height of the arrival cylinder. NOT an arrival criterion —
+    // a floor-following bot is "there" as soon as it is there in plan view.
+    // This only rejects the pathological case where the point that is within
+    // POINT_REACHED horizontally sits on a DIFFERENT STOREY, where advancing
+    // would skip the whole ramp/stair leg that connects them.
+    //
+    // Sized off the module's shared same-level constant (DC_Z_LEVEL_TOLERANCE,
+    // 5.0): slopes, stairs and navmesh plateau float all stay under it, while
+    // WotLK inter-floor gaps comfortably exceed it. Kept as a local constant
+    // rather than an include so the follower stays a leaf header.
+    static constexpr float POINT_REACHED_Z = 5.0f;
 
     // Perpendicular-distance threshold for off-path detection.
     static constexpr float OFF_PATH_THRESHOLD = 6.0f;
@@ -88,6 +118,39 @@ public:
     // Advances state past reached polyline points and returns the next
     // point to walk to. Sets isDone=true when the path is fully walked.
     static Hop NextHop(Player* bot, ChunkedPathfinder::Result const& path, DungeonFollowerState& state);
+
+    // Pure core of NextHop's arrival test (no Player — gtested directly). True
+    // when the bot counts as standing ON polyline point `p`: within
+    // POINT_REACHED horizontally AND within POINT_REACHED_Z vertically. See
+    // POINT_REACHED for why the axes are separate rather than one 3D radius.
+    static bool PointIsReached(float botX, float botY, float botZ, G3D::Vector3 const& p);
+
+    // True when the bot has arrived at `p` in PLAN VIEW but is outside the
+    // vertical band — i.e. it is standing under (or over) its own route point
+    // and no amount of walking will close the gap. Distinct from "not there
+    // yet": the cursor cannot advance and the bot cannot make progress, so the
+    // caller must escalate rather than re-issue the same move. Kept separate
+    // from PointIsReached so the two failure modes are never conflated in a
+    // log line or a decision.
+    static bool PointIsVerticallyStranded(float botX, float botY, float botZ, G3D::Vector3 const& p);
+
+    // Escalation for the stranded case above: when the cursor's own point is
+    // one the bot is already standing under/over, step the cursor ONE point
+    // forward so the follower has something walkable to aim at. Returns true if
+    // it skipped (out-param `skipped` carries the abandoned point for logging).
+    //
+    // Advancing is safe precisely BECAUSE the test is horizontal: the bot is
+    // already within POINT_REACHED of the point in plan view, so the leg being
+    // skipped covers no ground. A route that genuinely climbs here would need
+    // to double back inside 3yd horizontally, which is a jump segment — and
+    // jump legs never reach this path (callers gate on hop.isJump).
+    //
+    // One point per call, never a scan: an unbounded skip on a mis-built route
+    // would silently teleport the cursor down the corridor. If the next point
+    // is stranded too, the next tick handles it and the stall watchdogs still
+    // see a bot that is not making ground.
+    static bool SkipStrandedPoint(Player* bot, ChunkedPathfinder::Result const& path,
+                                  DungeonFollowerState& state, G3D::Vector3& skipped);
 
     // Returns true if the bot's 2D perpendicular distance to the current
     // polyline segment exceeds OFF_PATH_THRESHOLD. Updates
