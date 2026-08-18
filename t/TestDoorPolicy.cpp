@@ -193,27 +193,45 @@ TEST(DcDoorPolicyTest, ScholomanceStratholmeAndDireMaulNorthKeyedDoorsAreExempt)
     EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(124372));  // Uldaman Ironaya seal
 }
 
-// Blackrock Depths' two lock-680 (Shadowforge Key 11000 / lockpicking 250)
-// objects on the road to General Angerforge. The East Garrison Door is the only
-// way into the room that holds the lever, and the lever is where the route to
-// the map-230 event-2 objective ENDS — so without the waiver the blocking-door
-// value flags one or the other and the run auto-pauses a step short of the
-// click that closes the Giant Doors.
-TEST(DcDoorPolicyTest, BlackrockShadowforgeLockAndGarrisonDoorAreKeyExempt)
+// Every lock-680 (Shadowforge Key 11000 / lockpicking 250) door in Blackrock
+// Depths, not just the two on the lever's doorstep. Waiving them one at a time
+// only walks the auto-pause down the corridor: test plan tp-20260817-171356-1
+// shipped with 170570 + 161460 exempt and still lost 6 of 10 runs at 10/20
+// bosses to "can't open ... 170560" — the Shadowforge Gate one room earlier.
+// The Lyceum is the same gate again for the back half of the dungeon: Flamelash,
+// The Seven, Magmus and the Emperor are all behind it.
+TEST(DcDoorPolicyTest, BlackrockLock680TraversalGatesAreKeyExempt)
 {
+    EXPECT_TRUE(DcEventDoorRegistry::IsKeyExempt(170559));   // Shadowforge Gate (west)
+    EXPECT_TRUE(DcEventDoorRegistry::IsKeyExempt(170560));   // Shadowforge Gate (east)
     EXPECT_TRUE(DcEventDoorRegistry::IsKeyExempt(170570));   // East Garrison Door
+    EXPECT_TRUE(DcEventDoorRegistry::IsKeyExempt(170558));   // The Lyceum
     EXPECT_TRUE(DcEventDoorRegistry::IsKeyExempt(161460));   // The Shadowforge Lock
 
-    // Not a lock-680 amnesty: the two Shadowforge Gates and The Lyceum ride the
-    // same lock and are deliberately left alone until they are verified in their
-    // own right.
-    EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(170559));  // Shadowforge Gate
-    EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(170560));  // Shadowforge Gate
-    EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(170558));  // The Lyceum
-    // And not the instance-script-driven doors, whatever their lock.
-    EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(170571));  // Bar Door (DATA_GO_BAR_DOOR)
-    EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(170573));  // Golem Room North (TYPE_LYCEUM)
+    // Still not a lock-level amnesty, and still not a map-level one: the doors
+    // instance_blackrock_depths caches AND drives stay script territory whatever
+    // lock they ride, and the Vault's loot cells are not a corridor at all.
+    EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(170571));  // Bar Door (GO_BAR_DOOR)
+    EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(170573));  // Golem Room North
     EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(170575));  // Throne Room Doors (Magmus)
+    EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(170576));  // Tomb of the Seven, in
+    EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(174554));  // Relic Coffer Door
+}
+
+// The Detention Block's eight cell doors, lock 699 (Prison Cell Key 11140 /
+// lockpicking 250). Same screen as the lock-680 gates: type DOOR, addon flags
+// 34, no ScriptName, no AIName, no smart_scripts or conditions row, and absent
+// from instance_blackrock_depths entirely — its door enum stops at the Lyceum.
+// The boss route runs through the cells, so a shut one is a hard stop: 170567
+// auto-paused a tp-20260817-171356-1 run at 2/20 bosses, parked 0.0yd inside the
+// doorway on a route the diag still called ok/1seg dev=0.5.
+TEST(DcDoorPolicyTest, BlackrockDetentionBlockCellDoorsAreKeyExempt)
+{
+    for (uint32 cellDoor = 170562; cellDoor <= 170569; ++cellDoor)
+        EXPECT_TRUE(DcEventDoorRegistry::IsKeyExempt(cellDoor)) << "cell door " << cellDoor;
+
+    // The entries bracketing the cell-door run are unrelated and stay put.
+    EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(170561));  // Supply Room Door (lock-free)
 }
 
 // --- Script-only denylist ---------------------------------------------------

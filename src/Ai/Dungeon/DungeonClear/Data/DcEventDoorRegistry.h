@@ -221,7 +221,13 @@ namespace DcEventDoorRegistry
     // postboxes and Scarlet Cannons, Scholomance's Brazier of the Herald), and
     // the script-driven lock-free gates of both dungeons (Scholomance's Kirtonos
     // gate 175570 and the seven Gandling gates, Stratholme's ziggurat doors) —
-    // those are instance-script GO-state territory and stay untouched.
+    // those are instance-script GO-state territory and stay untouched. Same
+    // call in Blackrock Depths: the empty-lock-85 doors (170573/170574 Golem
+    // Room, 170575 Throne Room, 170576/170577 Tomb of the Seven) and the Bar
+    // Door 170571 (lock 739, Grim Guzzler Key) are all cached AND state-driven
+    // by instance_blackrock_depths, so they are script territory whatever their
+    // lock says; and the Relic Coffer Doors (lock 639, Relic Coffer Key) are the
+    // Vault puzzle's loot cells, not a corridor the run has to walk through.
     inline bool IsKeyExempt(uint32 goEntry)
     {
         switch (goEntry)
@@ -283,17 +289,32 @@ namespace DcEventDoorRegistry
             // Lock 680 — the Shadowforge Key (11000), or lockpicking 250. The
             // key drops from Fineous Darkvire, so a party that killed him could
             // in principle hold it; a bot party never does, and GO_FLAG_LOCKED
-            // (addon flags 34 on both entries) makes DcDoorPolicy suppress the
-            // lockpicking slots as well. Both are plain traversal gates: no
-            // ScriptName, no autoCloseTime, and instance_blackrock_depths only
-            // caches the lever's GUID (GoShadowLockGUID) — it never reads or
-            // writes either one's GO state.
+            // (addon flags 34 on every entry below) makes DcDoorPolicy suppress
+            // the lockpicking slots as well. All five are plain traversal gates:
+            // no ScriptName, no autoCloseTime, no SmartAI (bar the lever's), and
+            // instance_blackrock_depths only caches two of their GUIDs — the
+            // lever's (GoShadowLockGUID) and the Lyceum's (GoLyceumGUID) — and
+            // never reads or writes any of their GO states.
             //
-            // The East Garrison Door is the sole entrance to the room that holds
-            // the lever: the z ~ -60 floor runs x 552..620 / y -68..-36 and pinches
-            // to a doorway at x ~ 560, with the lever at the far (east) end. So it
-            // has to open before the Shadowforge Lock objective can be reached at
-            // all.
+            // Lock 680 gates the run in three places, and it is the whole set or
+            // nothing: opening one only moves the auto-pause to the next.
+            //
+            //   * The two Shadowforge Gates (170559 at x 496 / 170560 at x 570,
+            //     both on the z ~ -70 floor) are the west and east ends of the
+            //     Shadowforge City concourse. 170560 is the one the route east
+            //     out of Bael'Gar walks into — it was the recorded blocker in
+            //     6 of 10 runs of test plan tp-20260817-171356-1, every one of
+            //     them parked at 10/20 bosses with "can't open ... 170560".
+            //   * The East Garrison Door (x 560, z ~ -60) is the doorway into
+            //     the room that holds the lever: that floor runs x 552..620 /
+            //     y -68..-36 and pinches at x ~ 560, with the lever at the far
+            //     (east) end. So it has to open before the Shadowforge Lock
+            //     objective can be reached at all.
+            //   * The Lyceum (x 1312, z ~ -92) is the single door out of the
+            //     Shadowforge City side into the back half of the dungeon. Every
+            //     boss from Ambassador Flamelash and The Seven through Magmus and
+            //     Emperor Dagran Thaurissan is behind it. No run has reached it
+            //     yet only because 170560 stopped them first.
             //
             // The lever is listed for the same reason the two Gordok doors above
             // are: map-230 event 2 clicks it (UseGO, which bypasses DcDoorPolicy),
@@ -307,9 +328,37 @@ namespace DcEventDoorRegistry
             // check, reaches the DOOR branch, and the resulting GO_ACTIVATED loot
             // state fires the lever's SMART_EVENT_GO_STATE_CHANGED chain that
             // closes the Giant Doors.
+            case 170559:  // Shadowforge Gate — west (lock 680, Shadowforge Key)
+            case 170560:  // Shadowforge Gate — east (lock 680, Shadowforge Key)
             case 170570:  // East Garrison Door (lock 680, Shadowforge Key)
+            case 170558:  // The Lyceum (lock 680, Shadowforge Key)
             case 161460:  // The Shadowforge Lock (lock 680; SmartAI closes the
                           // Giant Doors off its own state change)
+
+            // Lock 699 — the Prison Cell Key (11140), or lockpicking 250, on the
+            // eight Detention Block cell doors. Same shape as the lock-680 gates
+            // above and screened the same way: GAMEOBJECT_TYPE_DOOR, addon flags
+            // 34, no ScriptName, no AIName, no smart_scripts row, no conditions
+            // row, and no mention anywhere in instance_blackrock_depths — the
+            // instance script's door enum stops at the Lyceum. They are ordinary
+            // traversal gates into the cells, and the cells are where the route
+            // to Houndmaster Grebmar goes: 170567 auto-paused a run of test plan
+            // tp-20260817-171356-1 at 2/20 bosses, parked 0.0yd into the door on
+            // a route the diag reported as ok/1seg dev=0.5.
+            //
+            // Listing all eight rather than only the observed one: the boss route
+            // threads several of these cells depending on where the roster's
+            // anchors land, they are interchangeable in every respect the
+            // checklist tests, and one-at-a-time would just replay this failure
+            // from a different cell.
+            case 170562:
+            case 170563:
+            case 170564:
+            case 170565:
+            case 170566:
+            case 170567:
+            case 170568:
+            case 170569:  // Cell Door ×8 (lock 699, Prison Cell Key)
                 return true;
             default:
                 return false;
