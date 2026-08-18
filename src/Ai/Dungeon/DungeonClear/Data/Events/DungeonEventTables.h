@@ -115,6 +115,7 @@ std::vector<uint32> const& BlackMorassKeeperEntries();
 
 // Wrath of the Lich King.
 void RegisterUtgardeKeepEvents(std::vector<DungeonEvent>& out);
+void RegisterNexusEvents(std::vector<DungeonEvent>& out);
 
 // --- roster patches (one appender per dungeon that corrects the boss list) -
 // Each relocates that dungeon's BossRosterPatch out of BossRosterRegistry.cpp
@@ -145,6 +146,7 @@ void RegisterSethekkHallsRoster(std::vector<BossRosterPatch>& t);
 void RegisterBlackMorassRoster(std::vector<BossRosterPatch>& t);
 void RegisterMaraudonRoster(std::vector<BossRosterPatch>& t);
 void RegisterUtgardeKeepRoster(std::vector<BossRosterPatch>& t);
+void RegisterNexusRoster(std::vector<BossRosterPatch>& t);
 
 // --- wing layouts (one appender per split map) ---------------------------
 // Records which boss credit-entries belong to which wing of a multi-wing map;

@@ -48,6 +48,7 @@ TEST(BossRosterRegistryTest, HasPatchOnlyForPatchedMaps)
     EXPECT_TRUE(BossRosterRegistry::HasPatch(70));    // Uldaman — altar objectives
     EXPECT_TRUE(BossRosterRegistry::HasPatch(547));   // Slave Pens — drop objective
     EXPECT_TRUE(BossRosterRegistry::HasPatch(546));   // Underbog — drop objective
+    EXPECT_TRUE(BossRosterRegistry::HasPatch(576));   // The Nexus — sphere objectives
     EXPECT_FALSE(BossRosterRegistry::HasPatch(0));
     EXPECT_FALSE(BossRosterRegistry::HasPatch(34));   // Stockades — no patch
 }
@@ -1278,4 +1279,101 @@ TEST(BossRosterRegistryTest, UtgardeKeepForgesSortAheadOfEveryBoss)
         if (b.kind == DungeonAnchorKind::Boss)
             EXPECT_EQ(b.inheritCompletionFrom, 0u)
                 << "Utgarde Keep needs no boss surgery — the derived list is correct";
+}
+
+TEST(BossRosterRegistryTest, NexusSpheresSortBetweenOrmorokAndKeristrasza)
+{
+    // Derived roster, normal difficulty (DungeonEncounter.dbc bits 0-3).
+    std::vector<DungeonBossInfo> base = {
+        Boss(26731, 0, "Grand Magus Telestra", 576),
+        Boss(26763, 1, "Anomalus", 576),
+        Boss(26794, 2, "Ormorok the Tree-Shaper", 576),
+        Boss(26723, 3, "Keristrasza", 576),
+    };
+    std::vector<DungeonBossInfo> out = BossRosterRegistry::Apply(576, DUNGEON_DIFFICULTY_NORMAL, base);
+
+    ASSERT_EQ(out.size(), 7u) << "4 bosses + 3 sphere objectives";
+
+    int sphere[3] = { -1, -1, -1 };
+    int telestra = -1, anomalus = -1, ormorok = -1, keristrasza = -1;
+    int objectivesSeen = 0;
+    for (int i = 0; i < (int)out.size(); ++i)
+    {
+        if (out[i].kind == DungeonAnchorKind::Objective)
+        {
+            ASSERT_LT(objectivesSeen, 3);
+            sphere[objectivesSeen++] = i;
+        }
+        if (out[i].entry == 26731)
+            telestra = i;
+        if (out[i].entry == 26763)
+            anomalus = i;
+        if (out[i].entry == 26794)
+            ormorok = i;
+        if (out[i].entry == 26723)
+            keristrasza = i;
+    }
+    ASSERT_EQ(objectivesSeen, 3) << "three sphere objectives expected";
+    ASSERT_GE(telestra, 0);
+    ASSERT_GE(anomalus, 0);
+    ASSERT_GE(ormorok, 0);
+    ASSERT_GE(keristrasza, 0);
+
+    // A sphere is only clickable once its own boss is dead (instance_nexus clears
+    // GO_FLAG_NOT_SELECTABLE in SetBossState), and all three must be clicked
+    // before Keristrasza can be attacked at all.
+    EXPECT_LT(telestra, anomalus);
+    EXPECT_LT(anomalus, ormorok);
+    EXPECT_LT(ormorok, sphere[0]) << "every orb boss dies before the first click";
+    EXPECT_LT(sphere[2], keristrasza) << "all three clicks land before Keristrasza";
+
+    // Walk order across the hub: Telestra's sphere (south), Ormorok's (north-west),
+    // Anomalus' (north-east) — 81yd rather than the 98yd of any other order.
+    EXPECT_EQ(out[sphere[0]].eventId, 1u);
+    EXPECT_EQ(out[sphere[1]].eventId, 2u);
+    EXPECT_EQ(out[sphere[2]].eventId, 3u);
+    EXPECT_NEAR(out[sphere[0]].x, 281.9f, 0.5f);
+    EXPECT_NEAR(out[sphere[0]].y, -25.5f, 0.5f);
+    EXPECT_NEAR(out[sphere[1]].x, 281.8f, 0.5f);
+    EXPECT_NEAR(out[sphere[1]].y, 15.2f, 0.5f);
+    EXPECT_NEAR(out[sphere[2]].x, 322.2f, 0.5f);
+    EXPECT_NEAR(out[sphere[2]].y, 14.7f, 0.5f);
+
+    // The real kill-bits survive the reorder untouched.
+    EXPECT_EQ(Find(out, 26731)->encounterIndex, 0u);
+    EXPECT_EQ(Find(out, 26763)->encounterIndex, 1u);
+    EXPECT_EQ(Find(out, 26794)->encounterIndex, 2u);
+    EXPECT_EQ(Find(out, 26723)->encounterIndex, 3u);
+
+    // No boss surgery — the derived list is already in travel order.
+    for (DungeonBossInfo const& b : out)
+        if (b.kind == DungeonAnchorKind::Boss)
+            EXPECT_EQ(b.inheritCompletionFrom, 0u);
+}
+
+TEST(BossRosterRegistryTest, NexusHeroicCommanderStaysFirst)
+{
+    // Heroic shifts every DBC bit up by one to make room for the Frozen Commander
+    // at bit 0. He carries no reorder row, so his bit-0 key must still sort ahead
+    // of the 2..8 scale the rest of the map is reordered onto.
+    std::vector<DungeonBossInfo> base = {
+        Boss(26796, 0, "Frozen Commander", 576),
+        Boss(26731, 1, "Grand Magus Telestra", 576),
+        Boss(26763, 2, "Anomalus", 576),
+        Boss(26794, 3, "Ormorok the Tree-Shaper", 576),
+        Boss(26723, 4, "Keristrasza", 576),
+    };
+    std::vector<DungeonBossInfo> out = BossRosterRegistry::Apply(576, DUNGEON_DIFFICULTY_HEROIC, base);
+
+    ASSERT_EQ(out.size(), 8u) << "5 bosses + 3 sphere objectives";
+    EXPECT_EQ(out.front().entry, 26796u) << "the Frozen Commander still leads the clear";
+    EXPECT_EQ(out.back().entry, 26723u) << "Keristrasza is still last";
+    EXPECT_EQ(Find(out, 26796)->orderOverride, -1)
+        << "the Commander is deliberately left on its DBC bit — no reorder row";
+
+    // The three spheres are still the last thing before Keristrasza.
+    ASSERT_GE(out.size(), 4u);
+    for (size_t i = out.size() - 4; i + 1 < out.size(); ++i)
+        EXPECT_EQ(out[i].kind, DungeonAnchorKind::Objective)
+            << "index " << i << " should be a sphere objective";
 }

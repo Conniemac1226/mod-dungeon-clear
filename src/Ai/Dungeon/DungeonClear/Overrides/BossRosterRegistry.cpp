@@ -57,6 +57,7 @@ namespace
             RegisterBlackMorassRoster(t);
             RegisterMaraudonRoster(t);
             RegisterUtgardeKeepRoster(t);
+            RegisterNexusRoster(t);
             return t;
         }();
         return kPatches;

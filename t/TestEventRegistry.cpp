@@ -1108,3 +1108,55 @@ TEST(DungeonEventIntegrityTest, UtgardeKeepForgesAreSweptOneAtATime)
     EXPECT_NE(DungeonEventRegistry::Find(574, 1)->steps[0].y,
               DungeonEventRegistry::Find(574, 2)->steps[0].y);
 }
+
+// --- The Nexus (576): three sphere clicks are what free Keristrasza --------
+// Keristrasza spawns UNIT_FLAG_NON_ATTACKABLE inside a frozen prison, and
+// boss_keristrasza::CanRemovePrison only lets go once DATA_TELESTRA_ORB,
+// DATA_ANOMALUS_ORB and DATA_ORMOROK_ORB are all DONE. The only thing in the
+// instance that sets any of them is a click on the matching Containment Sphere
+// (each GO's smart_scripts SMART_EVENT_GOSSIP_HELLO -> SET_INST_DATA). Miss one
+// and the run walks to an unattackable last boss and stalls, so all three clicks
+// must be Required, distinct, and ordered after the orb bosses.
+TEST(DungeonEventIntegrityTest, NexusSpheresAreThreeRequiredClicks)
+{
+    struct Sphere { uint32 eventId; uint32 goEntry; };
+    Sphere const kSpheres[] = {
+        { 1, 188526 },  // Telestra's
+        { 2, 188528 },  // Ormorok's
+        { 3, 188527 },  // Anomalus'
+    };
+
+    for (Sphere const& sp : kSpheres)
+    {
+        DungeonEvent const* ev = DungeonEventRegistry::Find(/*map*/ 576, sp.eventId);
+        ASSERT_NE(ev, nullptr) << "The Nexus (576) event " << sp.eventId << " is missing";
+
+        EXPECT_EQ(ev->activation, EventActivation::Anchored)
+            << "each sphere gets its own objective anchor so boss-nav does the walk"
+               " — the three are 40-57yd apart, past what an event step's own HopTo"
+               " is meant to cover";
+        EXPECT_EQ(ev->gate, DcDifficultyGate::Any)
+            << "the prison gates Keristrasza on both difficulties";
+        EXPECT_TRUE(ev->required)
+            << "these gate the LAST BOSS — a sphere that will not click must surface"
+               " as a stall, not be skipped past onto an unattackable Keristrasza";
+
+        ASSERT_EQ(ev->steps.size(), 1u)
+            << "one click; a second step would make it a rewind hazard needing"
+               " .Persistent()";
+        EventStep const& s = ev->steps[0];
+        EXPECT_EQ(s.kind, EventStepKind::UseGameObject);
+        EXPECT_EQ(s.goEntry, sp.goEntry);
+        EXPECT_GT(s.radius, 8.0f)
+            << "the GO search must cover the objective's 8yd arrive radius";
+        EXPECT_GT(s.timeoutMs, 30000u)
+            << "the step deliberately HOLDS on a still-NOT_SELECTABLE sphere, so the"
+               " default 30s would read a boss-state race as a failure";
+    }
+
+    // Three DISTINCT spheres, not a copy-paste of one.
+    EXPECT_NE(DungeonEventRegistry::Find(576, 1)->steps[0].goEntry,
+              DungeonEventRegistry::Find(576, 2)->steps[0].goEntry);
+    EXPECT_NE(DungeonEventRegistry::Find(576, 2)->steps[0].goEntry,
+              DungeonEventRegistry::Find(576, 3)->steps[0].goEntry);
+}

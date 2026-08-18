@@ -10,6 +10,7 @@
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "Playerbots.h"
+#include "Ai/Dungeon/DungeonClear/Data/DcNeverTargetRegistry.h"
 #include "Ai/Dungeon/DungeonClear/DcValueKeys.h"
 
 namespace
@@ -38,6 +39,15 @@ void DungeonClearFarTargetsValue::FindUnits(std::list<Unit*>& targets)
 
 bool DungeonClearFarTargetsValue::AcceptUnit(Unit* unit)
 {
+    // Scripted never-dies mobs are not clear targets at all — see
+    // DcNeverTargetRegistry. This is the widest of the clear's candidate sets
+    // (the corridor scan, the en-route sweep, the room pre-clear and every
+    // ClearRadius read it), so dropping them here covers most of the pipeline in
+    // one place; the few scans that build their own candidate list repeat the
+    // check next to their own IsPossibleTarget gate.
+    if (unit && DcNeverTargetRegistry::IsNeverTarget(bot->GetMapId(), unit->GetEntry()))
+        return false;
+
     // PvE dungeons only — skip the PvP attack-chance machinery in
     // PossibleTargetsValue and apply just the core "is this a valid
     // attack target" predicates that AttackersValue maintains.

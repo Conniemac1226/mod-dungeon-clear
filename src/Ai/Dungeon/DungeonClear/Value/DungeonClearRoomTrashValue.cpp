@@ -16,6 +16,7 @@
 #include "ObjectAccessor.h"
 #include "Playerbots.h"
 #include "Timer.h"
+#include "Ai/Dungeon/DungeonClear/Data/DcNeverTargetRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
 #include "Ai/Dungeon/DungeonClear/Data/RoomAggroRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Settings/DcSettings.h"
@@ -205,6 +206,13 @@ GuidVector DungeonClearRoomTrashValue::Calculate()
             continue;
         }
         if (!AttackersValue::IsPossibleTarget(u, bot))
+        {
+            ++exTarget;
+            continue;
+        }
+        // Scripted never-dies mobs are not room trash — clearing a room that
+        // contains one would never complete. See DcNeverTargetRegistry.
+        if (DcNeverTargetRegistry::IsNeverTarget(bot->GetMapId(), u->GetEntry()))
         {
             ++exTarget;
             continue;

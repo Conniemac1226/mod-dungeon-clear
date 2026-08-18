@@ -405,3 +405,26 @@ AC_ADD_CONFIG_FILE("${CMAKE_CURRENT_LIST_DIR}/conf/mod_dungeon_clear.conf.dist")
 #    Margins pad in XY only, never Z: a fall-catcher slab's ceiling sits a couple
 #    of yards UNDER the floor beside it, and padding its height would make a
 #    third of Shadowfang un-campable.)
+# Data/Events/NexusEvents.cpp
+#   (The Nexus, map 576. Three anchored objectives — one per Containment Sphere
+#    (188526/188527/188528) — that FREE KERISTRASZA. She spawns
+#    UNIT_FLAG_NON_ATTACKABLE inside a frozen prison and boss_keristrasza only
+#    drops the flag once all three DATA_*_ORB boss states are DONE, which nothing
+#    but a click on each sphere ever sets. Each objective sits at its sphere so
+#    boss-nav walks the tank in; the event is a one-step UseGameObject, the
+#    Sunken Temple statue idiom. The roster patch reorders the four bosses onto a
+#    2..8 scale so the spheres have somewhere to sit between Ormorok and
+#    Keristrasza — the DBC packs those two into adjacent bits on both
+#    difficulties.)
+# Data/DcNeverTargetRegistry.{h,cpp}
+#   (Creatures the CLEAR must never pick as a target — the "is killing this
+#    progress" half of target selection, which AttackersValue::IsPossibleTarget
+#    ("may this bot legally attack it") cannot answer. First row: The Nexus's
+#    Crystalline Frayer (26793), which npc_crystalline_frayer makes unkillable
+#    until Ormorok dies — a lethal hit is discarded, the mob spends 90s in a
+#    NOT_SELECTABLE seed pod regenerating, then returns at full health — and
+#    which instance_nexus::KillAllFrayers then kills outright, so an ALIVE frayer
+#    is never worth fighting. Wired into the five clear-side candidate gates
+#    (FarTargets AcceptUnit, PickBlockingTrash, the en-route sweep spheres,
+#    NearestHostileNearPoint, room-trash); the stock combat engine is untouched,
+#    so bots still fight back when a frayer attacks them.)
