@@ -498,7 +498,8 @@ TEST(DcHazardMaraudonTest, EveryVacateRowOvershootsItsHoldBand)
     // the trigger re-fires, the action re-plots, and the bot thrashes in place
     // until something kills it.
     for (DcHazardEmitter const* e : { DcHazardRegistry::Find(552, 21761),
-                                      DcHazardRegistry::Find(349, 12222) })
+                                      DcHazardRegistry::Find(349, 12222),
+                                      DcHazardRegistry::Find(574, 23997) })
     {
         ASSERT_NE(e, nullptr);
         ASSERT_GT(e->vacateRadius, 0.0f);
@@ -650,4 +651,48 @@ TEST(DcHazardArcatrazTest, RegisteredEmittersStillRejectLegs)
     DcHazardEmitter const* e = DcHazardRegistry::Find(552, 20869);
     ASSERT_NE(e, nullptr);
     EXPECT_TRUE(DcHazardRegistry::SegmentClips(*e, 0, 0, 22, -40, 0, 22, 40, 0, 22));
+}
+
+// --- Utgarde Keep (574): Ingvar's thrown axe ------------------------------
+// boss_ingvar_the_plunderer's phase-2 "Throw Axe" (42749) summons the Ingvar
+// Throw Dummy (23997) at a RANDOM party member's feet. The dummy carries the
+// permanent creature_template_addon aura 42750 (PERIODIC_TRIGGER_SPELL, 1000ms)
+// firing 42751 — 1750-2250 shadow in 5yd — until the script despawns it ~10s
+// later. It is UNIT_FLAG_NOT_SELECTABLE with NullCreatureAI, so there is nothing
+// to target and nothing to interrupt: leaving is the only answer, which makes it
+// a threat-2 emitter by construction.
+TEST(DcHazardUtgardeKeepTest, IngvarThrowDummyIsAVacateEmitter)
+{
+    DcHazardEmitter const* axe = DcHazardRegistry::Find(574, 23997);
+    ASSERT_NE(axe, nullptr) << "Ingvar's Throw Dummy (23997) is not registered";
+    EXPECT_EQ(axe->mapId, 574u);
+    EXPECT_EQ(axe->creatureEntry, 23997u);
+
+    // It must be FLED, not merely avoided in placement — a vacateRadius of 0
+    // would leave the party standing in ~2000 dps that nothing can be done about.
+    EXPECT_FLOAT_EQ(axe->vacateRadius, 5.0f) << "the raw 42751 radius";
+
+    // "Leave, then carry on" bands, NOT Maraudon's wide stay-out pair: the party
+    // is mid-encounter with a boss it must keep tanking and the dummy deletes
+    // itself in ~10s, so a wide hold band would walk the melee off Ingvar.
+    EXPECT_FLOAT_EQ(axe->holdBand, 2.0f);
+    EXPECT_FLOAT_EQ(axe->retreatSlack, 6.0f);
+
+    // The retreat's aim point must clear this row's own placement radius, or
+    // PointIsHot rejects the landing spot and the bot re-plots forever.
+    float const aim = axe->vacateRadius + axe->retreatSlack;
+    EXPECT_GT(aim, axe->radius);
+    EXPECT_GE(aim - (axe->vacateRadius + axe->holdBand), 2.0f)
+        << "arrival margin, so a yard of snap-back is survivable";
+
+    // Modest placement radius on purpose: the axe lands on the floor the party is
+    // actively fighting on, so an over-wide keep-out sterilises Ingvar's arena.
+    EXPECT_LE(axe->radius, 8.0f);
+    EXPECT_GE(axe->radius, axe->vacateRadius);
+
+    EXPECT_TRUE(DcHazardRegistry::HasEmitters(574));
+    EXPECT_TRUE(DcHazardRegistry::HasAnyHazard(574));
+    // Utgarde Keep has no ground pool and no trap — the axe is a creature.
+    EXPECT_FALSE(DcHazardRegistry::HasGroundHazards(574));
+    EXPECT_FALSE(DcHazardRegistry::HasTrapHazards(574));
 }

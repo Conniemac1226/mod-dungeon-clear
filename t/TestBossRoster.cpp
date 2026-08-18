@@ -1209,3 +1209,73 @@ TEST(BossRosterRegistryTest, DireMaulNorthDropsChoRush)
     ASSERT_NE(gordok, nullptr);
     EXPECT_EQ(gordok->encounterIndex, 7u);
 }
+
+// Utgarde Keep (574): the three forge objectives must sort AHEAD of all three
+// bosses, in west->east->north order, and the bosses must keep their real DBC
+// kill-bits. The reorder is the whole risk here — encounterIndex is what the
+// completion mask is read against, so a patch that moved the bits instead of the
+// order keys would silently un-complete the dungeon.
+TEST(BossRosterRegistryTest, UtgardeKeepForgesSortAheadOfEveryBoss)
+{
+    std::vector<DungeonBossInfo> base = {
+        Boss(23953, 0, "Prince Keleseth", 574),
+        Boss(24201, 1, "Skarvold & Dalronn", 574),
+        Boss(23954, 2, "Ingvar the Plunderer", 574),
+    };
+    std::vector<DungeonBossInfo> out = BossRosterRegistry::Apply(574, DUNGEON_DIFFICULTY_NORMAL, base);
+
+    ASSERT_EQ(out.size(), 6u) << "3 bosses + 3 forge objectives";
+
+    // Positions in clear order.
+    int forge[3] = { -1, -1, -1 };
+    int keleseth = -1, dalronn = -1, ingvar = -1;
+    int objectivesSeen = 0;
+    for (int i = 0; i < (int)out.size(); ++i)
+    {
+        if (out[i].kind == DungeonAnchorKind::Objective)
+        {
+            ASSERT_LT(objectivesSeen, 3);
+            forge[objectivesSeen++] = i;
+        }
+        if (out[i].entry == 23953)
+            keleseth = i;
+        if (out[i].entry == 24201)
+            dalronn = i;
+        if (out[i].entry == 23954)
+            ingvar = i;
+    }
+    ASSERT_EQ(objectivesSeen, 3) << "three forge objectives expected";
+    ASSERT_GE(keleseth, 0);
+    ASSERT_GE(dalronn, 0);
+    ASSERT_GE(ingvar, 0);
+
+    // Every forge before every boss, and the bosses in unchanged relative order.
+    EXPECT_LT(forge[2], keleseth) << "all three forges are done before Keleseth";
+    EXPECT_LT(keleseth, dalronn);
+    EXPECT_LT(dalronn, ingvar);
+
+    // The forges themselves are in script order: forge 1 (349.6,-39.3) then
+    // forge 2 (385.8,-16.2) then forge 3 (347.6,4.6). Engaging one out of order
+    // makes it evade, so this sequence IS the feature.
+    EXPECT_EQ(out[forge[0]].eventId, 1u);
+    EXPECT_EQ(out[forge[1]].eventId, 2u);
+    EXPECT_EQ(out[forge[2]].eventId, 3u);
+    EXPECT_NEAR(out[forge[0]].x, 349.6f, 0.5f);
+    EXPECT_NEAR(out[forge[1]].x, 385.8f, 0.5f);
+    EXPECT_NEAR(out[forge[2]].x, 347.6f, 0.5f);
+
+    // The real kill-bits survive the reorder untouched — the clear orders by
+    // orderOverride, completion still keys on encounterIndex.
+    EXPECT_EQ(Find(out, 23953)->encounterIndex, 0u);
+    EXPECT_EQ(Find(out, 24201)->encounterIndex, 1u);
+    EXPECT_EQ(Find(out, 23954)->encounterIndex, 2u);
+    EXPECT_EQ(Find(out, 23953)->orderOverride, 4);
+    EXPECT_EQ(Find(out, 24201)->orderOverride, 5);
+    EXPECT_EQ(Find(out, 23954)->orderOverride, 6);
+
+    // No boss was removed or re-added: they keep the auto-derived spawn coords.
+    for (DungeonBossInfo const& b : out)
+        if (b.kind == DungeonAnchorKind::Boss)
+            EXPECT_EQ(b.inheritCompletionFrom, 0u)
+                << "Utgarde Keep needs no boss surgery — the derived list is correct";
+}

@@ -131,6 +131,78 @@ namespace DcEventDoorRegistry
             case 161516:  // BigDoorDummyCollision02 (the upper-level portcullis
                           // hull, (702.1,-125.7,-45.7))
                 return true;
+            // Utgarde Keep (map 574) — the three forge FLAME WALLS. The forge
+            // hall is a ring around a central hearth, cut into three sectors by
+            // three walls of fire, one per forge. Each is a
+            // GAMEOBJECT_TYPE_DOOR: lock 0, startOpen 0, autoCloseTime 0, no
+            // ScriptName, no AIName, addon flags 32 (NODESPAWN, and notably no
+            // GO_FLAG_LOCKED), spawned in GO_STATE_READY. Their model
+            // (Vr_Forgefire_01, display 7503) is not a door panel at all — it is
+            // a ~60yd-long, ~2yd-thick, ~37yd-tall slab that runs from the
+            // hearth out to the outer wall, so it lies across the ring rather
+            // than beside it and the closed-door predicate reads it as a shut
+            // gate straddling the corridor.
+            //
+            // Nothing a player does at the wall opens it. instance_utgarde_keep
+            // owns all three GO states: SetData(DATA_FORGE_n, ...) opens that
+            // forge's bellows + fire + anvil together, and the only caller is
+            // npc_dragonflayer_forge_master — DONE on JustDied, NOT_STARTED on
+            // Reset (which shuts the wall again). The master that opens a wall
+            // stands in the sector on the PARTY'S side of it, so the wall is
+            // never the thing to solve: it is the readout of a fight the run has
+            // to walk past it to reach.
+            //
+            // Reading the ring as a bearing off the hearth at (360.7,-16.5) —
+            // the navmesh is an annulus r 16..~62 the whole way round, with the
+            // entrance corridor running out at bearing ~195-205 deg and the exit
+            // corridor toward Keleseth at ~75-110 deg — the three walls sit at
+            // 288.5 / 48.5 / 168.5 deg and each master sits one to a sector:
+            //
+            //   sector 1  168.5..288.5  entrance corridor, forge master 1 (246 deg)
+            //     kill him -> 186692 (288.5 deg) drops -> sector 2
+            //   sector 2  288.5.. 48.5  forge master 2 (1 deg)
+            //     kill him -> 186693 (48.5 deg) drops -> sector 3
+            //   sector 3   48.5..168.5  exit corridor, forge master 3 (122 deg)
+            //     kill him -> 186691 (168.5 deg) drops, closing the loop back
+            //     onto the entrance corridor
+            //
+            // so the intended clear is one counter-clockwise lap of the ring,
+            // and the map-574 forge objectives are what enforce it. The wall
+            // itself enforces nothing on a bot: mmaps carry no gameobjects and
+            // movement splines are not collision-checked, so a raised wall has
+            // never stopped one.
+            //
+            // Left unlisted it ends the run outright. Runs tr-20260818-070705-4
+            // and -7 flagged "'Doodad_VR_ForgeFire_First' (entry 186692) 98.0yd
+            // from bot as corridor-blocking", walked in, reported "can't open
+            // ... -> auto-pausing", and died at 0/3 bosses 3m45s in with the
+            // tank still 57yd short of forge 1.
+            //
+            // Nor is the flagged wall reliably the one the corridor crosses.
+            // PathLegCrossesDoor tests the DBC GeoBox through ToDoorLocal, the
+            // GameObject::IsInRange frame, whose matrix [[sinA,cosA],[cosA,-sinA]]
+            // has determinant -1 — it MIRRORS. The server's real collision uses
+            // GameObjectModel's Rz(orientation) instead. The two agree on a
+            // symmetric door panel and disagree on a slab that sits entirely to
+            // one side of its origin: here they place the same wall 120 degrees
+            // apart, so per-door geometry tuning cannot be made to work on these
+            // three anyway.
+            //
+            // IsScriptOnly would only stop the click — the wall would still be
+            // flagged, still parked at, still auto-paused on. IsSelfClearing
+            // would hold instead of pausing, but there is no timer to hold for:
+            // the wall opens on a kill, and holding at it starves the very fight
+            // that opens it. Navigation-invisible is the only correct answer.
+            //
+            // This does not blind the run to them. DcEngageGeometry::
+            // ClosedDoorBetween rays the REAL collision mesh and does not
+            // consult this list, so trash and bosses on the far side of a wall
+            // that is still up stay vetoed — the party is never dragged through
+            // a raised flame wall by a far-side pack.
+            case 186691:  // Doodad_VR_ForgeFire_Third  (opens on forge master 3)
+            case 186692:  // Doodad_VR_ForgeFire_First  (opens on forge master 1)
+            case 186693:  // Doodad_VR_ForgeFire_Second (opens on forge master 2)
+                return true;
             default:
                 return false;
         }

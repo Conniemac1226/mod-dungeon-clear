@@ -409,6 +409,7 @@ namespace
             RegisterArcatrazEvents(t);
             RegisterSethekkHallsEvents(t);
             RegisterBlackMorassEvents(t);
+            RegisterUtgardeKeepEvents(t);
             return t;
         }();
         return kEvents;

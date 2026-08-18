@@ -307,6 +307,38 @@ TEST(DcDoorPolicyTest, BlackrockGiantDoorApparatusIsNavigationIgnored)
     EXPECT_FALSE(DcEventDoorRegistry::IsNavigationIgnored(170570));  // East Garrison Door
 }
 
+// Utgarde Keep's forge hall is a ring cut into three sectors by three walls of
+// fire, and each wall is a GAMEOBJECT_TYPE_DOOR whose state only
+// instance_utgarde_keep drives — SetData(DATA_FORGE_n) on the matching forge
+// master's death. The master that opens a wall stands on the party's side of
+// it, so there is never anything to solve AT the wall, yet the model is a ~60yd
+// slab lying across the ring and the closed-door predicate reads it as a shut
+// gate on the corridor. Runs tr-20260818-070705-4 and -7 died on exactly that:
+// 186692 flagged "as corridor-blocking" 98yd out, walk-in, "can't open ->
+// auto-pausing", 0/3 bosses with the tank still 57yd short of forge 1.
+TEST(DcDoorPolicyTest, UtgardeKeepForgeFlameWallsAreNavigationIgnored)
+{
+    EXPECT_TRUE(DcEventDoorRegistry::IsNavigationIgnored(186691));  // ForgeFire_Third
+    EXPECT_TRUE(DcEventDoorRegistry::IsNavigationIgnored(186692));  // ForgeFire_First
+    EXPECT_TRUE(DcEventDoorRegistry::IsNavigationIgnored(186693));  // ForgeFire_Second
+
+    // The Giant Portcullises that Ingvar's death opens are NOT ignored: they
+    // are ordinary progress gates on the way out, and a run still standing at
+    // one after the encounter has a real stall worth pausing on.
+    EXPECT_FALSE(DcEventDoorRegistry::IsNavigationIgnored(186694));
+    EXPECT_FALSE(DcEventDoorRegistry::IsNavigationIgnored(186756));
+
+    // No other list claims them: they carry no lock and no key, and they never
+    // reopen on a timer — only a kill opens one.
+    for (uint32 entry : { 186691u, 186692u, 186693u })
+    {
+        EXPECT_FALSE(DcEventDoorRegistry::IsScriptOnly(entry));
+        EXPECT_FALSE(DcEventDoorRegistry::IsSelfClearing(entry));
+        EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(entry));
+        EXPECT_FALSE(DcEventDoorRegistry::IsLockFreeClickable(entry));
+    }
+}
+
 // --- Self-clearing script barriers ------------------------------------------
 //
 // Stratholme's two gate traps. instance_stratholme watches (3612.3,-3335.4)

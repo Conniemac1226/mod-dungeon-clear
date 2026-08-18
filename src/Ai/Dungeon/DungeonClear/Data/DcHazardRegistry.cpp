@@ -127,13 +127,45 @@ namespace
     // Noxious Cloud it shares with the sludge, which is a pool row, not a creature
     // row. Giving it a creature keep-out would fence off a mob that is not actually
     // emitting anything.
-    constexpr std::array<DcHazardEmitter, 5> kEmitters = {{
+    // Utgarde Keep (map 574), entry 23997 "Ingvar Throw Dummy" — Ingvar the
+    // Plunderer's thrown axe, phase 2 only. boss_ingvar_the_plunderer casts 42749
+    // "Throw Axe", which SUMMONS this dummy and (JustSummoned) sends it to a
+    // RANDOM party member's position; the dummy carries a permanent
+    // creature_template_addon aura 42750, SPELL_AURA_PERIODIC_TRIGGER_SPELL on a
+    // 1000ms period firing 42751 — SPELL_EFFECT_SCHOOL_DAMAGE for 1750-2250
+    // shadow at EffectRadiusIndex 5.0yd around the dummy — until EVENT_AXE_PICKUP
+    // despawns it ~10s later.
+    //
+    // ~2000 dps in 5yd, dropped ON somebody, in the middle of the boss fight. It
+    // is a threat-2 emitter by construction and there is no version of "fight it":
+    // creature_template unit_flags 33554432 is UNIT_FLAG_NOT_SELECTABLE and its
+    // AIName is NullCreatureAI, so nothing can target it and nothing it does can
+    // be interrupted. Leaving is the whole answer.
+    //
+    // The bands are the Destroyed Sentinel's "leave, then carry on" pair (hold 2,
+    // slack 6), NOT Maraudon's wide stay-out pair, and that is deliberate: the
+    // party is mid-encounter with a live boss it must keep tanking, the dummy
+    // despawns on its own in ~10s, and a wide hold band would walk the melee off
+    // Ingvar for a hazard that is about to delete itself. Danger band is
+    // 5 + 2 = 7yd; the retreat aims at 5 + 6 = 11yd, outside this row's own 7yd
+    // placement radius so PointIsHot cannot reject the landing spot.
+    //
+    // radius 7 = the 5yd pulse plus 2yd of margin, and no wider: the dummy lands
+    // on the floor the party is actively fighting on, so an over-wide keep-out
+    // would sterilise Ingvar's own arena for placement.
+    //
+    // No DcNavPenaltyRegistry counterpart — the dummy has no author-time position
+    // at all (it lands wherever a random member was standing), so the live
+    // predicates are the whole defence, exactly as for the ground pools.
+
+    constexpr std::array<DcHazardEmitter, 6> kEmitters = {{
         //                    radius  zBand  vacate  hold  slack
         { 552, 20869, /*Arcatraz Sentinel  (fought)      */ 22.0f, 12.0f,  0.0f, 2.0f, 6.0f },
         { 552, 21761, /*Destroyed Sentinel (leave once)  */ 15.0f, 12.0f, 15.0f, 2.0f, 6.0f },
         { 552, 21303, /*Defender Corpse                  */ 12.0f,  8.0f,  0.0f, 2.0f, 6.0f },
         { 552, 21304, /*Warder Corpse                    */ 12.0f,  8.0f,  0.0f, 2.0f, 6.0f },
         { 349, 12222, /*Creeping Sludge    (STAY OUT)    */  8.0f,  6.0f,  5.0f, 6.0f, 9.0f },
+        { 574, 23997, /*Ingvar Throw Dummy (leave once)  */  7.0f, 10.0f,  5.0f, 2.0f, 6.0f },
     }};
 
     // ---- the ground-pool table ------------------------------------------
