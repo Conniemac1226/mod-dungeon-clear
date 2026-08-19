@@ -545,6 +545,11 @@ DungeonClearAdvanceAction::Step DungeonClearAdvanceAction::TryEngageHold(Advance
             // Only inspect segments still ahead of the follower's cursor.
             // Anchored segments already walked past don't need to gate
             // the engage handoff.
+            //
+            // DungeonClearAtBossTrigger::IsActive runs the SAME test — it is the
+            // rung this hold is waiting for, so the two must agree or the tank
+            // parks at the boss forever (it did: the trigger's copy started at
+            // segment 0, see the note there). Keep them in step.
             for (size_t i = followerNow.segmentIdx; i + 1 < currentPath.segments.size(); ++i)
             {
                 PathSegment const& seg = currentPath.segments[i];
