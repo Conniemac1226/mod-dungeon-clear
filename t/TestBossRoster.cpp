@@ -1436,3 +1436,64 @@ TEST(BossRosterRegistryTest, NexusNormalHasNoFrozenCommander)
     for (DungeonBossInfo const& b : out)
         EXPECT_EQ(b.doneBossStateIndex, -1) << "entry " << b.entry;
 }
+
+// Azjol-Nerub (601): Hadronox is re-anchored from her spawn ledge onto the
+// platform her own script climbs to, and the two objectives must bracket her —
+// the crusher/web hold BEFORE her, the drop AFTER. She is the only boss on the
+// clear that is remove+re-added purely to move where the fight happens, so the
+// risk is the usual one: a patch that moved her kill-bit instead of her order
+// key would silently un-complete the dungeon.
+TEST(BossRosterRegistryTest, AzjolNerubBracketsHadronoxWithTheWebHoldAndTheDrop)
+{
+    std::vector<DungeonBossInfo> base = {
+        Boss(28684, 0, "Krik'thir the Gatewatcher", 601),
+        Boss(28921, 1, "Hadronox", 601),
+        Boss(29120, 2, "Anub'arak", 601),
+    };
+    std::vector<DungeonBossInfo> out = BossRosterRegistry::Apply(601, DUNGEON_DIFFICULTY_NORMAL, base);
+
+    ASSERT_EQ(out.size(), 5u) << "3 bosses + the web hold + the drop";
+
+    int krikthir = -1, hadronox = -1, anubarak = -1, webHold = -1, drop = -1;
+    for (int i = 0; i < (int)out.size(); ++i)
+    {
+        if (out[i].entry == 28684) krikthir = i;
+        if (out[i].entry == 28921) hadronox = i;
+        if (out[i].entry == 29120) anubarak = i;
+        if (out[i].kind == DungeonAnchorKind::Objective && out[i].eventId == 1) webHold = i;
+        if (out[i].kind == DungeonAnchorKind::Objective && out[i].eventId == 2) drop = i;
+    }
+    ASSERT_GE(krikthir, 0);
+    ASSERT_GE(hadronox, 0);
+    ASSERT_GE(anubarak, 0);
+    ASSERT_GE(webHold, 0) << "the 'web the doors' objective (eventId 1) is missing";
+    ASSERT_GE(drop, 0) << "the drop objective (eventId 2) is missing";
+
+    // Krik'thir -> web hold -> Hadronox -> drop -> Anub'arak.
+    EXPECT_LT(krikthir, webHold);
+    EXPECT_LT(webHold, hadronox)
+        << "the swarm's off-switch has to be thrown BEFORE she is handed to boss nav";
+    EXPECT_LT(hadronox, drop);
+    EXPECT_LT(drop, anubarak)
+        << "the lower kingdom is across a hard navmesh break — the drop must come first";
+
+    // Hadronox now stands on the platform (her own MOVE3 destination), NOT on her
+    // spawn ledge at (522.5, 544.9, 674.7) 60yd below it.
+    EXPECT_NEAR(out[hadronox].x, 530.4f, 1.0f);
+    EXPECT_NEAR(out[hadronox].y, 560.0f, 1.0f);
+    EXPECT_GT(out[hadronox].z, 700.0f)
+        << "anchoring her on the z~675 spawn ledge walks the party into the add funnel";
+
+    // The web hold shares the platform with her; the drop sits on the pit floor.
+    EXPECT_NEAR(out[webHold].x, 530.4f, 1.0f);
+    EXPECT_NEAR(out[webHold].z, 733.8f, 1.0f);
+    EXPECT_NEAR(out[drop].x, 522.0f, 1.0f);
+    EXPECT_NEAR(out[drop].z, 648.9f, 1.0f);
+
+    // Kill-bits untouched: the clear orders by orderOverride, completion still
+    // keys on encounterIndex, and Hadronox keeps HER OWN bit across remove+re-add.
+    EXPECT_EQ(Find(out, 28684)->encounterIndex, 0u);
+    EXPECT_EQ(Find(out, 28921)->encounterIndex, 1u);
+    EXPECT_EQ(Find(out, 29120)->encounterIndex, 2u);
+}
+

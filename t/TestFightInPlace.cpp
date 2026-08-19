@@ -58,3 +58,34 @@ TEST(FightInPlaceTest, ZoneBoundsAreInclusive)
     EXPECT_FALSE(FightInPlaceRegistry::IsNoPullZone(585, 260.01f, 0.0f));
     EXPECT_FALSE(FightInPlaceRegistry::IsNoPullZone(585, 240.0f, 45.01f));
 }
+
+// Azjol-Nerub's Hadronox shaft (map 601). The crusher packs are TempSummons of
+// the boss, and boss_hadronox::SummonedCreatureEvade resets the WHOLE encounter
+// the moment one of them evades — so an advanced pull that drags a pack member
+// off its home is a run-ender, not a tuning question.
+
+TEST(FightInPlaceTest, HadronoxShaftIsNoPull)
+{
+    // The z~733 platform the packs walk down to and the fight ends on.
+    EXPECT_TRUE(FightInPlaceRegistry::IsNoPullZone(601, 530.4f, 560.0f));
+    // The two upper ledges packs 2 and 3 spawn on.
+    EXPECT_TRUE(FightInPlaceRegistry::IsNoPullZone(601, 493.5f, 603.3f));
+    EXPECT_TRUE(FightInPlaceRegistry::IsNoPullZone(601, 567.0f, 602.6f));
+    // Hadronox's own spawn ledge and the pit floor below it.
+    EXPECT_TRUE(FightInPlaceRegistry::IsNoPullZone(601, 522.5f, 544.9f));
+    EXPECT_TRUE(FightInPlaceRegistry::IsNoPullZone(601, 522.0f, 548.0f));
+}
+
+TEST(FightInPlaceTest, AzjolNerubKeepsItsOtherEncountersPullable)
+{
+    // Krik'thir (529.6, 646.2) and his watcher trash out to y~706 sit above the
+    // y=625 ceiling and must keep the ordinary pull.
+    EXPECT_FALSE(FightInPlaceRegistry::IsNoPullZone(601, 529.6f, 646.2f));
+    EXPECT_FALSE(FightInPlaceRegistry::IsNoPullZone(601, 529.0f, 706.9f));
+    // Anub'arak (551, 248) and his Prime Guards (y 341) are below the y=480 floor.
+    EXPECT_FALSE(FightInPlaceRegistry::IsNoPullZone(601, 551.0f, 248.3f));
+    EXPECT_FALSE(FightInPlaceRegistry::IsNoPullZone(601, 542.0f, 341.4f));
+    // The zone-in.
+    EXPECT_FALSE(FightInPlaceRegistry::IsNoPullZone(601, 413.3f, 796.0f));
+}
+

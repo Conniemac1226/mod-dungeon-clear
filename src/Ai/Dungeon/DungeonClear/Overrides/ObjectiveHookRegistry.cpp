@@ -473,6 +473,43 @@ namespace
         return ObjectiveArriveResult::Done;
     }
 
+    // --- Azjol-Nerub: HadronoxHasWebbedTheDoors (hook id 13) --------------
+    // A WAIT, not an action — the one hook here that does nothing to the world.
+    //
+    // Hadronox's add swarm is infinite: three world triggers (23472) summoned in
+    // her Reset() carry periodic summon auras that keep firing for as long as
+    // the encounter is not done, and every add she kills while it carries her
+    // Leech Poison heals her 10% of max HP. The only off-switch is
+    // EVENT_HADRONOX_MOVE3 — gated on every Anub'ar Crusher (28922) being dead,
+    // scheduled 70s after the pull, and re-checked every 2s — which walks her up
+    // to (530.4, 560.0, 733.2) and casts Web Front Doors (53177) on arrival.
+    //
+    // Killing the crushers therefore only makes the web ELIGIBLE. The clear has
+    // to keep the party on the platform until it has actually happened, or boss
+    // navigation takes the tank down to meet her mid-climb while the swarm is
+    // still pouring in.
+    //
+    // `_doorsWebbed` is private and has exactly one exposure: boss_hadronox::
+    // GetData(me->GetEntry()), the 'Hadronox Denied' achievement probe, which
+    // returns 0 once the doors are webbed and 1 while they are open. Read it
+    // with her OWN entry — any other id falls through to the same `return 0`
+    // and would read as "webbed" from the first tick.
+    constexpr uint32 AN_HADRONOX = 28921;
+
+    ObjectiveArriveResult HadronoxHasWebbedTheDoors(Player* bot, AiObjectContext* context,
+                                                    DungeonBossInfo const& /*info*/)
+    {
+        // Map-wide, like the Underbog's Ghaz'an probe: she spends the whole
+        // event walking a 120yd lap between z 695 and z 733 and a radius scan
+        // would lose her halfway through it.
+        Creature* hadronox = DcTargeting::GetLiveBoss(bot, context, AN_HADRONOX);
+        if (!hadronox || !hadronox->IsAlive() || !hadronox->AI())
+            return ObjectiveArriveResult::Done;  // dead/gone — nothing left to wait for
+
+        return hadronox->AI()->GetData(AN_HADRONOX) == 0 ? ObjectiveArriveResult::Done
+                                                         : ObjectiveArriveResult::Running;
+    }
+
     // --- Old Hillsbrad: GrantIncendiaryBombs (hook id 3) ------------------
     // Brazen (18725) only offers his drake ride to Durnholde Keep when the player
     // HOLDS the Pack of Incendiary Bombs (item 25853) — gossip menu 7959 option 0
@@ -654,6 +691,7 @@ namespace
             Reg::AddHook(t, 7, &DriveAnzuSummon);        // Sethekk Halls — force-summon Anzu (send-event 14797)
             Reg::AddHook(t, 9, &StartNethekurseIntro);   // Shattered Halls — fire Nethekurse's client-only intro
             Reg::AddHook(t, 10, &SendGhazanToPlatform);  // The Underbog — send Ghaz'an up his ramp (AT 4302)
+            Reg::AddHook(t, 13, &HadronoxHasWebbedTheDoors);  // Azjol-Nerub — hold until Hadronox webs the doors
 
             // Controllers, one TU each. Called explicitly (not self-registering)
             // because this module is a static lib: a TU whose only output is

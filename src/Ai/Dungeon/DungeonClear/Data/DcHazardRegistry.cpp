@@ -233,12 +233,45 @@ namespace
     // clear to 11yd, the slime walks off its own pool after them, and they
     // re-engage on clean ground. The Creeping Sludge's 2.0 yd/s makes that
     // separation slow but certain.
-    constexpr std::array<DcGroundHazard, 2> kGroundHazards = {{
+    // Azjol-Nerub (map 601), spells 53400 (normal) and 59419 (heroic) "Acid
+    // Cloud" — Hadronox's ground pool, and the longest-lived one on the clear.
+    // From Spell.dbc: Effect[0] = 27 SPELL_EFFECT_PERSISTENT_AREA_AURA applying
+    // aura 3 SPELL_AURA_PERIODIC_DAMAGE, EffectRadiusIndex 8 = 5.0yd,
+    // EffectAmplitude 1000ms, DurationIndex 23 = 90 SECONDS, BasePoints+1 = 707
+    // nature per tick normal and 1414 heroic. Ninety seconds is 4-6x the two
+    // rows above, so unlike a Cloud of Disease this one does not simply expire
+    // while the party finishes the pull — it outlives the fight it was cast in.
+    //
+    // BOTH IDS ARE REGISTERED, and that is not belt-and-braces. boss_hadronox
+    // only ever casts 53400; spelldifficulty_dbc row 53400 maps it to 59419 on
+    // heroic, and the DynamicObject then reports 59419 from GetSpellId(). A row
+    // for 53400 alone leaves the retreat inert on exactly the difficulty where
+    // the pool does double damage.
+    //
+    // She casts it every 25s at a RANDOM party member inside 100yd
+    // (EVENT_HADRONOX_ACID -> SelectTarget(Random, 0, 100, false)), so the pool
+    // lands on top of whoever it picked rather than under the boss — the
+    // Destroyed Sentinel shape, not the Maraudon-slime shape, and the reason
+    // vacateRadius carries this row rather than the placement keep-out.
+    //
+    // Sizing is the two rows above, unchanged: same 5yd aura, same 8/5 split,
+    // same 3yd gap to the 11yd retreat aim point (vacate 5 + VacateRetreatSlack).
+    // Do not raise `radius` toward 11 without raising VacateRetreatSlack with it.
+    //
+    // zBand 6 matters more here than anywhere else on the clear. Azjol-Nerub is
+    // a vertical shaft: the platform the fight ends on is z ~733, Hadronox's
+    // spawn ledge is z ~675, the pit floor is z ~648 and the lower kingdom is
+    // z ~289. A pool dropped on one of those decks must not fence off the deck
+    // below it, and 6yd is comfortably inside the smallest of those gaps (27yd).
+    constexpr std::array<DcGroundHazard, 4> kGroundHazards = {{
         //                   radius  zBand  vacate  hold  slack
         // Cloud of Disease — the pool a dying Diseased Ghoul (10495) leaves.
         { 289, 17742, 8.0f, 6.0f, 5.0f, 2.0f, 6.0f },
         // Noxious Cloud — dropped in combat AND on death by both Maraudon slimes.
         { 349, 21070, 8.0f, 6.0f, 5.0f, 2.0f, 6.0f },
+        // Acid Cloud — Hadronox, normal (707/s) and heroic (1414/s), 90s each.
+        { 601, 53400, 8.0f, 6.0f, 5.0f, 2.0f, 6.0f },
+        { 601, 59419, 8.0f, 6.0f, 5.0f, 2.0f, 6.0f },
     }};
 
     // ---- the trap table --------------------------------------------------

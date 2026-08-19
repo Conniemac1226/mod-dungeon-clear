@@ -13,6 +13,7 @@
 
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonEventRegistry.h"
+#include "Ai/Dungeon/DungeonClear/Data/DungeonClearRouteRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Data/Events/DungeonEventTables.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonWingRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Overrides/BossRosterRegistry.h"
@@ -1017,6 +1018,7 @@ TEST(DungeonEventIntegrityTest, EveryAuthoredObjectiveHookIdIsRegistered)
         { 9, "Shattered Halls — StartNethekurseIntro" },
         { 10, "The Underbog — SendGhazanToPlatform" },
         { 12, "Black Morass — BmDriveWave (BlackMorassDriver.cpp)" },
+        { 13, "Azjol-Nerub — HadronoxHasWebbedTheDoors" },
     };
 
     for (Expected const& e : kHooks)
@@ -1159,4 +1161,160 @@ TEST(DungeonEventIntegrityTest, NexusSpheresAreThreeRequiredClicks)
               DungeonEventRegistry::Find(576, 2)->steps[0].goEntry);
     EXPECT_NE(DungeonEventRegistry::Find(576, 2)->steps[0].goEntry,
               DungeonEventRegistry::Find(576, 3)->steps[0].goEntry);
+}
+
+// --- Azjol-Nerub (601): the two structural events -------------------------
+//
+// 1. Hadronox's swarm is INFINITE until every Anub'ar Crusher (28922) is dead
+//    AND she has walked up to the platform and cast Web Front Doors — and every
+//    add she eats while it carries her Leech Poison heals her 10% of max HP, so
+//    an un-webbed Hadronox is not killable. Two ways to break the fix silently,
+//    both pinned here: dropping the crusher gate (releasing the party the moment
+//    the platform looks clear), and dropping the web wait (handing her to boss
+//    navigation while she is still 60yd below, mid-climb).
+// 2. The way on is a hole with a ~360yd drop across a hard navmesh break. The
+//    checkpoint must stay on the pit floor and the landing under the hole.
+TEST(DungeonEventIntegrityTest, AzjolNerubHoldsThePlatformUntilTheDoorsAreWebbed)
+{
+    constexpr uint32 AN_ANUBAR_CRUSHER = 28922;
+
+    DungeonEvent const* ev = DungeonEventRegistry::Find(/*map*/ 601, /*event*/ 1);
+    ASSERT_NE(ev, nullptr) << "Azjol-Nerub (601) event 1 'Hadronox: web the doors' is missing";
+
+    EXPECT_EQ(ev->activation, EventActivation::Anchored);
+    EXPECT_EQ(ev->gate, DcDifficultyGate::Any)
+        << "the swarm and its off-switch are identical on both difficulties";
+    EXPECT_FALSE(ev->required)
+        << "Optional on purpose: a wedged crusher pack must degrade into 'fight her"
+           " wherever she is', not stall the run for the human";
+    EXPECT_TRUE(ev->persistent)
+        << "both steps span a continuous swarm fight — a combat gap must not rewind"
+           " the crusher gate";
+
+    ASSERT_EQ(ev->steps.size(), 2u);
+
+    // Step 1 — GARRISON on the platform until no Anub'ar Crusher lives.
+    EventStep const& hold = ev->steps[0];
+    EXPECT_EQ(hold.kind, EventStepKind::MoveTo)
+        << "a garrison, not a sweep: the crusher packs MovePoint themselves onto"
+           " this deck, so seeking them only marches the tank into the add stream";
+    EXPECT_EQ(hold.creatureEntry, AN_ANUBAR_CRUSHER)
+        << "the gate must key on the Anub'ar Crusher — it is the ONLY entry"
+           " boss_hadronox's _crushersLeft counts (ACTION_CRUSHER_DIED comes from"
+           " npc_anub_ar_crusher::JustDied alone), and it is what gates MOVE3";
+    EXPECT_FALSE(hold.wantAlive) << "hold until they are DEAD";
+    EXPECT_GT(hold.timeoutMs, 30000u)
+        << "the default 30s cannot cover pack 1 plus two packs walking ~65yd down"
+           " from the ledges under a swarm that never stops";
+
+    // Step 2 — wait for the web itself.
+    EventStep const& web = ev->steps[1];
+    EXPECT_EQ(web.kind, EventStepKind::Custom)
+        << "killing the crushers only makes MOVE3 ELIGIBLE (it is scheduled at 70s"
+           " and re-checked every 2s); the party must hold until the doors are"
+           " actually webbed";
+    EXPECT_EQ(web.hookId, 13u) << "ObjectiveHookRegistry HadronoxHasWebbedTheDoors";
+    EXPECT_TRUE(ObjectiveHookRegistry::Has(web.hookId));
+    EXPECT_GT(web.timeoutMs, 30000u);
+}
+
+TEST(DungeonEventIntegrityTest, AzjolNerubDropsPastTheLakeNotDownTheWall)
+{
+    DungeonEvent const* ev = DungeonEventRegistry::Find(/*map*/ 601, /*event*/ 2);
+    ASSERT_NE(ev, nullptr) << "Azjol-Nerub (601) event 2 'Drop into the lower kingdom' is missing";
+
+    EXPECT_EQ(ev->activation, EventActivation::Anchored);
+    EXPECT_TRUE(ev->required)
+        << "there is no other route into the lower kingdom — a skip strands the run";
+
+    ASSERT_EQ(ev->steps.size(), 1u)
+        << "one hop; a second step would make it a rewind hazard needing .Persistent()";
+    EventStep const& s = ev->steps[0];
+    EXPECT_EQ(s.kind, EventStepKind::TeleportParty)
+        << "NOT DropInHole: the drop is ~360yd and nothing in the module makes a"
+           " fall that long survivable";
+
+    // The checkpoint is on the pit floor at the hole's rim (mesh probe at
+    // (522,548): 648.87) — that is where the party musters and it has not moved.
+    EXPECT_NEAR(s.x, 522.0f, 3.0f);
+    EXPECT_NEAR(s.y, 548.0f, 3.0f);
+    EXPECT_NEAR(s.z, 648.9f, 2.0f);
+
+    // The landing is NOT under the hole. TeleportParty is explicitly a diagonal
+    // relocation, and directly beneath the hole are the two traps this
+    // coordinate exists to step past: the lake (NAV_WATER meshed at the liquid
+    // surface, 145yd of it) and the x=533.3333 mmtile seam whose sliver fan
+    // defeats the long-range smoothing walk. (544.18, 481.26, 288.98) is dry
+    // ground past both — one NAV_GROUND surface in the column, nothing else
+    // within 400yd. See AN_DROP_LANDING_X.
+    EXPECT_NEAR(s.landX, 544.18f, 1.0f);
+    EXPECT_NEAR(s.landY, 481.26f, 1.0f);
+    EXPECT_NEAR(s.landZ, 288.98f, 1.0f);
+    EXPECT_GT(s.landX - 533.3333f, 5.0f)
+        << "the drop landing must stay clear of the x=533.3333 mmtile seam";
+    EXPECT_LT(s.landY, 500.0f)
+        << "the landing must be SOUTH of the lake's drop-chamber end, not in it";
+    EXPECT_GT(s.z - s.landZ, 300.0f) << "this is the 360yd shaft, not a ledge hop";
+}
+
+// The lower kingdom is hand-authored because the navmesh pathfinder cannot
+// smooth its way out of the drop chamber reliably — see the comment block above
+// RegisterAzjolNerubRoute. These anchors are walked in a STRAIGHT LINE (the
+// anchor fast-path in StridedPathfinder::Build builds no corridor at all), so
+// the two things that can silently break the route are a missing row and legs
+// too long for the follower to re-anchor onto after a fight.
+TEST(DungeonEventIntegrityTest, AzjolNerubAnchorsTheRouteToAnubarak)
+{
+    constexpr uint32 kAnubarak = 29120;
+    std::vector<WaypointHint> const* route =
+        DungeonClearRouteRegistry::Get(601, DUNGEON_DIFFICULTY_NORMAL, kAnubarak);
+    ASSERT_NE(route, nullptr)
+        << "Azjol-Nerub (601) has no authored route to Anub'arak; the long-range "
+           "pathfinder would be asked to smooth across the x=533.3333 mmtile seam";
+    ASSERT_GE(route->size(), 2u);
+
+    // Heroic shares the geometry and must inherit the same row.
+    EXPECT_EQ(DungeonClearRouteRegistry::Get(601, DUNGEON_DIFFICULTY_HEROIC, kAnubarak), route);
+
+    // Leg length. DungeonPathFollower::RESNAP_RADIUS is 45yd and InstallLongPath
+    // resets the follower cursor to segment 0 on every rebuild, so a leg longer
+    // than the resnap radius means a party that rebuilds mid-route walks BACK to
+    // an anchor it already cleared. Kept well under with margin for the leg from
+    // the drop landing into the first anchor.
+    constexpr float kMaxLeg = 40.0f;
+    float const landX = 544.18f, landY = 481.26f;
+    float prevX = landX, prevY = landY;
+    for (size_t i = 0; i < route->size(); ++i)
+    {
+        WaypointHint const& h = (*route)[i];
+        float const leg = std::hypot(h.x - prevX, h.y - prevY);
+        EXPECT_LT(leg, kMaxLeg)
+            << "leg " << i << " is " << leg << "yd — longer than the follower can resnap over";
+        prevX = h.x;
+        prevY = h.y;
+    }
+
+    // The route must end short of the boss: StridedPathfinder appends Anub'arak's
+    // own spawn as the goal segment, so a final anchor sitting on top of him is a
+    // duplicate hop, and one 40yd+ away leaves the goal leg unvalidated.
+    float const tailLeg = std::hypot(prevX - 551.0f, prevY - 248.3f);
+    EXPECT_GT(tailLeg, 5.0f) << "last anchor duplicates the appended goal segment";
+    EXPECT_LT(tailLeg, kMaxLeg) << "the appended goal leg is longer than any authored leg";
+
+    // Every anchor heads SOUTH — the route is a one-way descent from the landing
+    // to the arena, and any anchor that doubles back north is either a stale
+    // coordinate left over from an older landing or a corner cut across the lake
+    // behind it. Anchor DRYNESS itself needs the mmaps and is asserted in
+    // TestAzjolNerubRouteProbe; this is the cheap always-on half.
+    EXPECT_LT((*route)[0].y, landY) << "anchor 1 is north of the drop landing";
+    for (size_t i = 1; i < route->size(); ++i)
+        EXPECT_LT((*route)[i].y, (*route)[i - 1].y)
+            << "anchor " << (i + 1) << " doubles back north";
+
+    // And they must stay out of the lake's y-band the landing was moved past.
+    // The water sheet ends around y 404; every anchor south of the landing is
+    // clear of the drop chamber by construction, so the one to watch is the
+    // first: it sits 25yd past the southern shore.
+    EXPECT_LT((*route)[0].y, 470.0f)
+        << "anchor 1 is back in the drop chamber's half of the lower kingdom";
 }

@@ -416,6 +416,30 @@ AC_ADD_CONFIG_FILE("${CMAKE_CURRENT_LIST_DIR}/conf/mod_dungeon_clear.conf.dist")
 #    2..8 scale so the spheres have somewhere to sit between Ormorok and
 #    Keristrasza — the DBC packs those two into adjacent bits on both
 #    difficulties.)
+# Data/Events/AzjolNerubEvents.cpp
+#   (Azjol-Nerub, map 601. Two structural events plus a roster patch.
+#    (1) HADRONOX. Her add swarm is INFINITE — three world triggers (23472)
+#    summoned in her Reset() carry periodic summon auras that fire for as long as
+#    the encounter is not done, and every add she kills while it carries her Leech
+#    Poison heals her 10% of max HP, so she is not killable until the swarm stops.
+#    The only off-switch is EVENT_HADRONOX_MOVE3, gated on all three Anub'ar
+#    Crushers (28922) being dead, which walks her onto the z~733 platform and
+#    casts Web Front Doors. The event garrisons the party on that platform until
+#    the crushers are dead AND the doors are actually webbed (hook 13 reads
+#    boss_hadronox::GetData(28921), the 'Hadronox Denied' probe — the only
+#    exposure _doorsWebbed has), and the roster patch moves her anchor off her
+#    spawn ledge (522.5, 544.9, 674.7 — 10yd from where every add-swarm waypoint
+#    path ends) onto her own MOVE3 destination.
+#    (2) THE DROP. Flood-filling the four 601 mmtiles splits the map into two
+#    components that do not touch: z 645-833 (everything down to the pit floor)
+#    and z 195-310 (the lower kingdom out to Anub'arak). The join is an ~11x13yd
+#    HOLE in the pit floor at x 528-539 / y 543-556 with a single surface 360yd
+#    below it. TeleportParty, not DropInHole — nothing makes a fall that long
+#    survivable. Checkpoint (522, 548, 648.9), landing (533.5, 549.5, 288.7),
+#    both column-probed against the live mmaps.
+#    NO CLIENT PACKET IS INVOLVED: AreaTrigger.dbc has three rows on map 601 and
+#    none of them carries a script, teleport, involvedrelation or smart_scripts
+#    row, and the map has no gossip and no clickable gameobject at all.)
 # Data/DcNeverTargetRegistry.{h,cpp}
 #   (Creatures the CLEAR must never pick as a target — the "is killing this
 #    progress" half of target selection, which AttackersValue::IsPossibleTarget

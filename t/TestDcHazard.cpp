@@ -236,7 +236,9 @@ TEST(DcHazardRegistry, GroundPoolRetreatPointClearsItsOwnKeepOut)
     // candidate it generates and falls through to its unvalidated last resort.
     // This is the exact trap the Destroyed Sentinel row's comment warns about.
     for (DcGroundHazard const* pool : { DcHazardRegistry::FindGround(289, 17742),
-                                        DcHazardRegistry::FindGround(349, 21070) })
+                                        DcHazardRegistry::FindGround(349, 21070),
+                                        DcHazardRegistry::FindGround(601, 53400),
+                                        DcHazardRegistry::FindGround(601, 59419) })
     {
         ASSERT_NE(pool, nullptr);
 
@@ -507,7 +509,9 @@ TEST(DcHazardMaraudonTest, EveryVacateRowOvershootsItsHoldBand)
     }
 
     for (DcGroundHazard const* g : { DcHazardRegistry::FindGround(289, 17742),
-                                     DcHazardRegistry::FindGround(349, 21070) })
+                                     DcHazardRegistry::FindGround(349, 21070),
+                                     DcHazardRegistry::FindGround(601, 53400),
+                                     DcHazardRegistry::FindGround(601, 59419) })
     {
         ASSERT_NE(g, nullptr);
         ASSERT_GT(g->vacateRadius, 0.0f);
@@ -696,3 +700,44 @@ TEST(DcHazardUtgardeKeepTest, IngvarThrowDummyIsAVacateEmitter)
     EXPECT_FALSE(DcHazardRegistry::HasGroundHazards(574));
     EXPECT_FALSE(DcHazardRegistry::HasTrapHazards(574));
 }
+
+// --- Azjol-Nerub: Hadronox's Acid Cloud -----------------------------------
+// A PERSISTENT_AREA_AURA pool like Scholomance's, but with the two properties
+// that make it the worst one on the clear: it lasts NINETY seconds (Spell.dbc
+// DurationIndex 23) at 707 nature/sec normal and 1414 heroic, and it is cast at
+// a RANDOM party member inside 100yd rather than under the boss — so it lands on
+// top of somebody and then outlives the fight it was cast in.
+
+TEST(DcHazardRegistry, AzjolNerubRegistersAcidCloudOnBothDifficulties)
+{
+    EXPECT_TRUE(DcHazardRegistry::HasAnyHazard(601));
+    EXPECT_TRUE(DcHazardRegistry::HasGroundHazards(601));
+    // No creature emitters and no traps on this map — the gate has to be
+    // HasAnyHazard, never HasEmitters, or the vacate is inert here.
+    EXPECT_FALSE(DcHazardRegistry::HasEmitters(601));
+
+    // boss_hadronox only ever CASTS 53400; spelldifficulty_dbc maps it to 59419
+    // on heroic and the DynamicObject then reports 59419 from GetSpellId(). A row
+    // for 53400 alone leaves the retreat inert on the difficulty where the pool
+    // does double damage.
+    DcGroundHazard const* normal = DcHazardRegistry::FindGround(601, 53400);
+    DcGroundHazard const* heroic = DcHazardRegistry::FindGround(601, 59419);
+    ASSERT_NE(normal, nullptr) << "Acid Cloud (normal) must be registered";
+    ASSERT_NE(heroic, nullptr) << "Acid Cloud (heroic 59419) must be registered too";
+
+    for (DcGroundHazard const* g : { normal, heroic })
+    {
+        EXPECT_EQ(g->mapId, 601u);
+        // vacateRadius is the RAW 5yd aura, not the padded keep-out — otherwise
+        // the retreat's own aim point fails PointIsHot and every candidate is
+        // rejected (the Destroyed Sentinel trap).
+        EXPECT_FLOAT_EQ(g->vacateRadius, 5.0f);
+        EXPECT_GT(g->radius, g->vacateRadius);
+        // Azjol-Nerub is a vertical shaft: the platform (z ~733), Hadronox's
+        // ledge (z ~675), the pit floor (z ~648) and the lower kingdom (z ~289)
+        // stack in the same column, and the tightest gap is 27yd. The z band must
+        // stay well inside that so a pool on one deck cannot fence off the next.
+        EXPECT_LT(g->zBand, 27.0f);
+    }
+}
+
