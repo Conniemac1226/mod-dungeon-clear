@@ -252,6 +252,13 @@ constexpr float DC_FIGHT_HOLDER_RADIUS = 40.0f;
 // reference, which is fine in ScanCombatHolders (behind cheaper reads, on the
 // phantom-combat hatch) and not fine here.
 //
+// ScanCombatHolders now bounds its own walk by this same radius, and needs to:
+// its reachability test delegates to the CHUNKED pathfinder, which accepts any
+// path with forward progress (that is how a boss route longer than
+// PathGenerator's ~296yd cap gets walked at all) and so calls a holder 350yd
+// overhead "reachable". One radius, asked the same way on both sides, or the
+// hatch built to clear exactly this stays inert while the flag test clears.
+//
 // Generous on purpose — it is a sanity bound, not a fight radius. Nothing that
 // is genuinely swinging at, casting on, or being chased by a member sits past
 // 100yd of it (mob spell reach tops out around 40yd, and DC_FIGHT_HOLDER_RADIUS

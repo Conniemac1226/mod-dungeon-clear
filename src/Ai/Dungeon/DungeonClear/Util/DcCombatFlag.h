@@ -77,8 +77,9 @@ namespace DcCombatFlag
     struct HolderScan
     {
         bool  opaque = false;
-        bool  found = false;        // >=1 live, same-map, non-evading, reachable
-                                    // holder its own AI allows to attack us
+        bool  found = false;        // >=1 live, same-map, non-evading, WITHIN
+                                    // DC_ENGAGEMENT_RADIUS and reachable holder
+                                    // its own AI allows to attack us
         float nearestDist = 0.0f;   // distance to the closest such holder
     };
 

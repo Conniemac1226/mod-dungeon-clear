@@ -125,6 +125,21 @@ namespace DcCombatFlag
                 continue;
             if (other->GetCombatManager().IsInEvadeMode())
                 continue;  // holder is bailing home -> not a real threat
+            // RANGE FIRST, and it is not just an optimisation. DcEngageGeometry::
+            // IsReachable delegates to the CHUNKED pathfinder, which by design
+            // accepts any path with forward progress so the tank can walk a boss
+            // route farther than PathGenerator's ~296yd single-call cap. Handed a
+            // holder on the far side of a one-way relocation it therefore answers
+            // "reachable" — tr-20260818-223003-8's teardown reads `Skittering
+            // Swarmer(32593) 346.9yd 100% reachable -> LEGITIMATE` about a mob
+            // 350yd overhead through solid rock, and that verdict is what left the
+            // phantom-combat hatch inert while the party sat wedged for eleven
+            // minutes. Bound it at the same DC_ENGAGEMENT_RADIUS IsEngaged uses:
+            // one sanity radius for "a combat reference has outlived the geometry
+            // it was made in", asked the same way on both sides of the module.
+            // Cheap, too — this runs before the per-reference pathfind.
+            if (p->GetExactDistSq(other) > DC_ENGAGEMENT_RADIUS * DC_ENGAGEMENT_RADIUS)
+                continue;  // left behind by geometry -> not a fight, whatever the mesh says
             if (!DcEngageGeometry::IsReachable(p, other->GetPositionX(),
                                                other->GetPositionY(), other->GetPositionZ()))
                 continue;  // unreachable -> the phantom holder
