@@ -81,12 +81,31 @@
 // done, and even a duplicate click only re-sets an instance boss state that is
 // already DONE.
 //
-// NOT here: the Frozen Commander (26796 Stoutbeard / 26798 Kolurg), the heroic-only
-// bonus boss. It keeps its DBC bit 0 and therefore already sorts first, ahead of
-// this 2..8 scale, so it needs no row. (Its spawn is entered as Stoutbeard and
-// `instance_nexus::OnCreatureCreate` UpdateEntry's it to Kolurg for an Alliance
-// party — a derived-roster mismatch that predates this file and is out of scope
-// here.)
+// THE FROZEN COMMANDER (heroic only) is not an event but it IS a roster
+// correction, in the second patch below. Map 576 is one of
+// `InstanceScript::IsTwoFactionInstance()`'s maps, so `instance_nexus`
+// UpdateEntry's the single spawn (guid 4764, entry 26796 Commander Stoutbeard,
+// spawnMask 2, at (424.5,186,-34.9)) to 26798 Commander Kolurg for an ALLIANCE
+// party. That breaks the derived roster in two independent ways:
+//
+//   1. NO KILL-BIT. `instance_encounters` has PRIMARY KEY (`entry`) — one credit
+//      row per DungeonEncounter.dbc row — and the only row for encounter 519
+//      ("Frozen Commander", heroic, encounterIndex 0) credits 26796. KillRewarder
+//      passes the VICTIM'S CURRENT ENTRY to Map::UpdateEncounterState, so an
+//      Alliance party killing 26798 matches nothing and DBC bit 0 never flips.
+//      Unfixable in data (the schema forbids a second credit row), so completion
+//      is read from the instance script's own DATA_COMMANDER_EVENT slot instead —
+//      BossAI::JustDied sets it for either entry. See doneBossStateIndex.
+//   2. NO LIVENESS. BossSpawnIndex stores 26796; every entry-keyed lookup
+//      (BuildLiveness, GetLiveBoss, IsCreaturePresentOnMap) then misses on an
+//      Alliance run. Advance crosses DC_BOSS_GRID_LOADED_RANGE, finds nothing,
+//      and hard-stalls "not spawned" ~130yd short of aggro range — and because
+//      the commander sorts FIRST, the whole run wedged at 0/5. Fixed on the other
+//      side, in DcFactionEntrySwapRegistry (this roster table is static; the team
+//      is a per-run fact, so DungeonBossesValue applies the rewrite).
+//
+// Order key 1 keeps it ahead of the 2..8 scale below, where its untouched bit 0
+// already put it.
 //
 // The Crystalline Frayers of Ormorok's garden are NOT an event: they are a
 // targeting question, and live in DcNeverTargetRegistry.
@@ -134,7 +153,7 @@ namespace
     // REORDERED onto this scale so the three sphere objectives have somewhere to
     // sit between Ormorok and Keristrasza (normal packs them into bits 2 and 3,
     // heroic into 3 and 4 — there is no integer in between on either difficulty).
-    // Key 1 is left free for the heroic-only Frozen Commander's untouched bit 0.
+    // Key 1 belongs to the heroic-only Frozen Commander (second patch below).
     constexpr int32 NEX_ORDER_TELESTRA        = 2;
     constexpr int32 NEX_ORDER_ANOMALUS        = 3;
     constexpr int32 NEX_ORDER_ORMOROK         = 4;
@@ -147,6 +166,24 @@ namespace
     constexpr uint32 NEX_ANOMALUS    = 26763;
     constexpr uint32 NEX_ORMOROK     = 26794;
     constexpr uint32 NEX_KERISTRASZA = 26723;
+
+    // Heroic-only bonus boss. 26796 is the entry the SPAWN carries (and therefore
+    // the one BossSpawnIndex derives); an Alliance party sees it as 26798.
+    constexpr uint32 NEX_COMMANDER = 26796;
+
+    // The spawn's own coords, kept verbatim — the re-add drops the derived row so
+    // they have to be restated here. Floor is -34.9 (the lower ring), not the
+    // hub's -16; BOSS_SNAP_RADIUS pulls it onto the mesh either way.
+    constexpr float NEX_COMMANDER_X = 424.55f;
+    constexpr float NEX_COMMANDER_Y = 185.96f;
+    constexpr float NEX_COMMANDER_Z = -34.94f;
+
+    constexpr int32 NEX_ORDER_COMMANDER = 1;
+
+    // DATA_COMMANDER_EVENT from nexus.h — the instance script's OWN boss-state
+    // index space, authored explicitly here rather than borrowed from any DBC
+    // encounterIndex (they do not align: bit 4 of the heroic mask is Keristrasza).
+    constexpr int32 NEX_DATA_COMMANDER_EVENT = 4;
 }
 
 void RegisterNexusEvents(std::vector<DungeonEvent>& out)
@@ -201,9 +238,9 @@ void RegisterNexusRoster(std::vector<BossRosterPatch>& t)
     // Ormorok and Keristrasza. Their DBC kill-bits are untouched — orderOverride
     // only moves the clear sequence — and their relative order is unchanged (it
     // already matched the travel path on both difficulties). The heroic-only
-    // Frozen Commander is deliberately absent: its bit 0 already sorts ahead of
-    // key 2, and a reorder row for an entry that is not in the derived normal
-    // roster would be a silent no-op there anyway.
+    // Frozen Commander is absent from THIS patch on purpose: it is not in the
+    // derived normal roster, where a reorder row for it would be a silent no-op.
+    // It gets its own HeroicOnly patch below.
     p.reorder = {
         { NEX_TELESTRA,    NEX_ORDER_TELESTRA    },
         { NEX_ANOMALUS,    NEX_ORDER_ANOMALUS    },
@@ -212,4 +249,32 @@ void RegisterNexusRoster(std::vector<BossRosterPatch>& t)
     };
 
     t.push_back(std::move(p));
+
+    // --- heroic only: the Frozen Commander -------------------------------
+    //
+    // Remove the derived row and re-add it with a completion source that works
+    // for BOTH factions' entries, plus the explicit order key its bit 0 gave it
+    // implicitly. A bare `reorder` row cannot express this: completion is the
+    // broken half, and only remove+re-add can set doneBossStateIndex.
+    //
+    // MakeBoss parks encounterIndex at 64 when doneBossStateIndex is set, so the
+    // heroic mask's real bit 0 is never consulted for this anchor — on a Horde
+    // run it WOULD flip correctly, but reading one source on one faction and
+    // another on the other is how a divergence hides. Both read the boss-state
+    // slot; both behave identically.
+    //
+    // The entry stays 26796 here. DungeonBossesValue rewrites it to 26798 for an
+    // Alliance party, after this patch and before wing-filtering/snapping.
+    BossRosterPatch heroic;
+    heroic.mapId = NEX_MAP;
+    heroic.gate = DcDifficultyGate::HeroicOnly;
+    heroic.remove = { NEX_COMMANDER };
+    heroic.add = {
+        MakeBoss(NEX_COMMANDER, NEX_MAP, "Frozen Commander",
+                 NEX_COMMANDER_X, NEX_COMMANDER_Y, NEX_COMMANDER_Z,
+                 /*completionFrom*/ 0, /*orderOverride*/ NEX_ORDER_COMMANDER,
+                 /*doneBossStateIndex*/ NEX_DATA_COMMANDER_EVENT),
+    };
+
+    t.push_back(std::move(heroic));
 }

@@ -1354,8 +1354,8 @@ TEST(BossRosterRegistryTest, NexusSpheresSortBetweenOrmorokAndKeristrasza)
 TEST(BossRosterRegistryTest, NexusHeroicCommanderStaysFirst)
 {
     // Heroic shifts every DBC bit up by one to make room for the Frozen Commander
-    // at bit 0. He carries no reorder row, so his bit-0 key must still sort ahead
-    // of the 2..8 scale the rest of the map is reordered onto.
+    // at bit 0. The HeroicOnly patch re-adds him on order key 1, which must still
+    // sort ahead of the 2..8 scale the rest of the map is reordered onto.
     std::vector<DungeonBossInfo> base = {
         Boss(26796, 0, "Frozen Commander", 576),
         Boss(26731, 1, "Grand Magus Telestra", 576),
@@ -1368,12 +1368,71 @@ TEST(BossRosterRegistryTest, NexusHeroicCommanderStaysFirst)
     ASSERT_EQ(out.size(), 8u) << "5 bosses + 3 sphere objectives";
     EXPECT_EQ(out.front().entry, 26796u) << "the Frozen Commander still leads the clear";
     EXPECT_EQ(out.back().entry, 26723u) << "Keristrasza is still last";
-    EXPECT_EQ(Find(out, 26796)->orderOverride, -1)
-        << "the Commander is deliberately left on its DBC bit — no reorder row";
+    EXPECT_EQ(Find(out, 26796)->orderOverride, 1)
+        << "the Commander sits on key 1, between bit 0 and the 2..8 scale";
 
     // The three spheres are still the last thing before Keristrasza.
     ASSERT_GE(out.size(), 4u);
     for (size_t i = out.size() - 4; i + 1 < out.size(); ++i)
         EXPECT_EQ(out[i].kind, DungeonAnchorKind::Objective)
             << "index " << i << " should be a sphere objective";
+}
+
+// The Frozen Commander's DBC kill-bit is UNUSABLE: instance_encounters has
+// PRIMARY KEY (`entry`), so encounter 519 can only credit one creature (26796),
+// and an Alliance party kills the UpdateEntry'd 26798 — bit 0 never flips. The
+// heroic patch must therefore re-add him reading the instance script's own
+// DATA_COMMANDER_EVENT slot, with encounterIndex parked out of mask range so the
+// dead bit is never consulted on EITHER faction.
+TEST(BossRosterRegistryTest, NexusHeroicCommanderCompletesViaBossState)
+{
+    std::vector<DungeonBossInfo> base = {
+        Boss(26796, 0, "Frozen Commander", 576),
+        Boss(26731, 1, "Grand Magus Telestra", 576),
+        Boss(26763, 2, "Anomalus", 576),
+        Boss(26794, 3, "Ormorok the Tree-Shaper", 576),
+        Boss(26723, 4, "Keristrasza", 576),
+    };
+    std::vector<DungeonBossInfo> out = BossRosterRegistry::Apply(576, DUNGEON_DIFFICULTY_HEROIC, base);
+
+    DungeonBossInfo const* cmd = Find(out, 26796);
+    ASSERT_NE(cmd, nullptr);
+    EXPECT_EQ(cmd->kind, DungeonAnchorKind::Boss);
+    EXPECT_EQ(cmd->doneBossStateIndex, 4) << "DATA_COMMANDER_EVENT from nexus.h";
+    EXPECT_GE(cmd->encounterIndex, 32u)
+        << "parked out of the completed-encounter mask's range so bit 0 is never read";
+
+    // The re-add restates the spawn coords; losing them would send the tank to
+    // (0,0,0). The floor here is the lower ring (-34.9), not the hub's -16.
+    EXPECT_NEAR(cmd->x, 424.5f, 0.5f);
+    EXPECT_NEAR(cmd->y, 186.0f, 0.5f);
+    EXPECT_NEAR(cmd->z, -34.9f, 0.5f);
+
+    // No other Nexus anchor borrows a boss-state slot — Keristrasza in particular
+    // owns heroic bit 4, the same NUMBER as DATA_COMMANDER_EVENT in the instance
+    // script's unrelated index space.
+    for (DungeonBossInfo const& b : out)
+        if (b.entry != 26796u)
+            EXPECT_EQ(b.doneBossStateIndex, -1) << "entry " << b.entry;
+}
+
+// The commander is heroic-only (spawnMask 2, DBC difficulty 1), so BossSpawnIndex
+// never puts him in the normal bucket. The HeroicOnly gate must keep the patch off
+// a normal run entirely — a stray re-add there would invent an anchor at a spawn
+// that does not exist on that difficulty.
+TEST(BossRosterRegistryTest, NexusNormalHasNoFrozenCommander)
+{
+    std::vector<DungeonBossInfo> base = {
+        Boss(26731, 0, "Grand Magus Telestra", 576),
+        Boss(26763, 1, "Anomalus", 576),
+        Boss(26794, 2, "Ormorok the Tree-Shaper", 576),
+        Boss(26723, 3, "Keristrasza", 576),
+    };
+    std::vector<DungeonBossInfo> out = BossRosterRegistry::Apply(576, DUNGEON_DIFFICULTY_NORMAL, base);
+
+    ASSERT_EQ(out.size(), 7u) << "4 bosses + 3 sphere objectives";
+    EXPECT_EQ(Find(out, 26796), nullptr) << "no Frozen Commander on normal";
+    EXPECT_EQ(Find(out, 26798), nullptr) << "nor his Alliance-side entry";
+    for (DungeonBossInfo const& b : out)
+        EXPECT_EQ(b.doneBossStateIndex, -1) << "entry " << b.entry;
 }

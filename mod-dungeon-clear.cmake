@@ -67,6 +67,7 @@ if (BUILD_TESTING)
             "${MOD_PATH}/t/TestRoomAggro.cpp"
             "${MOD_PATH}/t/TestNavPenalty.cpp"
             "${MOD_PATH}/t/TestNeverTarget.cpp"
+            "${MOD_PATH}/t/TestFactionEntrySwap.cpp"
             "${MOD_PATH}/t/TestDcHazard.cpp"
             "${MOD_PATH}/t/TestDcZoneLine.cpp"
             "${MOD_PATH}/t/TestBossRoster.cpp"
