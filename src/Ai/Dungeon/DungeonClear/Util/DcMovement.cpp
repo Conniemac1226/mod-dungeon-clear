@@ -140,11 +140,13 @@ namespace DcMovement
 
         if (bot->IsSitState())
             bot->SetStandState(UNIT_STAND_STATE_STAND);
+        // Unit::CastStop() interrupts CURRENT_GENERIC/CHANNELED/AUTOREPEAT and lets
+        // Spell::cancel() send the real client packets. PlayerbotAI::InterruptSpell()
+        // used to be called here too; it is a no-op after CastStop (every slot it
+        // scans is already cleared) and its hand-rolled SMSG_SPELL_FAILURE /
+        // SMSG_SPELL_FAILED_OTHER would only duplicate what cancel() already sent.
         if (bot->IsNonMeleeSpellCast(true))
-        {
             bot->CastStop();
-            botAI->InterruptSpell();
-        }
 
         float windowLen = 0.0f;
         for (size_t i = 1; i < pts.size(); ++i)
