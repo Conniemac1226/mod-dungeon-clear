@@ -36,14 +36,19 @@ TEST(DcTestGearTiersTest, EveryRegistryRowIsClassified)
 {
     // A row whose map is in neither the TBC nor the WotLK list silently gets
     // the classic ladder, which would be wrong (and invisible) for a new row.
-    // Pin the two things that must hold: TBC rows are the ones offering heroic,
-    // and no row lands on an expansion whose cap is below its own level.
+    // Pin the two things that must hold: a row offering heroic runs it at its
+    // own expansion's cap (so the heroic ladder is that expansion's named tier
+    // list, not a leveling band), and no row lands on an expansion whose cap is
+    // below its own level.
     for (DcTestDungeonRegistry::Row const& row : DcTestDungeonRegistry::All())
     {
         Expansion const exp = ExpansionOf(row.mapId);
-        if (row.heroicLevel)
-            EXPECT_EQ(exp, Expansion::Tbc) << row.token;
         std::uint32_t const cap = exp == Expansion::Classic ? 60 : (exp == Expansion::Tbc ? 70 : 80);
+        if (row.heroicLevel)
+        {
+            EXPECT_NE(exp, Expansion::Classic) << row.token;
+            EXPECT_EQ(row.heroicLevel, cap) << row.token;
+        }
         EXPECT_LE(row.recommendedLevel, cap) << row.token;
     }
 }

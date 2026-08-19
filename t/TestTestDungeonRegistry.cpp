@@ -34,18 +34,21 @@ TEST(DcTestDungeonRegistryTest, EveryRowIsPlausible)
     }
 }
 
-TEST(DcTestDungeonRegistryTest, HeroicLevelEncodesTbcOnlyScope)
+TEST(DcTestDungeonRegistryTest, HeroicLevelMatchesTheExpansionCap)
 {
     // heroicLevel is both the heroic default level AND the "heroic offered"
-    // gate. Current scope: every TBC row is exactly 70; classic rows have no
-    // heroic mode and WotLK rows are deliberately 0 until their heroic content
-    // pass lands (flip them to 80 then, and update this lint).
+    // gate, and a heroic run is run at its expansion's cap: TBC rows carry 70,
+    // WotLK rows 80. Classic dungeons have no heroic difficulty, so 0.
     std::set<std::uint32_t> const tbcMaps =
         {543, 542, 547, 546, 557, 558, 556, 560, 555, 545, 540, 269, 553, 554, 552, 585};
+    std::set<std::uint32_t> const wotlkMaps =
+        {574, 575, 576, 578, 595, 599, 600, 601, 602, 604, 608, 619, 632, 650, 658, 668};
     for (Row const& row : All())
     {
         if (tbcMaps.count(row.mapId))
             EXPECT_EQ(row.heroicLevel, 70u) << row.token;
+        else if (wotlkMaps.count(row.mapId))
+            EXPECT_EQ(row.heroicLevel, 80u) << row.token;
         else
             EXPECT_EQ(row.heroicLevel, 0u) << row.token;
     }
