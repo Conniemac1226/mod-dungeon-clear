@@ -318,7 +318,11 @@ private:
     uint32 _monitorAccumMs = 0;
     std::size_t _provisionIdx = 0;
     bool _groupFormed = false;
-    bool _teleportIssued = false;
+    // Teleporting goes in two waves — leader first, then the rest — so the
+    // party cannot be split across instance copies. See TickTeleporting.
+    bool _teleportIssued = false;      // wave 1 (the leader) has been sent
+    bool _followersTeleported = false; // wave 2 (everybody else) has been sent
+    uint32 _destInstanceId = 0;        // the copy the leader landed in; 0 until it does
     bool _dcOnIssued = false;
     // One-shot so ReassertMaster's diagnostic names the first repair per run
     // instead of once a second forever.
