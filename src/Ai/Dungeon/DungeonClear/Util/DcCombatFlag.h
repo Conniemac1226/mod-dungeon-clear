@@ -47,8 +47,17 @@ namespace DcCombatFlag
     // member (melee and casters alike, since CreatureAI::AttackStart sets it),
     // and the victim covers the member attacking something that is not hitting
     // back yet.
+    //
     // Is THIS player actually fighting: it has a victim, or something is
-    // attacking it. The one definition of "engaged" the module shares.
+    // attacking it — either one WITHIN DC_ENGAGEMENT_RADIUS. The one definition
+    // of "engaged" the module shares.
+    //
+    // The radius is not a fight radius, it is the sanity bound that keeps a
+    // combat reference from outliving the geometry it was made in. Nothing
+    // clears the attacker set or the victim pointer when a one-way relocation
+    // puts hundreds of yards of unwalkable map between the two, and an
+    // unqualified `victim || attackers` then reports a fight for the rest of the
+    // run. See DC_ENGAGEMENT_RADIUS for what that cost.
     bool IsEngaged(Player* p);
 
     bool AnyPartyEngagement(Player* bot);

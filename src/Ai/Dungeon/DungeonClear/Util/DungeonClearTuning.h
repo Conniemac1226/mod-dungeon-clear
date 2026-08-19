@@ -231,6 +231,36 @@ constexpr uint32 DC_NO_REZZER_HOLD_MAX_MS    = 60000;
 // covering a camp fight the party is strung out across.
 constexpr float DC_FIGHT_HOLDER_RADIUS = 40.0f;
 
+// How far from a member an attacker (or that member's own victim) may be and
+// still count as a FIGHT for DcCombatFlag::IsEngaged.
+//
+// `getAttackers()` holds anything that ever called Attack() on the member and
+// keeps holding it until that creature dies or evades — at ANY range. Cross a
+// navmesh break (a TeleportParty, a one-way drop) and the attackers left behind
+// stay in the set forever, hundreds of yards away and unable to arrive. The bare
+// `victim || attackers` predicate then reads "this party is fighting" for the
+// rest of the run, which is a hard deadlock: the stranded member's follow-tank
+// rung stands down (MayDrive), the tank's spread gate waits on it as out of
+// range, and DcStrandedRecovery — the failsafe built for exactly this — both
+// re-arms its clock every tick and early-outs. All three at once, from one
+// member. Live on Azjol-Nerub, tr-20260818-214742-2: a healer parked 94yd from
+// the tank for 12m37s, held by four Skittering Swarmers 445yd away and 366yd
+// overhead, stranded recovery firing zero times while it happened.
+//
+// DISTANCE ONLY, deliberately. This predicate is asked every tick by every
+// follower rung, party-wide; DcEngageGeometry::IsReachable costs a pathfind per
+// reference, which is fine in ScanCombatHolders (behind cheaper reads, on the
+// phantom-combat hatch) and not fine here.
+//
+// Generous on purpose — it is a sanity bound, not a fight radius. Nothing that
+// is genuinely swinging at, casting on, or being chased by a member sits past
+// 100yd of it (mob spell reach tops out around 40yd, and DC_FIGHT_HOLDER_RADIUS
+// is the 40yd question); anything that does has been left behind by geometry.
+// Set it wide so a real fight is never mistaken for a stranding, since that
+// error walks the tank away mid-pull, whereas the error in the other direction
+// costs one stranded-recovery teleport.
+constexpr float DC_ENGAGEMENT_RADIUS = 100.0f;
+
 // The max party-spread default lives in DcSettingsRegistry ("PartyMaxSpread");
 // the trigger, the advance gate, and the status publisher all read it through
 // DcSettings so per-run addon overrides apply. The HP/mana recovery thresholds
