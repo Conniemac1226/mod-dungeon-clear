@@ -77,6 +77,15 @@ struct DungeonEventProgress
     // transient real-combat transition can never trip it. 0 => not wedged.
     uint32 escortCombatWedgeMs{0};
 
+    // TeleportParty combat hold: ms-time the leader first had to wait for the
+    // PARTY's fight to end before a one-way relocation. A relocation that fires
+    // mid-fight leaves the party's holders on the far side of a navmesh break,
+    // still holding combat references nobody can walk back to — the bots then
+    // try. The gate reads AnyPartyHeldByLiveEnemy, so a phantom flag never arms
+    // it at all; this bounds a real fight that cannot be finished at the
+    // checkpoint. 0 => not waiting.
+    uint32 relocationCombatHoldMs{0};
+
     // Drive-log throttle: the per-tick step line is logged only on a transition
     // (step or result change) or every kLogHeartbeatMs while Running, so a long
     // WaitForSpawn doesn't spam one line per tick.
@@ -96,6 +105,7 @@ struct DungeonEventProgress
         progressMs = 0;
         escortProgressMs = 0;
         escortCombatWedgeMs = 0;
+        relocationCombatHoldMs = 0;
         lastLoggedStep = -1;
         lastLoggedResult = -1;
         lastLogMs = 0;

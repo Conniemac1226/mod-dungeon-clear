@@ -261,6 +261,34 @@ namespace
             if (t & PATHFIND_FARFROMPOLY_START)
                 continue;  // didn't actually help — still off the mesh
 
+            // A nudge is a SIDESTEP. Reject a probe whose generated path is far
+            // longer than the offset itself: on a ramp the blind axis probes
+            // point up/down the slope, and PathGenerator answers one of them by
+            // leaving the incline, running back along the corridor and
+            // returning — tens of yards of travel issued as a 5yd budge, which
+            // is the "long walk" half of the ramp ping-pong. Without this the
+            // recovery is what strands the tank, not what frees it.
+            float const straight = std::sqrt((nx - x) * (nx - x) + (ny - y) * (ny - y));
+            if (straight > 0.0f)
+            {
+                Movement::PointsArray const& pts = gen.GetPath();
+                float pathLen = 0.0f;
+                for (size_t i = 1; i < pts.size(); ++i)
+                {
+                    G3D::Vector3 const d = pts[i] - pts[i - 1];
+                    pathLen += d.length();
+                }
+                if (pathLen > straight * DC_NUDGE_MAX_DETOUR_RATIO)
+                {
+                    LOG_DEBUG("playerbots.dungeonclear",
+                              "[DC:{}] nudge probe ({:+.0f},{:+.0f}) rejected: {:.1f}yd path for a "
+                              "{:.1f}yd sidestep (limit {}x) -> trying the next offset",
+                              bot->GetName(), o.dx, o.dy, pathLen, straight,
+                              DC_NUDGE_MAX_DETOUR_RATIO);
+                    continue;
+                }
+            }
+
             MotionMaster* mm = bot->GetMotionMaster();
             if (mm)
                 mm->MovePoint(0, nx, ny, nz, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, /*generatePath*/ true, false);
@@ -517,6 +545,11 @@ DungeonClearAdvanceAction::Step DungeonClearAdvanceAction::TryEngageHold(Advance
             // Only inspect segments still ahead of the follower's cursor.
             // Anchored segments already walked past don't need to gate
             // the engage handoff.
+            //
+            // DungeonClearAtBossTrigger::IsActive runs the SAME test — it is the
+            // rung this hold is waiting for, so the two must agree or the tank
+            // parks at the boss forever (it did: the trigger's copy started at
+            // segment 0, see the note there). Keep them in step.
             for (size_t i = followerNow.segmentIdx; i + 1 < currentPath.segments.size(); ++i)
             {
                 PathSegment const& seg = currentPath.segments[i];
@@ -804,6 +837,7 @@ void DungeonClearAdvanceAction::FillStuckObs(AdvanceState& st, DungeonClearAppro
     {
         rebuildAttempts = 0;
         appr.resnapAttempts = 0;
+        appr.nudgeAttempts = 0;   // a nudge that bought ground costs nothing
     }
 
     // Per-tick advance telemetry — the three signals the spline-issue lines
@@ -901,11 +935,32 @@ DungeonClearAdvanceAction::Step DungeonClearAdvanceAction::DoStuckRecover(Advanc
     if (rebuildAttempts >= 3)
     {
         rebuildAttempts = 0;
-        if (DC_ALLOW_RECOVERY_MOVES && TryFarFromPolyRecovery(bot))
+        // The nudge needs a budget of its own or it is not an escalation at all.
+        // TryFarFromPolyRecovery succeeds trivially whenever the bot is ON the
+        // navmesh — a 5yd probe from a walkable poly always paths — so it reset
+        // rebuildAttempts and reported "recovered" on every pass, and the stall
+        // beneath it could never be reached. Live in tr-20260818-073620-14: the
+        // ladder climbed to its top rung nine times over nine minutes on the
+        // Blackrock Spire ramp, nudged nine times, and never once stalled or
+        // told the player. The tank paced the same 5yd box the whole time.
+        //
+        // Count consecutive nudges; the recovery-progress watchdog clears the
+        // counter as soon as one actually buys ground (see FillStuckObs), so a
+        // nudge that works still costs nothing.
+        if (DC_ALLOW_RECOVERY_MOVES && appr.nudgeAttempts < DC_MAX_NUDGE_ATTEMPTS &&
+            TryFarFromPolyRecovery(bot))
         {
+            ++appr.nudgeAttempts;
+            LOG_INFO("playerbots.dungeonclear",
+                     "[DC:{}] stuck ladder: navmesh-nudge {} of {} near {}",
+                     bot->GetName(), appr.nudgeAttempts, DC_MAX_NUDGE_ATTEMPTS, next->name);
             DcStatusPublisher::SendAddonMessage(botAI, "CHAT\tRepathing around " + next->name + " \xe2\x80\x94 nudging onto the navmesh.");
             return Step::ReturnTrue;
         }
+        LOG_INFO("playerbots.dungeonclear",
+                 "[DC:{}] stuck ladder exhausted near {} ({} nudge(s) bought no ground) -> stalling",
+                 bot->GetName(), next->name, appr.nudgeAttempts);
+        appr.nudgeAttempts = 0;
         StallDungeonClear(botAI,
             "Stuck near " + next->name + " — not making forward progress. "
             "I'll try to clear nearby mobs; use 'dc skip' if it persists.");
@@ -1147,7 +1202,16 @@ DungeonClearAdvanceAction::Step DungeonClearAdvanceAction::TryReanchorStaleCurso
     if (hop.isDone || hop.isJump)
         return Step::Continue;
 
-    float const staleDist = bot->GetDistance(hop.point.x, hop.point.y, hop.point.z);
+    // Staleness is an ALONG-ROUTE question, so measure it in plan view — the
+    // same geometry NextHop's arrival test uses. A 3D distance here charges the
+    // bot for navmesh Z float, and on a ramp that float is 2-3.5yd: enough to
+    // push a hop that is 10yd away horizontally over the 12yd limit and fire a
+    // re-anchor every single tick. Each re-anchor is a Resnap + a fresh
+    // NextHop, and the resulting cursor churn is what turned a ramp into the
+    // 444-event resnap storm in tr-20260818-073620-14. Vertical mismatch is a
+    // real condition, but it is a FLOOR problem with its own handling below,
+    // not a reason to re-anchor.
+    float const staleDist = bot->GetExactDist2d(hop.point.x, hop.point.y);
 
     // DIRECTION, not just distance. The distance rule alone leaves a hole the
     // width of itself: the off-line rejoin below fires at OFF_PATH_THRESHOLD
@@ -1822,6 +1886,28 @@ bool DungeonClearAdvanceAction::Execute(Event /*event*/)
     // --- Tier C: the hop cluster. One NextHop call advances the follower cursor,
     // so the resulting hop is carried through in st (never recomputed). ---
     st.hop = DungeonPathFollower::NextHop(bot, path, follower);
+
+    // Stranded cursor: the bot has arrived at its own hop in plan view but sits
+    // outside the vertical band, so walking cannot close the gap and NextHop
+    // cannot advance. Left alone this is a silent forever-loop — posStuck
+    // resnaps onto the same point, the rebuild re-derives it from the same
+    // position, and the tank paces under it (tr-20260818-073620-14, nine
+    // minutes at (-54,-366,76) on the Blackrock Spire ramp). Step the cursor
+    // past it and re-fetch, so the tick has somewhere real to go.
+    if (!st.hop.isDone && !st.hop.isJump)
+    {
+        G3D::Vector3 skipped;
+        if (DungeonPathFollower::SkipStrandedPoint(bot, path, follower, skipped))
+        {
+            LOG_INFO("playerbots.dungeonclear",
+                     "[DC:{}] stranded cursor: standing {:.1f}yd under/over route point "
+                     "({:.1f},{:.1f},{:.1f}) -> skipped to seg {} pt {}",
+                     bot->GetName(), bot->GetPositionZ() - skipped.z,
+                     skipped.x, skipped.y, skipped.z, follower.segmentIdx, follower.pointIdx);
+            st.hop = DungeonPathFollower::NextHop(bot, path, follower);
+        }
+    }
+
     TryReanchorStaleCursor(st);  // mutates st.hop / cursor; never terminates the tick
 
     // Sync the legacy "current hop" telemetry — `dc status` and a few tests

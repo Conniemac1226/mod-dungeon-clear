@@ -55,6 +55,7 @@
 #include "Timer.h"
 #include "World.h"
 #include "Ai/Dungeon/DungeonClear/Data/BossPullbackRegistry.h"
+#include "Ai/Dungeon/DungeonClear/Data/DcNeverTargetRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonEventRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Data/RoomAggroRegistry.h"
@@ -223,6 +224,13 @@ namespace
             // fights, so walking over to melee it is pure detour. See
             // DcEngageGeometry::IsDisplayedDead.
             if (DcEngageGeometry::IsDisplayedDead(u))
+                continue;
+            // A scripted never-dies mob is not a blocker either: pulling it is a
+            // fight that can never end in a kill, and the corridor scan would
+            // re-pick it every tick. The FarTargets set already drops these, but
+            // this scan falls back to the stock `possible targets` value when
+            // FarTargets is empty, so the check is repeated here.
+            if (DcNeverTargetRegistry::IsNeverTarget(bot->GetMapId(), u->GetEntry()))
                 continue;
 
             float const ux = u->GetPositionX();
@@ -572,6 +580,8 @@ Unit* DcTargeting::FindEnRouteAggroPack(Player* bot, AiObjectContext* ctx,
                                          return true;
                                      if (!AttackersValue::IsPossibleTarget(u, bot))
                                          return true;
+                                     if (DcNeverTargetRegistry::IsNeverTarget(mapId, u->GetEntry()))
+                                         return true;
                                      if (IsDungeonBossEntry(ctx, u->GetEntry()))
                                          return true;
                                      return RoomAggroRegistry::Find(mapId, u->GetEntry()) != nullptr;
@@ -869,6 +879,11 @@ Unit* DcTargeting::FindNearestReachableHostile(Player* bot)
         // Without this we'd hand RequestPull a target it silently rejects
         // downstream and the tank would just stand there.
         if (!AttackersValue::IsPossibleTarget(c, bot))
+            continue;
+        // A scripted never-dies mob would be picked here forever (see
+        // DcNeverTargetRegistry) — this scan builds its own candidate list from
+        // the creature store, so the FarTargets filter never sees it.
+        if (DcNeverTargetRegistry::IsNeverTarget(bot->GetMapId(), c->GetEntry()))
             continue;
         candidates.emplace_back(dist, c);
     }
@@ -1219,6 +1234,8 @@ Unit* DcTargeting::NearestHostileNearPoint(Player* bot, AiObjectContext* ctx,
                                   u->GetEntry()) == entryFilter->end())
             continue;
         if (!AttackersValue::IsPossibleTarget(u, bot))
+            continue;
+        if (DcNeverTargetRegistry::IsNeverTarget(bot->GetMapId(), u->GetEntry()))
             continue;
         // Never treat an encounter boss or a room-aggro boss/partner as clearable
         // area trash — those belong to the dedicated boss/at-boss paths.

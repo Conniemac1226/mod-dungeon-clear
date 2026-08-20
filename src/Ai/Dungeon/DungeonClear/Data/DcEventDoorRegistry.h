@@ -91,6 +91,118 @@ namespace DcEventDoorRegistry
             case 184125:  // Hydromancer Thespia's panel
             case 184126:  // Mekgineer Steamrigger's panel
                 return true;
+            // Blackrock Depths — the Giant Doors apparatus (map 230). Four
+            // GAMEOBJECT_TYPE_DOOR entries make up one machine, and only the
+            // lever (161460, key-exempt below) is ever meant to be clicked. The
+            // other three are the machine's moving parts: they carry no lock, no
+            // ScriptName and no gossip, and their GO state is driven ENTIRELY by
+            // the lever's SmartAI (161460 source_type 1: on GO state changed ->
+            // SMART_ACTION_ACTIVATE_GOBJECT on guids 15639/15576/15640/15352).
+            //
+            // Their states are INVERTED with respect to each other, so whichever
+            // way the machine stands, one of them is sitting in GO_STATE_READY on
+            // the corridor and reads to the closed-door predicate as a shut gate:
+            //
+            //   doors open  (spawn state) — Giant Doors ACTIVE, Fake Collision +
+            //     BigDoorDummyCollision02 READY. The Fake Collision spawns on top
+            //     of the Giant Doors at (723.1,-105.9,-71.5) with a 18x21x25yd
+            //     model box, so it lands within the blocking-door value's 5yd
+            //     corridor band on the lower passage the route to Bael'Gar uses.
+            //     This is what ended run tr-20260817-044457-30 at 9/19 bosses:
+            //     "blocking-door: flagged ... 'Giant Door Fake Collision' (entry
+            //     161462) 78.1yd from bot as corridor-blocking" -> walk-in ->
+            //     "can't open ... -> auto-pausing".
+            //   doors closed (after the lever) — exactly the reverse, so the
+            //     Giant Doors themselves (157923) become the flagged blocker,
+            //     on the very state the Shadowforge Lock event works to reach.
+            //
+            // Neither state is ever something a player solves at the door, and
+            // neither obstructs a bot: server-side GameObject collision feeds the
+            // dynamic LoS tree only — mmaps carry no gameobjects and the movement
+            // splines are not collision-checked — and the navmesh runs straight
+            // through the doorway at z ~ -71.5 either way. So the whole apparatus
+            // is navigation-invisible; the lever alone drives it.
+            case 157923:  // Giant Doors (startOpen=1; closed by the lever)
+            case 161461:  // Giant Door Mechanism (the winding wheel, 3.3yd from
+                          // the lever — lock-free, so BotCanOpenDoorLikePlayer
+                          // refuses it and it would auto-pause the run standing
+                          // AT the objective it is part of)
+            case 161462:  // Giant Door Fake Collision (open-state collision hull)
+            case 161516:  // BigDoorDummyCollision02 (the upper-level portcullis
+                          // hull, (702.1,-125.7,-45.7))
+                return true;
+            // Utgarde Keep (map 574) — the three forge FLAME WALLS. The forge
+            // hall is a ring around a central hearth, cut into three sectors by
+            // three walls of fire, one per forge. Each is a
+            // GAMEOBJECT_TYPE_DOOR: lock 0, startOpen 0, autoCloseTime 0, no
+            // ScriptName, no AIName, addon flags 32 (NODESPAWN, and notably no
+            // GO_FLAG_LOCKED), spawned in GO_STATE_READY. Their model
+            // (Vr_Forgefire_01, display 7503) is not a door panel at all — it is
+            // a ~60yd-long, ~2yd-thick, ~37yd-tall slab that runs from the
+            // hearth out to the outer wall, so it lies across the ring rather
+            // than beside it and the closed-door predicate reads it as a shut
+            // gate straddling the corridor.
+            //
+            // Nothing a player does at the wall opens it. instance_utgarde_keep
+            // owns all three GO states: SetData(DATA_FORGE_n, ...) opens that
+            // forge's bellows + fire + anvil together, and the only caller is
+            // npc_dragonflayer_forge_master — DONE on JustDied, NOT_STARTED on
+            // Reset (which shuts the wall again). The master that opens a wall
+            // stands in the sector on the PARTY'S side of it, so the wall is
+            // never the thing to solve: it is the readout of a fight the run has
+            // to walk past it to reach.
+            //
+            // Reading the ring as a bearing off the hearth at (360.7,-16.5) —
+            // the navmesh is an annulus r 16..~62 the whole way round, with the
+            // entrance corridor running out at bearing ~195-205 deg and the exit
+            // corridor toward Keleseth at ~75-110 deg — the three walls sit at
+            // 288.5 / 48.5 / 168.5 deg and each master sits one to a sector:
+            //
+            //   sector 1  168.5..288.5  entrance corridor, forge master 1 (246 deg)
+            //     kill him -> 186692 (288.5 deg) drops -> sector 2
+            //   sector 2  288.5.. 48.5  forge master 2 (1 deg)
+            //     kill him -> 186693 (48.5 deg) drops -> sector 3
+            //   sector 3   48.5..168.5  exit corridor, forge master 3 (122 deg)
+            //     kill him -> 186691 (168.5 deg) drops, closing the loop back
+            //     onto the entrance corridor
+            //
+            // so the intended clear is one counter-clockwise lap of the ring,
+            // and the map-574 forge objectives are what enforce it. The wall
+            // itself enforces nothing on a bot: mmaps carry no gameobjects and
+            // movement splines are not collision-checked, so a raised wall has
+            // never stopped one.
+            //
+            // Left unlisted it ends the run outright. Runs tr-20260818-070705-4
+            // and -7 flagged "'Doodad_VR_ForgeFire_First' (entry 186692) 98.0yd
+            // from bot as corridor-blocking", walked in, reported "can't open
+            // ... -> auto-pausing", and died at 0/3 bosses 3m45s in with the
+            // tank still 57yd short of forge 1.
+            //
+            // Nor is the flagged wall reliably the one the corridor crosses.
+            // PathLegCrossesDoor tests the DBC GeoBox through ToDoorLocal, the
+            // GameObject::IsInRange frame, whose matrix [[sinA,cosA],[cosA,-sinA]]
+            // has determinant -1 — it MIRRORS. The server's real collision uses
+            // GameObjectModel's Rz(orientation) instead. The two agree on a
+            // symmetric door panel and disagree on a slab that sits entirely to
+            // one side of its origin: here they place the same wall 120 degrees
+            // apart, so per-door geometry tuning cannot be made to work on these
+            // three anyway.
+            //
+            // IsScriptOnly would only stop the click — the wall would still be
+            // flagged, still parked at, still auto-paused on. IsSelfClearing
+            // would hold instead of pausing, but there is no timer to hold for:
+            // the wall opens on a kill, and holding at it starves the very fight
+            // that opens it. Navigation-invisible is the only correct answer.
+            //
+            // This does not blind the run to them. DcEngageGeometry::
+            // ClosedDoorBetween rays the REAL collision mesh and does not
+            // consult this list, so trash and bosses on the far side of a wall
+            // that is still up stay vetoed — the party is never dragged through
+            // a raised flame wall by a far-side pack.
+            case 186691:  // Doodad_VR_ForgeFire_Third  (opens on forge master 3)
+            case 186692:  // Doodad_VR_ForgeFire_First  (opens on forge master 1)
+            case 186693:  // Doodad_VR_ForgeFire_Second (opens on forge master 2)
+                return true;
             default:
                 return false;
         }
@@ -181,7 +293,13 @@ namespace DcEventDoorRegistry
     // postboxes and Scarlet Cannons, Scholomance's Brazier of the Herald), and
     // the script-driven lock-free gates of both dungeons (Scholomance's Kirtonos
     // gate 175570 and the seven Gandling gates, Stratholme's ziggurat doors) —
-    // those are instance-script GO-state territory and stay untouched.
+    // those are instance-script GO-state territory and stay untouched. Same
+    // call in Blackrock Depths: the empty-lock-85 doors (170573/170574 Golem
+    // Room, 170575 Throne Room, 170576/170577 Tomb of the Seven) and the Bar
+    // Door 170571 (lock 739, Grim Guzzler Key) are all cached AND state-driven
+    // by instance_blackrock_depths, so they are script territory whatever their
+    // lock says; and the Relic Coffer Doors (lock 639, Relic Coffer Key) are the
+    // Vault puzzle's loot cells, not a corridor the run has to walk through.
     inline bool IsKeyExempt(uint32 goEntry)
     {
         switch (goEntry)
@@ -238,6 +356,81 @@ namespace DcEventDoorRegistry
             // via map-429 events 9 and 10; this one has no event because it sits
             // off the West boss path — the exemption is its only opener.
             case 179549:  // Dire Maul North — Door (lock 1562, Crescent Key)
+
+            // --- Blackrock Depths (map 230) ------------------------------
+            // Lock 680 — the Shadowforge Key (11000), or lockpicking 250. The
+            // key drops from Fineous Darkvire, so a party that killed him could
+            // in principle hold it; a bot party never does, and GO_FLAG_LOCKED
+            // (addon flags 34 on every entry below) makes DcDoorPolicy suppress
+            // the lockpicking slots as well. All five are plain traversal gates:
+            // no ScriptName, no autoCloseTime, no SmartAI (bar the lever's), and
+            // instance_blackrock_depths only caches two of their GUIDs — the
+            // lever's (GoShadowLockGUID) and the Lyceum's (GoLyceumGUID) — and
+            // never reads or writes any of their GO states.
+            //
+            // Lock 680 gates the run in three places, and it is the whole set or
+            // nothing: opening one only moves the auto-pause to the next.
+            //
+            //   * The two Shadowforge Gates (170559 at x 496 / 170560 at x 570,
+            //     both on the z ~ -70 floor) are the west and east ends of the
+            //     Shadowforge City concourse. 170560 is the one the route east
+            //     out of Bael'Gar walks into — it was the recorded blocker in
+            //     6 of 10 runs of test plan tp-20260817-171356-1, every one of
+            //     them parked at 10/20 bosses with "can't open ... 170560".
+            //   * The East Garrison Door (x 560, z ~ -60) is the doorway into
+            //     the room that holds the lever: that floor runs x 552..620 /
+            //     y -68..-36 and pinches at x ~ 560, with the lever at the far
+            //     (east) end. So it has to open before the Shadowforge Lock
+            //     objective can be reached at all.
+            //   * The Lyceum (x 1312, z ~ -92) is the single door out of the
+            //     Shadowforge City side into the back half of the dungeon. Every
+            //     boss from Ambassador Flamelash and The Seven through Magmus and
+            //     Emperor Dagran Thaurissan is behind it. No run has reached it
+            //     yet only because 170560 stopped them first.
+            //
+            // The lever is listed for the same reason the two Gordok doors above
+            // are: map-230 event 2 clicks it (UseGO, which bypasses DcDoorPolicy),
+            // but the route to that objective ENDS on the lever, so the
+            // blocking-door value flags it first and the door-blocked action would
+            // auto-pause the run one step short of the click. Both paths end in
+            // the same GameObject::Use(); whichever fires first wins and the other
+            // is a no-op (UseDoorOrButton early-returns unless lootState is
+            // GO_READY). Clicking it is the intended sequence in full: Use() runs
+            // SmartGameObjectAI::GossipHello (which returns false) before the lock
+            // check, reaches the DOOR branch, and the resulting GO_ACTIVATED loot
+            // state fires the lever's SMART_EVENT_GO_STATE_CHANGED chain that
+            // closes the Giant Doors.
+            case 170559:  // Shadowforge Gate — west (lock 680, Shadowforge Key)
+            case 170560:  // Shadowforge Gate — east (lock 680, Shadowforge Key)
+            case 170570:  // East Garrison Door (lock 680, Shadowforge Key)
+            case 170558:  // The Lyceum (lock 680, Shadowforge Key)
+            case 161460:  // The Shadowforge Lock (lock 680; SmartAI closes the
+                          // Giant Doors off its own state change)
+
+            // Lock 699 — the Prison Cell Key (11140), or lockpicking 250, on the
+            // eight Detention Block cell doors. Same shape as the lock-680 gates
+            // above and screened the same way: GAMEOBJECT_TYPE_DOOR, addon flags
+            // 34, no ScriptName, no AIName, no smart_scripts row, no conditions
+            // row, and no mention anywhere in instance_blackrock_depths — the
+            // instance script's door enum stops at the Lyceum. They are ordinary
+            // traversal gates into the cells, and the cells are where the route
+            // to Houndmaster Grebmar goes: 170567 auto-paused a run of test plan
+            // tp-20260817-171356-1 at 2/20 bosses, parked 0.0yd into the door on
+            // a route the diag reported as ok/1seg dev=0.5.
+            //
+            // Listing all eight rather than only the observed one: the boss route
+            // threads several of these cells depending on where the roster's
+            // anchors land, they are interchangeable in every respect the
+            // checklist tests, and one-at-a-time would just replay this failure
+            // from a different cell.
+            case 170562:
+            case 170563:
+            case 170564:
+            case 170565:
+            case 170566:
+            case 170567:
+            case 170568:
+            case 170569:  // Cell Door ×8 (lock 699, Prison Cell Key)
                 return true;
             default:
                 return false;

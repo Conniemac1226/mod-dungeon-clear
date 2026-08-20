@@ -56,6 +56,9 @@ namespace
             RegisterSethekkHallsRoster(t);
             RegisterBlackMorassRoster(t);
             RegisterMaraudonRoster(t);
+            RegisterUtgardeKeepRoster(t);
+            RegisterNexusRoster(t);
+            RegisterAzjolNerubRoster(t);
             return t;
         }();
         return kPatches;

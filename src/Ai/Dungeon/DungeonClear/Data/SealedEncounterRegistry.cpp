@@ -31,10 +31,33 @@ namespace
     // sits inside this by construction while moving and the clump costs nothing in the
     // healthy case; it only bites on a genuine straggler. Tighter would fight
     // follow-tank's own spacing and turn every approach into a stutter.
+    // --- Azjol-Nerub (601) — Anub'arak -----------------------------------------
+    //
+    // instance_azjol_nerub registers THREE DOOR_TYPE_ROOM doors on DATA_ANUBARAK
+    // (192396 / 192397 / 192398, all at x 550-552, y 252-256), and
+    // boss_anub_arak::JustEngagedWith schedules EVENT_CLOSE_DOORS at 5s, whose
+    // only body is `BossAI::_JustEngagedWith()` — the SetBossState(IN_PROGRESS)
+    // that shuts them. Five seconds after the pull the arena is sealed, and a
+    // straggler still in the north corridor is out for the whole fight.
+    //
+    // The volume is the arena itself, read off the live 601 navmesh: one flat
+    // floor at z 224.07-224.29 filling a rough circle x 528-572, y 236-276, fed
+    // by a single corridor from the north (x 544-560, climbing to z ~230 by
+    // y 320) and leaving by a second to the south. [526,574] x [234,278] is that
+    // floor with 2yd of slack and nothing else — it agrees with the encounter's
+    // own BossBoundaryData, a CircleBoundary at (550.6, 253.6) r 32.
+    //
+    // approachRadius 45yd from Anub'arak's spawn (551.0, 248.3, 224.0) reaches
+    // back to y ~293, i.e. up into the mouth of the north corridor, which is
+    // where the party needs to be closing up. It does NOT reach the Anub'ar
+    // Prime Guards at y 341, so that pull runs under the ordinary gates.
+    //
+    // musterSpread 10yd, the same number and the same reasoning as Selin's.
     SealedEncounterRow const kRows[] =
     {
         // mapId  boss   minX    maxX    minY    maxY   approach  muster
         {   585, 24723, 216.0f, 260.0f, -45.0f, 45.0f,    45.0f,  10.0f },
+        {   601, 29120, 526.0f, 574.0f, 234.0f, 278.0f,   45.0f,  10.0f },
     };
 }
 

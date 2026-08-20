@@ -8,10 +8,12 @@
 #include <limits>
 #include <unordered_set>
 
+#include "InstanceScript.h"
 #include "Log.h"
 #include "Map.h"
 #include "Player.h"
 #include "Ai/Dungeon/DungeonClear/Data/BossSpawnIndex.h"
+#include "Ai/Dungeon/DungeonClear/Data/DcFactionEntrySwapRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonWingRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Overrides/BossRosterRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Util/NavmeshSnap.h"
@@ -92,6 +94,49 @@ namespace
                           "team — treating as a clear-to travel objective (no engage)",
                           mapId, info.entry, info.name);
             }
+        }
+        return bosses;
+    }
+
+    // Bosses the instance script UpdateEntry's to the opposing faction's creature
+    // depending on who opened the instance (The Nexus' Frozen Commander). The
+    // rules — and the full account of what breaks without this — live in
+    // DcFactionEntrySwapRegistry.h; here we only resolve the team and rewrite.
+    //
+    // The swap is decided by the INSTANCE's team (stamped from the group leader
+    // when the map was created — MapInstanced::CreateInstance), not by the bot's
+    // own team: with two-side grouping enabled a bot's race can disagree with the
+    // instance it is standing in, and the creature in the world follows the
+    // instance. Fall back to the bot's team only when nothing was stamped
+    // (TEAM_NEUTRAL — a map that is not two-faction, where no rule can match).
+    TeamId ResolveInstanceTeam(Player* bot)
+    {
+        if (InstanceScript* inst = bot->GetInstanceScript())
+        {
+            TeamId const stamped = inst->GetTeamIdInInstance();
+            if (stamped != TEAM_NEUTRAL)
+                return stamped;
+        }
+        return bot->GetTeamId();
+    }
+
+    std::vector<DungeonBossInfo> ApplyFactionEntrySwaps(Player* bot, uint32 mapId,
+                                                        std::vector<DungeonBossInfo> bosses)
+    {
+        if (!DcFactionEntrySwap::HasRules(mapId))
+            return bosses;
+
+        TeamId const team = ResolveInstanceTeam(bot);
+        for (DungeonBossInfo& info : bosses)
+        {
+            uint32 const resolved = DcFactionEntrySwap::Resolve(mapId, info.entry, team);
+            if (resolved == info.entry)
+                continue;
+            LOG_DEBUG("playerbots.dungeonclear",
+                      "[dungeon-clear] map {} boss '{}' is faction-swapped for this "
+                      "instance's team — tracking entry {} instead of {}",
+                      mapId, info.name, resolved, info.entry);
+            info.entry = resolved;
         }
         return bosses;
     }
@@ -186,6 +231,10 @@ std::vector<DungeonBossInfo> DungeonBossesValue::Calculate()
     // Per-team faction reclassification (friendly-faction bosses -> flyby
     // objectives) before wing-filtering and snapping.
     roster = ApplyFactionObjectives(bot, mapId, std::move(roster));
+
+    // Per-team entry rewrite for bosses the instance script UpdateEntry's to the
+    // opposing faction's creature (The Nexus' Frozen Commander).
+    roster = ApplyFactionEntrySwaps(bot, mapId, std::move(roster));
 
     return SnapAll(map, FilterToCurrentWing(bot, mapId, std::move(roster)));
 }

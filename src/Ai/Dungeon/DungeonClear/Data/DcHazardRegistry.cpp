@@ -127,13 +127,45 @@ namespace
     // Noxious Cloud it shares with the sludge, which is a pool row, not a creature
     // row. Giving it a creature keep-out would fence off a mob that is not actually
     // emitting anything.
-    constexpr std::array<DcHazardEmitter, 5> kEmitters = {{
+    // Utgarde Keep (map 574), entry 23997 "Ingvar Throw Dummy" — Ingvar the
+    // Plunderer's thrown axe, phase 2 only. boss_ingvar_the_plunderer casts 42749
+    // "Throw Axe", which SUMMONS this dummy and (JustSummoned) sends it to a
+    // RANDOM party member's position; the dummy carries a permanent
+    // creature_template_addon aura 42750, SPELL_AURA_PERIODIC_TRIGGER_SPELL on a
+    // 1000ms period firing 42751 — SPELL_EFFECT_SCHOOL_DAMAGE for 1750-2250
+    // shadow at EffectRadiusIndex 5.0yd around the dummy — until EVENT_AXE_PICKUP
+    // despawns it ~10s later.
+    //
+    // ~2000 dps in 5yd, dropped ON somebody, in the middle of the boss fight. It
+    // is a threat-2 emitter by construction and there is no version of "fight it":
+    // creature_template unit_flags 33554432 is UNIT_FLAG_NOT_SELECTABLE and its
+    // AIName is NullCreatureAI, so nothing can target it and nothing it does can
+    // be interrupted. Leaving is the whole answer.
+    //
+    // The bands are the Destroyed Sentinel's "leave, then carry on" pair (hold 2,
+    // slack 6), NOT Maraudon's wide stay-out pair, and that is deliberate: the
+    // party is mid-encounter with a live boss it must keep tanking, the dummy
+    // despawns on its own in ~10s, and a wide hold band would walk the melee off
+    // Ingvar for a hazard that is about to delete itself. Danger band is
+    // 5 + 2 = 7yd; the retreat aims at 5 + 6 = 11yd, outside this row's own 7yd
+    // placement radius so PointIsHot cannot reject the landing spot.
+    //
+    // radius 7 = the 5yd pulse plus 2yd of margin, and no wider: the dummy lands
+    // on the floor the party is actively fighting on, so an over-wide keep-out
+    // would sterilise Ingvar's own arena for placement.
+    //
+    // No DcNavPenaltyRegistry counterpart — the dummy has no author-time position
+    // at all (it lands wherever a random member was standing), so the live
+    // predicates are the whole defence, exactly as for the ground pools.
+
+    constexpr std::array<DcHazardEmitter, 6> kEmitters = {{
         //                    radius  zBand  vacate  hold  slack
         { 552, 20869, /*Arcatraz Sentinel  (fought)      */ 22.0f, 12.0f,  0.0f, 2.0f, 6.0f },
         { 552, 21761, /*Destroyed Sentinel (leave once)  */ 15.0f, 12.0f, 15.0f, 2.0f, 6.0f },
         { 552, 21303, /*Defender Corpse                  */ 12.0f,  8.0f,  0.0f, 2.0f, 6.0f },
         { 552, 21304, /*Warder Corpse                    */ 12.0f,  8.0f,  0.0f, 2.0f, 6.0f },
         { 349, 12222, /*Creeping Sludge    (STAY OUT)    */  8.0f,  6.0f,  5.0f, 6.0f, 9.0f },
+        { 574, 23997, /*Ingvar Throw Dummy (leave once)  */  7.0f, 10.0f,  5.0f, 2.0f, 6.0f },
     }};
 
     // ---- the ground-pool table ------------------------------------------
@@ -201,12 +233,45 @@ namespace
     // clear to 11yd, the slime walks off its own pool after them, and they
     // re-engage on clean ground. The Creeping Sludge's 2.0 yd/s makes that
     // separation slow but certain.
-    constexpr std::array<DcGroundHazard, 2> kGroundHazards = {{
+    // Azjol-Nerub (map 601), spells 53400 (normal) and 59419 (heroic) "Acid
+    // Cloud" — Hadronox's ground pool, and the longest-lived one on the clear.
+    // From Spell.dbc: Effect[0] = 27 SPELL_EFFECT_PERSISTENT_AREA_AURA applying
+    // aura 3 SPELL_AURA_PERIODIC_DAMAGE, EffectRadiusIndex 8 = 5.0yd,
+    // EffectAmplitude 1000ms, DurationIndex 23 = 90 SECONDS, BasePoints+1 = 707
+    // nature per tick normal and 1414 heroic. Ninety seconds is 4-6x the two
+    // rows above, so unlike a Cloud of Disease this one does not simply expire
+    // while the party finishes the pull — it outlives the fight it was cast in.
+    //
+    // BOTH IDS ARE REGISTERED, and that is not belt-and-braces. boss_hadronox
+    // only ever casts 53400; spelldifficulty_dbc row 53400 maps it to 59419 on
+    // heroic, and the DynamicObject then reports 59419 from GetSpellId(). A row
+    // for 53400 alone leaves the retreat inert on exactly the difficulty where
+    // the pool does double damage.
+    //
+    // She casts it every 25s at a RANDOM party member inside 100yd
+    // (EVENT_HADRONOX_ACID -> SelectTarget(Random, 0, 100, false)), so the pool
+    // lands on top of whoever it picked rather than under the boss — the
+    // Destroyed Sentinel shape, not the Maraudon-slime shape, and the reason
+    // vacateRadius carries this row rather than the placement keep-out.
+    //
+    // Sizing is the two rows above, unchanged: same 5yd aura, same 8/5 split,
+    // same 3yd gap to the 11yd retreat aim point (vacate 5 + VacateRetreatSlack).
+    // Do not raise `radius` toward 11 without raising VacateRetreatSlack with it.
+    //
+    // zBand 6 matters more here than anywhere else on the clear. Azjol-Nerub is
+    // a vertical shaft: the platform the fight ends on is z ~733, Hadronox's
+    // spawn ledge is z ~675, the pit floor is z ~648 and the lower kingdom is
+    // z ~289. A pool dropped on one of those decks must not fence off the deck
+    // below it, and 6yd is comfortably inside the smallest of those gaps (27yd).
+    constexpr std::array<DcGroundHazard, 4> kGroundHazards = {{
         //                   radius  zBand  vacate  hold  slack
         // Cloud of Disease — the pool a dying Diseased Ghoul (10495) leaves.
         { 289, 17742, 8.0f, 6.0f, 5.0f, 2.0f, 6.0f },
         // Noxious Cloud — dropped in combat AND on death by both Maraudon slimes.
         { 349, 21070, 8.0f, 6.0f, 5.0f, 2.0f, 6.0f },
+        // Acid Cloud — Hadronox, normal (707/s) and heroic (1414/s), 90s each.
+        { 601, 53400, 8.0f, 6.0f, 5.0f, 2.0f, 6.0f },
+        { 601, 59419, 8.0f, 6.0f, 5.0f, 2.0f, 6.0f },
     }};
 
     // ---- the trap table --------------------------------------------------

@@ -58,14 +58,22 @@ namespace DcNavHarness
                       float tx, float ty, float tz);
 
     // Snap a WoW-space point to the nearest navmesh poly, using the same
-    // {y,z,x} Detour coordinate order as BuildCoreFromMesh and a permissive
-    // include filter. `out` receives the snapped WoW-space stand position.
-    // Returns false if no poly lies within (hExtent, vExtent, hExtent) of the
-    // point — i.e. the coordinate is off the navmesh. Used to validate/correct
-    // authored anchor + teleport coordinates against the real mesh.
+    // {y,z,x} Detour coordinate order as BuildCoreFromMesh. `out` receives the
+    // snapped WoW-space stand position. Returns false if no poly lies within
+    // (hExtent, vExtent, hExtent) of the point — i.e. the coordinate is off the
+    // navmesh. Used to validate/correct authored anchor + teleport coordinates
+    // against the real mesh.
+    //
+    // `includeFlags` is the Detour include mask, default "any navigable poly".
+    // Passing NAV_GROUND alone turns this into a LIQUID TEST: the mmap generator
+    // meshes water at the liquid SURFACE and stamps those polys NAV_WATER, so a
+    // point standing on water snaps to itself with 0xffff and jumps to the pool
+    // floor (or misses entirely) with NAV_GROUND. That is the check that catches
+    // a hand-authored route wading into a lake — see TestAzjolNerubRouteProbe.
     bool NearestPoint(dtNavMesh const* mesh,
                       float x, float y, float z,
-                      float hExtent, float vExtent, G3D::Vector3& out);
+                      float hExtent, float vExtent, G3D::Vector3& out,
+                      unsigned short includeFlags = 0xffff);
 }
 
 #endif  // _DC_NAV_HARNESS_H

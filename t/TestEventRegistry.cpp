@@ -13,6 +13,7 @@
 
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonEventRegistry.h"
+#include "Ai/Dungeon/DungeonClear/Data/DungeonClearRouteRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Data/Events/DungeonEventTables.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonWingRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Overrides/BossRosterRegistry.h"
@@ -1017,6 +1018,7 @@ TEST(DungeonEventIntegrityTest, EveryAuthoredObjectiveHookIdIsRegistered)
         { 9, "Shattered Halls — StartNethekurseIntro" },
         { 10, "The Underbog — SendGhazanToPlatform" },
         { 12, "Black Morass — BmDriveWave (BlackMorassDriver.cpp)" },
+        { 13, "Azjol-Nerub — HadronoxHasWebbedTheDoors" },
     };
 
     for (Expected const& e : kHooks)
@@ -1037,4 +1039,282 @@ TEST(DungeonEventIntegrityTest, EveryAuthoredObjectiveHookIdIsRegistered)
     // any log a reader still consults.
     EXPECT_FALSE(ObjectiveHookRegistry::Has(11))
         << "hook id 11 is RETIRED (old BmPullDrainers) and must stay unused";
+}
+
+// --- Utgarde Keep (574): the forge masters must be swept ONE AT A TIME -----
+// The three Dragonflayer Forge Masters share entry 24079 and refuse to be fought
+// out of order (npc_dragonflayer_forge_master::JustEngagedWith EnterEvadeMode()s
+// unless the previous forge's instance bit is set). The ordering is bought by
+// three separate position-anchored ClearRadius sweeps, one per forge, wired to
+// three roster objectives in order. Two ways to break that silently, both pinned
+// here: collapsing the sweeps onto one entry-keyed KillCreature step, and adding
+// the usual by-entry backstop — either would seek the NEAREST 24079 and re-open
+// the out-of-order engage.
+TEST(DungeonEventIntegrityTest, UtgardeKeepForgesAreSweptOneAtATime)
+{
+    constexpr uint32 UK_FORGE_MASTER = 24079;
+    struct Forge { uint32 eventId; float x; float y; };
+    // West -> east -> north, the order the instance script enforces.
+    Forge const kForges[] = {
+        { 1, 349.6f, -39.3f },
+        { 2, 385.8f, -16.2f },
+        { 3, 347.6f,   4.6f },
+    };
+
+    for (Forge const& f : kForges)
+    {
+        DungeonEvent const* ev = DungeonEventRegistry::Find(/*map*/ 574, f.eventId);
+        ASSERT_NE(ev, nullptr) << "Utgarde Keep (574) event " << f.eventId << " is missing";
+
+        EXPECT_EQ(ev->activation, EventActivation::Anchored)
+            << "the forge order is bought by the OBJECTIVE order, so each sweep must"
+               " be anchored to its own objective, not fired by a predicate";
+        EXPECT_EQ(ev->gate, DcDifficultyGate::Any)
+            << "the ordering script runs in both difficulties";
+        EXPECT_FALSE(ev->required)
+            << "nothing gates on ForgeEventMask but the masters themselves, so a"
+               " wedged forge must degrade rather than stall the run";
+
+        ASSERT_EQ(ev->steps.size(), 1u)
+            << "event " << f.eventId << " must be exactly one sweep — a second step"
+               " would make it a rewind hazard needing .Persistent()";
+        EventStep const& s = ev->steps[0];
+        EXPECT_EQ(s.kind, EventStepKind::ClearRadius)
+            << "must be POSITION-anchored: KillCreature resolves by ENTRY and all"
+               " three masters share 24079, so it would seek the nearest one";
+        ASSERT_EQ(s.entryFilter.size(), 1u) << "the sweep must be entry-filtered";
+        EXPECT_EQ(s.entryFilter[0], UK_FORGE_MASTER);
+        EXPECT_NEAR(s.x, f.x, 0.5f) << "sweep centred on its own forge master";
+        EXPECT_NEAR(s.y, f.y, 0.5f);
+        // 12yd names exactly one master: they are 41-44yd apart and the nearest
+        // other spawn to any of them is 14.7yd. A wider volume would swallow a
+        // neighbouring forge and the ordering with it.
+        EXPECT_GT(s.radius, 0.0f);
+        EXPECT_LE(s.radius, 14.0f)
+            << "a sweep wider than the 14.7yd nearest neighbour stops naming one forge";
+        EXPECT_GT(s.timeoutMs, 30000u)
+            << "the 30s EventStepTimeout default is short of a walk-in plus an elite kill";
+
+        // NO by-entry backstop, deliberately — see the file note.
+        for (EventStep const& step : ev->steps)
+            EXPECT_FALSE(step.kind == EventStepKind::KillCreature &&
+                         step.creatureEntry == UK_FORGE_MASTER)
+                << "a KillCreature(Engage) backstop on 24079 seeks the NEAREST master,"
+                   " which past forge 1 is usually the wrong one — it undoes the"
+                   " ordering these three objectives exist to buy";
+    }
+
+    // The three sweeps must be three DISTINCT places, not a copy-paste of one.
+    EXPECT_NE(DungeonEventRegistry::Find(574, 1)->steps[0].x,
+              DungeonEventRegistry::Find(574, 3)->steps[0].x);
+    EXPECT_NE(DungeonEventRegistry::Find(574, 1)->steps[0].y,
+              DungeonEventRegistry::Find(574, 2)->steps[0].y);
+}
+
+// --- The Nexus (576): three sphere clicks are what free Keristrasza --------
+// Keristrasza spawns UNIT_FLAG_NON_ATTACKABLE inside a frozen prison, and
+// boss_keristrasza::CanRemovePrison only lets go once DATA_TELESTRA_ORB,
+// DATA_ANOMALUS_ORB and DATA_ORMOROK_ORB are all DONE. The only thing in the
+// instance that sets any of them is a click on the matching Containment Sphere
+// (each GO's smart_scripts SMART_EVENT_GOSSIP_HELLO -> SET_INST_DATA). Miss one
+// and the run walks to an unattackable last boss and stalls, so all three clicks
+// must be Required, distinct, and ordered after the orb bosses.
+TEST(DungeonEventIntegrityTest, NexusSpheresAreThreeRequiredClicks)
+{
+    struct Sphere { uint32 eventId; uint32 goEntry; };
+    Sphere const kSpheres[] = {
+        { 1, 188526 },  // Telestra's
+        { 2, 188528 },  // Ormorok's
+        { 3, 188527 },  // Anomalus'
+    };
+
+    for (Sphere const& sp : kSpheres)
+    {
+        DungeonEvent const* ev = DungeonEventRegistry::Find(/*map*/ 576, sp.eventId);
+        ASSERT_NE(ev, nullptr) << "The Nexus (576) event " << sp.eventId << " is missing";
+
+        EXPECT_EQ(ev->activation, EventActivation::Anchored)
+            << "each sphere gets its own objective anchor so boss-nav does the walk"
+               " — the three are 40-57yd apart, past what an event step's own HopTo"
+               " is meant to cover";
+        EXPECT_EQ(ev->gate, DcDifficultyGate::Any)
+            << "the prison gates Keristrasza on both difficulties";
+        EXPECT_TRUE(ev->required)
+            << "these gate the LAST BOSS — a sphere that will not click must surface"
+               " as a stall, not be skipped past onto an unattackable Keristrasza";
+
+        ASSERT_EQ(ev->steps.size(), 1u)
+            << "one click; a second step would make it a rewind hazard needing"
+               " .Persistent()";
+        EventStep const& s = ev->steps[0];
+        EXPECT_EQ(s.kind, EventStepKind::UseGameObject);
+        EXPECT_EQ(s.goEntry, sp.goEntry);
+        EXPECT_GT(s.radius, 8.0f)
+            << "the GO search must cover the objective's 8yd arrive radius";
+        EXPECT_GT(s.timeoutMs, 30000u)
+            << "the step deliberately HOLDS on a still-NOT_SELECTABLE sphere, so the"
+               " default 30s would read a boss-state race as a failure";
+    }
+
+    // Three DISTINCT spheres, not a copy-paste of one.
+    EXPECT_NE(DungeonEventRegistry::Find(576, 1)->steps[0].goEntry,
+              DungeonEventRegistry::Find(576, 2)->steps[0].goEntry);
+    EXPECT_NE(DungeonEventRegistry::Find(576, 2)->steps[0].goEntry,
+              DungeonEventRegistry::Find(576, 3)->steps[0].goEntry);
+}
+
+// --- Azjol-Nerub (601): the two structural events -------------------------
+//
+// 1. Hadronox's swarm is INFINITE until every Anub'ar Crusher (28922) is dead
+//    AND she has walked up to the platform and cast Web Front Doors — and every
+//    add she eats while it carries her Leech Poison heals her 10% of max HP, so
+//    an un-webbed Hadronox is not killable. Two ways to break the fix silently,
+//    both pinned here: dropping the crusher gate (releasing the party the moment
+//    the platform looks clear), and dropping the web wait (handing her to boss
+//    navigation while she is still 60yd below, mid-climb).
+// 2. The way on is a hole with a ~360yd drop across a hard navmesh break. The
+//    checkpoint must stay on the pit floor and the landing under the hole.
+TEST(DungeonEventIntegrityTest, AzjolNerubHoldsThePlatformUntilTheDoorsAreWebbed)
+{
+    constexpr uint32 AN_ANUBAR_CRUSHER = 28922;
+
+    DungeonEvent const* ev = DungeonEventRegistry::Find(/*map*/ 601, /*event*/ 1);
+    ASSERT_NE(ev, nullptr) << "Azjol-Nerub (601) event 1 'Hadronox: web the doors' is missing";
+
+    EXPECT_EQ(ev->activation, EventActivation::Anchored);
+    EXPECT_EQ(ev->gate, DcDifficultyGate::Any)
+        << "the swarm and its off-switch are identical on both difficulties";
+    EXPECT_FALSE(ev->required)
+        << "Optional on purpose: a wedged crusher pack must degrade into 'fight her"
+           " wherever she is', not stall the run for the human";
+    EXPECT_TRUE(ev->persistent)
+        << "both steps span a continuous swarm fight — a combat gap must not rewind"
+           " the crusher gate";
+
+    ASSERT_EQ(ev->steps.size(), 2u);
+
+    // Step 1 — GARRISON on the platform until no Anub'ar Crusher lives.
+    EventStep const& hold = ev->steps[0];
+    EXPECT_EQ(hold.kind, EventStepKind::MoveTo)
+        << "a garrison, not a sweep: the crusher packs MovePoint themselves onto"
+           " this deck, so seeking them only marches the tank into the add stream";
+    EXPECT_EQ(hold.creatureEntry, AN_ANUBAR_CRUSHER)
+        << "the gate must key on the Anub'ar Crusher — it is the ONLY entry"
+           " boss_hadronox's _crushersLeft counts (ACTION_CRUSHER_DIED comes from"
+           " npc_anub_ar_crusher::JustDied alone), and it is what gates MOVE3";
+    EXPECT_FALSE(hold.wantAlive) << "hold until they are DEAD";
+    EXPECT_GT(hold.timeoutMs, 30000u)
+        << "the default 30s cannot cover pack 1 plus two packs walking ~65yd down"
+           " from the ledges under a swarm that never stops";
+
+    // Step 2 — wait for the web itself.
+    EventStep const& web = ev->steps[1];
+    EXPECT_EQ(web.kind, EventStepKind::Custom)
+        << "killing the crushers only makes MOVE3 ELIGIBLE (it is scheduled at 70s"
+           " and re-checked every 2s); the party must hold until the doors are"
+           " actually webbed";
+    EXPECT_EQ(web.hookId, 13u) << "ObjectiveHookRegistry HadronoxHasWebbedTheDoors";
+    EXPECT_TRUE(ObjectiveHookRegistry::Has(web.hookId));
+    EXPECT_GT(web.timeoutMs, 30000u);
+}
+
+TEST(DungeonEventIntegrityTest, AzjolNerubDropsPastTheLakeNotDownTheWall)
+{
+    DungeonEvent const* ev = DungeonEventRegistry::Find(/*map*/ 601, /*event*/ 2);
+    ASSERT_NE(ev, nullptr) << "Azjol-Nerub (601) event 2 'Drop into the lower kingdom' is missing";
+
+    EXPECT_EQ(ev->activation, EventActivation::Anchored);
+    EXPECT_TRUE(ev->required)
+        << "there is no other route into the lower kingdom — a skip strands the run";
+
+    ASSERT_EQ(ev->steps.size(), 1u)
+        << "one hop; a second step would make it a rewind hazard needing .Persistent()";
+    EventStep const& s = ev->steps[0];
+    EXPECT_EQ(s.kind, EventStepKind::TeleportParty)
+        << "NOT DropInHole: the drop is ~360yd and nothing in the module makes a"
+           " fall that long survivable";
+
+    // The checkpoint is on the pit floor at the hole's rim (mesh probe at
+    // (522,548): 648.87) — that is where the party musters and it has not moved.
+    EXPECT_NEAR(s.x, 522.0f, 3.0f);
+    EXPECT_NEAR(s.y, 548.0f, 3.0f);
+    EXPECT_NEAR(s.z, 648.9f, 2.0f);
+
+    // The landing is NOT under the hole. TeleportParty is explicitly a diagonal
+    // relocation, and directly beneath the hole are the two traps this
+    // coordinate exists to step past: the lake (NAV_WATER meshed at the liquid
+    // surface, 145yd of it) and the x=533.3333 mmtile seam whose sliver fan
+    // defeats the long-range smoothing walk. (544.18, 481.26, 288.98) is dry
+    // ground past both — one NAV_GROUND surface in the column, nothing else
+    // within 400yd. See AN_DROP_LANDING_X.
+    EXPECT_NEAR(s.landX, 544.18f, 1.0f);
+    EXPECT_NEAR(s.landY, 481.26f, 1.0f);
+    EXPECT_NEAR(s.landZ, 288.98f, 1.0f);
+    EXPECT_GT(s.landX - 533.3333f, 5.0f)
+        << "the drop landing must stay clear of the x=533.3333 mmtile seam";
+    EXPECT_LT(s.landY, 500.0f)
+        << "the landing must be SOUTH of the lake's drop-chamber end, not in it";
+    EXPECT_GT(s.z - s.landZ, 300.0f) << "this is the 360yd shaft, not a ledge hop";
+}
+
+// The lower kingdom is hand-authored because the navmesh pathfinder cannot
+// smooth its way out of the drop chamber reliably — see the comment block above
+// RegisterAzjolNerubRoute. These anchors are walked in a STRAIGHT LINE (the
+// anchor fast-path in StridedPathfinder::Build builds no corridor at all), so
+// the two things that can silently break the route are a missing row and legs
+// too long for the follower to re-anchor onto after a fight.
+TEST(DungeonEventIntegrityTest, AzjolNerubAnchorsTheRouteToAnubarak)
+{
+    constexpr uint32 kAnubarak = 29120;
+    std::vector<WaypointHint> const* route =
+        DungeonClearRouteRegistry::Get(601, DUNGEON_DIFFICULTY_NORMAL, kAnubarak);
+    ASSERT_NE(route, nullptr)
+        << "Azjol-Nerub (601) has no authored route to Anub'arak; the long-range "
+           "pathfinder would be asked to smooth across the x=533.3333 mmtile seam";
+    ASSERT_GE(route->size(), 2u);
+
+    // Heroic shares the geometry and must inherit the same row.
+    EXPECT_EQ(DungeonClearRouteRegistry::Get(601, DUNGEON_DIFFICULTY_HEROIC, kAnubarak), route);
+
+    // Leg length. DungeonPathFollower::RESNAP_RADIUS is 45yd and InstallLongPath
+    // resets the follower cursor to segment 0 on every rebuild, so a leg longer
+    // than the resnap radius means a party that rebuilds mid-route walks BACK to
+    // an anchor it already cleared. Kept well under with margin for the leg from
+    // the drop landing into the first anchor.
+    constexpr float kMaxLeg = 40.0f;
+    float const landX = 544.18f, landY = 481.26f;
+    float prevX = landX, prevY = landY;
+    for (size_t i = 0; i < route->size(); ++i)
+    {
+        WaypointHint const& h = (*route)[i];
+        float const leg = std::hypot(h.x - prevX, h.y - prevY);
+        EXPECT_LT(leg, kMaxLeg)
+            << "leg " << i << " is " << leg << "yd — longer than the follower can resnap over";
+        prevX = h.x;
+        prevY = h.y;
+    }
+
+    // The route must end short of the boss: StridedPathfinder appends Anub'arak's
+    // own spawn as the goal segment, so a final anchor sitting on top of him is a
+    // duplicate hop, and one 40yd+ away leaves the goal leg unvalidated.
+    float const tailLeg = std::hypot(prevX - 551.0f, prevY - 248.3f);
+    EXPECT_GT(tailLeg, 5.0f) << "last anchor duplicates the appended goal segment";
+    EXPECT_LT(tailLeg, kMaxLeg) << "the appended goal leg is longer than any authored leg";
+
+    // Every anchor heads SOUTH — the route is a one-way descent from the landing
+    // to the arena, and any anchor that doubles back north is either a stale
+    // coordinate left over from an older landing or a corner cut across the lake
+    // behind it. Anchor DRYNESS itself needs the mmaps and is asserted in
+    // TestAzjolNerubRouteProbe; this is the cheap always-on half.
+    EXPECT_LT((*route)[0].y, landY) << "anchor 1 is north of the drop landing";
+    for (size_t i = 1; i < route->size(); ++i)
+        EXPECT_LT((*route)[i].y, (*route)[i - 1].y)
+            << "anchor " << (i + 1) << " doubles back north";
+
+    // And they must stay out of the lake's y-band the landing was moved past.
+    // The water sheet ends around y 404; every anchor south of the landing is
+    // clear of the drop chamber by construction, so the one to watch is the
+    // first: it sits 25yd past the southern shore.
+    EXPECT_LT((*route)[0].y, 470.0f)
+        << "anchor 1 is back in the drop chamber's half of the lower kingdom";
 }

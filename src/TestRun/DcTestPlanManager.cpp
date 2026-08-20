@@ -68,7 +68,7 @@ bool DcTestPlanManager::Start(DcTestPlan::Spec spec, Player* gm, std::string* ms
     // doesn't burn its launch budget on runs that can never start.
     if (spec.heroic && row->heroicLevel == 0)
         return fail("'" + std::string(row->token) +
-                    "' has no heroic mode (TBC heroics only for now)");
+                    "' has no heroic mode (classic dungeons have none)");
 
     uint32 const maxPlans = DcSettings::GetUInt(ObjectGuid::Empty, "TestRun.MaxPlans");
     if (maxPlans != 0 && _plans.size() >= maxPlans)

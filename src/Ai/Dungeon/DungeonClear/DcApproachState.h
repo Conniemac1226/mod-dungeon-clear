@@ -73,6 +73,15 @@ struct DcApproachState
     uint32 stuckCount          = 0;  // MoveTo-returned-false backup (was "stuck count")
     uint32 rebuildAttempts     = 0;  // consecutive rebuilds w/o progress ("stride rebuild attempts")
     uint32 resnapAttempts      = 0;  // consecutive Resnap recoveries w/o progress (rung-1 give-up)
+    // Consecutive navmesh-nudges (the ladder's TOP rung) that failed to buy net
+    // progress. The rung had no give-up of its own, and TryFarFromPolyRecovery
+    // succeeds trivially whenever the bot is ON the mesh — a 5yd axis probe from
+    // a walkable poly always paths — so it reset rebuildAttempts and returned
+    // "recovered" forever, making the stall below it dead code. Nine such resets
+    // in nine minutes on the Blackrock Spire ramp (tr-20260818-073620-14) with
+    // zero nudge or stall reaching the player. Same failure shape as the
+    // recoveryProgressWatch comment above, one rung higher up.
+    uint32 nudgeAttempts       = 0;
     uint32 partyNotReadyTicks  = 0;  // consecutive between-pulls not-ready ticks (yield debounce)
 
     // --- approach bookkeeping ---------------------------------------------
@@ -235,6 +244,7 @@ struct DcApproachState
         longRouteDeferBlown = false;
         rebuildAttempts     = 0;
         resnapAttempts      = 0;
+        nudgeAttempts       = 0;
         partyNotReadyTicks  = 0;
         lastPos             = Position();
         skirtOrbitDir       = 0;

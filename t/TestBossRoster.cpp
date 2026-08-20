@@ -48,6 +48,7 @@ TEST(BossRosterRegistryTest, HasPatchOnlyForPatchedMaps)
     EXPECT_TRUE(BossRosterRegistry::HasPatch(70));    // Uldaman — altar objectives
     EXPECT_TRUE(BossRosterRegistry::HasPatch(547));   // Slave Pens — drop objective
     EXPECT_TRUE(BossRosterRegistry::HasPatch(546));   // Underbog — drop objective
+    EXPECT_TRUE(BossRosterRegistry::HasPatch(576));   // The Nexus — sphere objectives
     EXPECT_FALSE(BossRosterRegistry::HasPatch(0));
     EXPECT_FALSE(BossRosterRegistry::HasPatch(34));   // Stockades — no patch
 }
@@ -379,7 +380,9 @@ TEST(BossRosterRegistryTest, RingOfLawObjectiveSortsBetweenGrebmarAndLoregrain)
     {
         if (out[i].entry == 9319)
             grebmarIdx = i;
-        if (out[i].kind == DungeonAnchorKind::Objective)
+        // Key on the event id, not on "is an objective": map 230 carries a
+        // second objective (the Shadowforge Lock, event 2) further down the list.
+        if (out[i].kind == DungeonAnchorKind::Objective && out[i].eventId == 1u)
             ringIdx = i;
         if (out[i].entry == 9024)
             loregrainIdx = i;
@@ -391,6 +394,40 @@ TEST(BossRosterRegistryTest, RingOfLawObjectiveSortsBetweenGrebmarAndLoregrain)
     EXPECT_LT(ringIdx, loregrainIdx) << "Ring of Law must precede Loregrain";
     EXPECT_EQ(out[ringIdx].encounterIndex, 3u);
     EXPECT_EQ(out[ringIdx].eventId, 1u);
+}
+
+// Blackrock Depths: the Shadowforge Lock objective SHARES General Angerforge's
+// bit (9) — it has no encounter of its own — so the objective-before-boss
+// tie-break is what puts the lever after Bael'Gar (bit 8) and before Angerforge.
+// Sharing a live boss's bit is only safe because NextDungeonBossValue consults
+// the completion mask for Boss anchors alone; assert the ordering here so a
+// change to that tie-break can't silently strand the lever behind Angerforge.
+TEST(BossRosterRegistryTest, ShadowforgeLockSortsBetweenBaelGarAndAngerforge)
+{
+    std::vector<DungeonBossInfo> base = {
+        Boss(9016, 8, "Bael'Gar", 230),
+        Boss(9033, 9, "General Angerforge", 230),
+    };
+    std::vector<DungeonBossInfo> out = BossRosterRegistry::Apply(230, DUNGEON_DIFFICULTY_NORMAL, base);
+
+    int baelIdx = -1, lockIdx = -1, angerIdx = -1;
+    for (int i = 0; i < (int)out.size(); ++i)
+    {
+        if (out[i].entry == 9016)
+            baelIdx = i;
+        if (out[i].kind == DungeonAnchorKind::Objective && out[i].eventId == 2u)
+            lockIdx = i;
+        if (out[i].entry == 9033)
+            angerIdx = i;
+    }
+    ASSERT_GE(lockIdx, 0) << "Shadowforge Lock objective missing";
+    ASSERT_GE(baelIdx, 0);
+    ASSERT_GE(angerIdx, 0);
+    EXPECT_LT(baelIdx, lockIdx) << "the lever must be pulled after Bael'Gar";
+    EXPECT_LT(lockIdx, angerIdx) << "the lever must be pulled before Angerforge";
+    EXPECT_EQ(out[lockIdx].encounterIndex, 9u);
+    EXPECT_EQ(out[lockIdx].kind, DungeonAnchorKind::Objective);
+    EXPECT_EQ(out[angerIdx].encounterIndex, 9u) << "Angerforge keeps kill-bit 9";
 }
 
 // Deadmines: the Defias Cannon objective shares Mr. Smite's bit (3); the
@@ -1173,3 +1210,290 @@ TEST(BossRosterRegistryTest, DireMaulNorthDropsChoRush)
     ASSERT_NE(gordok, nullptr);
     EXPECT_EQ(gordok->encounterIndex, 7u);
 }
+
+// Utgarde Keep (574): the three forge objectives must sort AHEAD of all three
+// bosses, in west->east->north order, and the bosses must keep their real DBC
+// kill-bits. The reorder is the whole risk here — encounterIndex is what the
+// completion mask is read against, so a patch that moved the bits instead of the
+// order keys would silently un-complete the dungeon.
+TEST(BossRosterRegistryTest, UtgardeKeepForgesSortAheadOfEveryBoss)
+{
+    std::vector<DungeonBossInfo> base = {
+        Boss(23953, 0, "Prince Keleseth", 574),
+        Boss(24201, 1, "Skarvold & Dalronn", 574),
+        Boss(23954, 2, "Ingvar the Plunderer", 574),
+    };
+    std::vector<DungeonBossInfo> out = BossRosterRegistry::Apply(574, DUNGEON_DIFFICULTY_NORMAL, base);
+
+    ASSERT_EQ(out.size(), 6u) << "3 bosses + 3 forge objectives";
+
+    // Positions in clear order.
+    int forge[3] = { -1, -1, -1 };
+    int keleseth = -1, dalronn = -1, ingvar = -1;
+    int objectivesSeen = 0;
+    for (int i = 0; i < (int)out.size(); ++i)
+    {
+        if (out[i].kind == DungeonAnchorKind::Objective)
+        {
+            ASSERT_LT(objectivesSeen, 3);
+            forge[objectivesSeen++] = i;
+        }
+        if (out[i].entry == 23953)
+            keleseth = i;
+        if (out[i].entry == 24201)
+            dalronn = i;
+        if (out[i].entry == 23954)
+            ingvar = i;
+    }
+    ASSERT_EQ(objectivesSeen, 3) << "three forge objectives expected";
+    ASSERT_GE(keleseth, 0);
+    ASSERT_GE(dalronn, 0);
+    ASSERT_GE(ingvar, 0);
+
+    // Every forge before every boss, and the bosses in unchanged relative order.
+    EXPECT_LT(forge[2], keleseth) << "all three forges are done before Keleseth";
+    EXPECT_LT(keleseth, dalronn);
+    EXPECT_LT(dalronn, ingvar);
+
+    // The forges themselves are in script order: forge 1 (349.6,-39.3) then
+    // forge 2 (385.8,-16.2) then forge 3 (347.6,4.6). Engaging one out of order
+    // makes it evade, so this sequence IS the feature.
+    EXPECT_EQ(out[forge[0]].eventId, 1u);
+    EXPECT_EQ(out[forge[1]].eventId, 2u);
+    EXPECT_EQ(out[forge[2]].eventId, 3u);
+    EXPECT_NEAR(out[forge[0]].x, 349.6f, 0.5f);
+    EXPECT_NEAR(out[forge[1]].x, 385.8f, 0.5f);
+    EXPECT_NEAR(out[forge[2]].x, 347.6f, 0.5f);
+
+    // The real kill-bits survive the reorder untouched — the clear orders by
+    // orderOverride, completion still keys on encounterIndex.
+    EXPECT_EQ(Find(out, 23953)->encounterIndex, 0u);
+    EXPECT_EQ(Find(out, 24201)->encounterIndex, 1u);
+    EXPECT_EQ(Find(out, 23954)->encounterIndex, 2u);
+    EXPECT_EQ(Find(out, 23953)->orderOverride, 4);
+    EXPECT_EQ(Find(out, 24201)->orderOverride, 5);
+    EXPECT_EQ(Find(out, 23954)->orderOverride, 6);
+
+    // No boss was removed or re-added: they keep the auto-derived spawn coords.
+    for (DungeonBossInfo const& b : out)
+        if (b.kind == DungeonAnchorKind::Boss)
+            EXPECT_EQ(b.inheritCompletionFrom, 0u)
+                << "Utgarde Keep needs no boss surgery — the derived list is correct";
+}
+
+TEST(BossRosterRegistryTest, NexusSpheresSortBetweenOrmorokAndKeristrasza)
+{
+    // Derived roster, normal difficulty (DungeonEncounter.dbc bits 0-3).
+    std::vector<DungeonBossInfo> base = {
+        Boss(26731, 0, "Grand Magus Telestra", 576),
+        Boss(26763, 1, "Anomalus", 576),
+        Boss(26794, 2, "Ormorok the Tree-Shaper", 576),
+        Boss(26723, 3, "Keristrasza", 576),
+    };
+    std::vector<DungeonBossInfo> out = BossRosterRegistry::Apply(576, DUNGEON_DIFFICULTY_NORMAL, base);
+
+    ASSERT_EQ(out.size(), 7u) << "4 bosses + 3 sphere objectives";
+
+    int sphere[3] = { -1, -1, -1 };
+    int telestra = -1, anomalus = -1, ormorok = -1, keristrasza = -1;
+    int objectivesSeen = 0;
+    for (int i = 0; i < (int)out.size(); ++i)
+    {
+        if (out[i].kind == DungeonAnchorKind::Objective)
+        {
+            ASSERT_LT(objectivesSeen, 3);
+            sphere[objectivesSeen++] = i;
+        }
+        if (out[i].entry == 26731)
+            telestra = i;
+        if (out[i].entry == 26763)
+            anomalus = i;
+        if (out[i].entry == 26794)
+            ormorok = i;
+        if (out[i].entry == 26723)
+            keristrasza = i;
+    }
+    ASSERT_EQ(objectivesSeen, 3) << "three sphere objectives expected";
+    ASSERT_GE(telestra, 0);
+    ASSERT_GE(anomalus, 0);
+    ASSERT_GE(ormorok, 0);
+    ASSERT_GE(keristrasza, 0);
+
+    // A sphere is only clickable once its own boss is dead (instance_nexus clears
+    // GO_FLAG_NOT_SELECTABLE in SetBossState), and all three must be clicked
+    // before Keristrasza can be attacked at all.
+    EXPECT_LT(telestra, anomalus);
+    EXPECT_LT(anomalus, ormorok);
+    EXPECT_LT(ormorok, sphere[0]) << "every orb boss dies before the first click";
+    EXPECT_LT(sphere[2], keristrasza) << "all three clicks land before Keristrasza";
+
+    // Walk order across the hub: Telestra's sphere (south), Ormorok's (north-west),
+    // Anomalus' (north-east) — 81yd rather than the 98yd of any other order.
+    EXPECT_EQ(out[sphere[0]].eventId, 1u);
+    EXPECT_EQ(out[sphere[1]].eventId, 2u);
+    EXPECT_EQ(out[sphere[2]].eventId, 3u);
+    EXPECT_NEAR(out[sphere[0]].x, 281.9f, 0.5f);
+    EXPECT_NEAR(out[sphere[0]].y, -25.5f, 0.5f);
+    EXPECT_NEAR(out[sphere[1]].x, 281.8f, 0.5f);
+    EXPECT_NEAR(out[sphere[1]].y, 15.2f, 0.5f);
+    EXPECT_NEAR(out[sphere[2]].x, 322.2f, 0.5f);
+    EXPECT_NEAR(out[sphere[2]].y, 14.7f, 0.5f);
+
+    // The real kill-bits survive the reorder untouched.
+    EXPECT_EQ(Find(out, 26731)->encounterIndex, 0u);
+    EXPECT_EQ(Find(out, 26763)->encounterIndex, 1u);
+    EXPECT_EQ(Find(out, 26794)->encounterIndex, 2u);
+    EXPECT_EQ(Find(out, 26723)->encounterIndex, 3u);
+
+    // No boss surgery — the derived list is already in travel order.
+    for (DungeonBossInfo const& b : out)
+        if (b.kind == DungeonAnchorKind::Boss)
+            EXPECT_EQ(b.inheritCompletionFrom, 0u);
+}
+
+TEST(BossRosterRegistryTest, NexusHeroicCommanderStaysFirst)
+{
+    // Heroic shifts every DBC bit up by one to make room for the Frozen Commander
+    // at bit 0. The HeroicOnly patch re-adds him on order key 1, which must still
+    // sort ahead of the 2..8 scale the rest of the map is reordered onto.
+    std::vector<DungeonBossInfo> base = {
+        Boss(26796, 0, "Frozen Commander", 576),
+        Boss(26731, 1, "Grand Magus Telestra", 576),
+        Boss(26763, 2, "Anomalus", 576),
+        Boss(26794, 3, "Ormorok the Tree-Shaper", 576),
+        Boss(26723, 4, "Keristrasza", 576),
+    };
+    std::vector<DungeonBossInfo> out = BossRosterRegistry::Apply(576, DUNGEON_DIFFICULTY_HEROIC, base);
+
+    ASSERT_EQ(out.size(), 8u) << "5 bosses + 3 sphere objectives";
+    EXPECT_EQ(out.front().entry, 26796u) << "the Frozen Commander still leads the clear";
+    EXPECT_EQ(out.back().entry, 26723u) << "Keristrasza is still last";
+    EXPECT_EQ(Find(out, 26796)->orderOverride, 1)
+        << "the Commander sits on key 1, between bit 0 and the 2..8 scale";
+
+    // The three spheres are still the last thing before Keristrasza.
+    ASSERT_GE(out.size(), 4u);
+    for (size_t i = out.size() - 4; i + 1 < out.size(); ++i)
+        EXPECT_EQ(out[i].kind, DungeonAnchorKind::Objective)
+            << "index " << i << " should be a sphere objective";
+}
+
+// The Frozen Commander's DBC kill-bit is UNUSABLE: instance_encounters has
+// PRIMARY KEY (`entry`), so encounter 519 can only credit one creature (26796),
+// and an Alliance party kills the UpdateEntry'd 26798 — bit 0 never flips. The
+// heroic patch must therefore re-add him reading the instance script's own
+// DATA_COMMANDER_EVENT slot, with encounterIndex parked out of mask range so the
+// dead bit is never consulted on EITHER faction.
+TEST(BossRosterRegistryTest, NexusHeroicCommanderCompletesViaBossState)
+{
+    std::vector<DungeonBossInfo> base = {
+        Boss(26796, 0, "Frozen Commander", 576),
+        Boss(26731, 1, "Grand Magus Telestra", 576),
+        Boss(26763, 2, "Anomalus", 576),
+        Boss(26794, 3, "Ormorok the Tree-Shaper", 576),
+        Boss(26723, 4, "Keristrasza", 576),
+    };
+    std::vector<DungeonBossInfo> out = BossRosterRegistry::Apply(576, DUNGEON_DIFFICULTY_HEROIC, base);
+
+    DungeonBossInfo const* cmd = Find(out, 26796);
+    ASSERT_NE(cmd, nullptr);
+    EXPECT_EQ(cmd->kind, DungeonAnchorKind::Boss);
+    EXPECT_EQ(cmd->doneBossStateIndex, 4) << "DATA_COMMANDER_EVENT from nexus.h";
+    EXPECT_GE(cmd->encounterIndex, 32u)
+        << "parked out of the completed-encounter mask's range so bit 0 is never read";
+
+    // The re-add restates the spawn coords; losing them would send the tank to
+    // (0,0,0). The floor here is the lower ring (-34.9), not the hub's -16.
+    EXPECT_NEAR(cmd->x, 424.5f, 0.5f);
+    EXPECT_NEAR(cmd->y, 186.0f, 0.5f);
+    EXPECT_NEAR(cmd->z, -34.9f, 0.5f);
+
+    // No other Nexus anchor borrows a boss-state slot — Keristrasza in particular
+    // owns heroic bit 4, the same NUMBER as DATA_COMMANDER_EVENT in the instance
+    // script's unrelated index space.
+    for (DungeonBossInfo const& b : out)
+        if (b.entry != 26796u)
+            EXPECT_EQ(b.doneBossStateIndex, -1) << "entry " << b.entry;
+}
+
+// The commander is heroic-only (spawnMask 2, DBC difficulty 1), so BossSpawnIndex
+// never puts him in the normal bucket. The HeroicOnly gate must keep the patch off
+// a normal run entirely — a stray re-add there would invent an anchor at a spawn
+// that does not exist on that difficulty.
+TEST(BossRosterRegistryTest, NexusNormalHasNoFrozenCommander)
+{
+    std::vector<DungeonBossInfo> base = {
+        Boss(26731, 0, "Grand Magus Telestra", 576),
+        Boss(26763, 1, "Anomalus", 576),
+        Boss(26794, 2, "Ormorok the Tree-Shaper", 576),
+        Boss(26723, 3, "Keristrasza", 576),
+    };
+    std::vector<DungeonBossInfo> out = BossRosterRegistry::Apply(576, DUNGEON_DIFFICULTY_NORMAL, base);
+
+    ASSERT_EQ(out.size(), 7u) << "4 bosses + 3 sphere objectives";
+    EXPECT_EQ(Find(out, 26796), nullptr) << "no Frozen Commander on normal";
+    EXPECT_EQ(Find(out, 26798), nullptr) << "nor his Alliance-side entry";
+    for (DungeonBossInfo const& b : out)
+        EXPECT_EQ(b.doneBossStateIndex, -1) << "entry " << b.entry;
+}
+
+// Azjol-Nerub (601): Hadronox is re-anchored from her spawn ledge onto the
+// platform her own script climbs to, and the two objectives must bracket her —
+// the crusher/web hold BEFORE her, the drop AFTER. She is the only boss on the
+// clear that is remove+re-added purely to move where the fight happens, so the
+// risk is the usual one: a patch that moved her kill-bit instead of her order
+// key would silently un-complete the dungeon.
+TEST(BossRosterRegistryTest, AzjolNerubBracketsHadronoxWithTheWebHoldAndTheDrop)
+{
+    std::vector<DungeonBossInfo> base = {
+        Boss(28684, 0, "Krik'thir the Gatewatcher", 601),
+        Boss(28921, 1, "Hadronox", 601),
+        Boss(29120, 2, "Anub'arak", 601),
+    };
+    std::vector<DungeonBossInfo> out = BossRosterRegistry::Apply(601, DUNGEON_DIFFICULTY_NORMAL, base);
+
+    ASSERT_EQ(out.size(), 5u) << "3 bosses + the web hold + the drop";
+
+    int krikthir = -1, hadronox = -1, anubarak = -1, webHold = -1, drop = -1;
+    for (int i = 0; i < (int)out.size(); ++i)
+    {
+        if (out[i].entry == 28684) krikthir = i;
+        if (out[i].entry == 28921) hadronox = i;
+        if (out[i].entry == 29120) anubarak = i;
+        if (out[i].kind == DungeonAnchorKind::Objective && out[i].eventId == 1) webHold = i;
+        if (out[i].kind == DungeonAnchorKind::Objective && out[i].eventId == 2) drop = i;
+    }
+    ASSERT_GE(krikthir, 0);
+    ASSERT_GE(hadronox, 0);
+    ASSERT_GE(anubarak, 0);
+    ASSERT_GE(webHold, 0) << "the 'web the doors' objective (eventId 1) is missing";
+    ASSERT_GE(drop, 0) << "the drop objective (eventId 2) is missing";
+
+    // Krik'thir -> web hold -> Hadronox -> drop -> Anub'arak.
+    EXPECT_LT(krikthir, webHold);
+    EXPECT_LT(webHold, hadronox)
+        << "the swarm's off-switch has to be thrown BEFORE she is handed to boss nav";
+    EXPECT_LT(hadronox, drop);
+    EXPECT_LT(drop, anubarak)
+        << "the lower kingdom is across a hard navmesh break — the drop must come first";
+
+    // Hadronox now stands on the platform (her own MOVE3 destination), NOT on her
+    // spawn ledge at (522.5, 544.9, 674.7) 60yd below it.
+    EXPECT_NEAR(out[hadronox].x, 530.4f, 1.0f);
+    EXPECT_NEAR(out[hadronox].y, 560.0f, 1.0f);
+    EXPECT_GT(out[hadronox].z, 700.0f)
+        << "anchoring her on the z~675 spawn ledge walks the party into the add funnel";
+
+    // The web hold shares the platform with her; the drop sits on the pit floor.
+    EXPECT_NEAR(out[webHold].x, 530.4f, 1.0f);
+    EXPECT_NEAR(out[webHold].z, 733.8f, 1.0f);
+    EXPECT_NEAR(out[drop].x, 522.0f, 1.0f);
+    EXPECT_NEAR(out[drop].z, 648.9f, 1.0f);
+
+    // Kill-bits untouched: the clear orders by orderOverride, completion still
+    // keys on encounterIndex, and Hadronox keeps HER OWN bit across remove+re-add.
+    EXPECT_EQ(Find(out, 28684)->encounterIndex, 0u);
+    EXPECT_EQ(Find(out, 28921)->encounterIndex, 1u);
+    EXPECT_EQ(Find(out, 29120)->encounterIndex, 2u);
+}
+

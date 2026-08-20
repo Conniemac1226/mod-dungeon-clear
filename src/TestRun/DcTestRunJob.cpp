@@ -54,7 +54,9 @@ namespace
     constexpr uint32 SPAWN_TIMEOUT_MS = 60 * 1000;
     constexpr uint32 PROVISION_TIMEOUT_MS = 60 * 1000;
     constexpr uint32 GROUP_TIMEOUT_MS = 30 * 1000;
-    constexpr uint32 TELEPORT_TIMEOUT_MS = 30 * 1000;
+    // Covers BOTH teleport waves (leader, then the rest — see TickTeleporting),
+    // and the stage clock does not restart between them.
+    constexpr uint32 TELEPORT_TIMEOUT_MS = 45 * 1000;
     constexpr uint32 START_TIMEOUT_MS = 20 * 1000;
 
     constexpr uint32 MONITOR_STEP_MS = 1000;
@@ -1076,11 +1078,11 @@ bool DcTestRunJob::CheckInstanceBudget()
 
         // Mirror MapMgr::PlayerCannotEnter exactly, including its escape hatch:
         // a member still bound to an instance of this map is re-entering one it
-        // has already paid for, so the count check passes on the found id. A
-        // roster run has just unbound everybody, so the lookup misses and the id
-        // is 0 ("a brand-new instance") — but a pool run on normal difficulty
-        // keeps its bind, and hard-coding 0 here would refuse runs the core would
-        // have allowed.
+        // has already paid for, so the count check passes on the found id. Every
+        // run now unbinds before this point, so in practice the lookup misses and
+        // the id is 0 ("a brand-new instance") — the hatch is kept rather than
+        // hard-coding 0 so this stays a faithful mirror of the core's gate if a
+        // bind ever does survive.
         uint32 idToCheck = 0;
         if (InstanceSave* save = sInstanceSaveMgr->PlayerGetInstanceSave(
                 bot->GetGUID(), _mapId, bot->GetDifficulty(/*isRaid*/ false)))
@@ -1113,25 +1115,73 @@ void DcTestRunJob::TickTeleporting()
                 return;  // transient — retry next tick
             }
         }
-        // Heroic 5-man kills create PERMANENT saves (daily reset). A recycled
-        // pool bot still bound to a cleared heroic instance of this map would
-        // teleport into it and trip the stale-instance guard in TickStarting —
-        // shed any leftover heroic bind first so a fresh instance is created.
-        // (Normal 5-man saves are non-permanent and reset when the map empties,
-        // so they need no such hygiene.)
+
+        // Nobody may enter this dungeon FROM a dungeon. Two separate core
+        // behaviours make an instance-to-instance entry unsafe, and one trip out
+        // to the bind point defuses both:
         //
-        // A roster run unbinds BOTH difficulties instead: a real character can
-        // easily be sitting on a half-cleared normal save, and unlike the pool
-        // that is not merely untidy — the party would be dragged into the saved
-        // instance and the verdict's GetCompletedEncounterMask baseline would
-        // start with bosses already dead.
-        if (_realChars)
-            UnbindFromMap();
-        else if (_heroic)
-            for (Slot const& slot : _slots)
-                sInstanceSaveMgr->PlayerUnbindInstance(slot.guid, _mapId,
-                                                       DUNGEON_DIFFICULTY_HEROIC,
-                                                       /*deleteFromDB*/ true);
+        //   * A same-map TeleportTo is a NEAR teleport (Player::TeleportTo keys
+        //     the branch on map id alone). It moves the body but never
+        //     re-resolves which COPY the body is in, so a bot left inside a
+        //     stale instance of this very dungeon — which is exactly what a
+        //     worldserver restart mid-plan leaves behind — would "arrive"
+        //     without ever leaving that copy, dragging its cleared bosses into
+        //     our verdict.
+        //
+        //   * `m_InstanceValid` is cleared by Group::_homebindIfInstance for any
+        //     member pulled out of a group while standing in a dungeon — which
+        //     TickGrouping's pre-formation sweep does to every recycled pool bot
+        //     that logged in inside one. The ONLY place that ever sets it back is
+        //     HandleMoveWorldportAck, and only when the DESTINATION is not
+        //     instanced ("except if going to an instance inside an instance").
+        //     Carry it into the run and Player::UpdateHomebindTime repops the
+        //     member at the entrance graveyard exactly 60s later — the whole
+        //     party ends up outside, the DC strategy gate sees a bot no longer in
+        //     a dungeon, and the run dies as "Left the dungeon" barely a minute
+        //     in.
+        bool evicting = false;
+        for (Slot const& slot : _slots)
+            if (Player* bot = ObjectAccessor::FindPlayer(slot.guid))
+                if (Map const* map = bot->FindMap())
+                    if (map->IsDungeon())
+                    {
+                        evicting = true;
+                        if (!bot->IsBeingTeleported())
+                            bot->TeleportTo(bot->m_homebindMapId, bot->m_homebindX,
+                                            bot->m_homebindY, bot->m_homebindZ,
+                                            bot->GetOrientation());
+                    }
+        if (evicting)
+        {
+            if (_stageMs >= TELEPORT_TIMEOUT_MS)
+                FailSetup("could not clear the party out of the dungeon it was already in");
+            return;  // retry next tick
+        }
+
+        // Every member sheds every bind for this map, both difficulties, on
+        // every run. A bind is what decides WHICH COPY of the map a teleport
+        // lands in (InstanceSaveMgr::PlayerGetDestinationInstanceId), so a
+        // leftover one drags the party into an instance somebody already
+        // cleared: the verdict's GetCompletedEncounterMask baseline starts with
+        // bosses dead and TickStarting refuses the run as stale.
+        //
+        // This used to be a roster-only sweep, with pool runs shedding only the
+        // permanent heroic saves on the theory that normal 5-man saves are
+        // non-permanent and reset themselves when the map empties. They do —
+        // eventually, and only if the map ever empties. A worldserver restart
+        // in the middle of a plan leaves the interrupted runs' rows sitting in
+        // character_instance, and the next plan's recycled pool bots walk
+        // straight back into those half-cleared copies. Unbinding
+        // unconditionally is a few guid-keyed deletes and removes the whole
+        // class of failure.
+        //
+        // The cost is real but small: re-entering a bound instance is free
+        // against AccountInstancesPerHour, and a fresh one is not, so a bot
+        // recycled through more runs than that cap in an hour will now be
+        // refused by name in CheckInstanceBudget rather than silently reusing a
+        // copy. The pool is far larger than any one plan, so that is a
+        // theoretical cost against a defect we have actually been paying.
+        UnbindFromMap();
 
         // Now that no member is bound, entering costs each account one of its
         // AccountInstancesPerHour slots — refuse by name here rather than let the
@@ -1139,20 +1189,72 @@ void DcTestRunJob::TickTeleporting()
         if (!CheckInstanceBudget())
             return;
 
-        for (Slot const& slot : _slots)
-            if (Player* bot = ObjectAccessor::FindPlayer(slot.guid))
-                bot->TeleportTo(_mapId, _x, _y, _z, _o);
+        // LEADER FIRST, ALONE. The destination copy is resolved per member at
+        // worldport-ack time from the GROUP LEADER's bind; with nobody bound
+        // that lookup returns 0, which means "mint a brand-new instance". Fire
+        // all five teleports at once and every member that resolves before the
+        // first one has actually been added to a map mints a copy of its own —
+        // we have watched ten parties scatter across twenty-four copies of the
+        // same map in a nine-second window, each tank alone or nearly so, the
+        // run then stalling forever on teammates it can never reach.
+        //
+        // Sending the tank by itself closes the window: once it is inside, its
+        // bind names the copy, and every later arrival resolves to that same id
+        // no matter how the acks interleave.
+        Player* const leader = FindTank();
+        if (!leader)
+        {
+            if (_stageMs >= TELEPORT_TIMEOUT_MS)
+                FailSetup("tank vanished before teleport");
+            return;
+        }
+        leader->TeleportTo(_mapId, _x, _y, _z, _o);
         _teleportIssued = true;
     }
 
+    // Wave 1 — wait for the leader to be standing in a copy of its own.
+    Player* const tank = FindTank();
+    if (!tank || tank->GetMapId() != _mapId || !tank->IsInWorld() ||
+        tank->IsBeingTeleported() || !tank->GetInstanceId())
+    {
+        if (_stageMs >= TELEPORT_TIMEOUT_MS)
+            FailSetup("tank did not arrive at the dungeon entrance");
+        return;
+    }
+
+    // Wave 2 — the rest of the party, now that there is a copy to join.
+    if (!_followersTeleported)
+    {
+        _destInstanceId = tank->GetInstanceId();
+        for (std::size_t i = 1; i < _slots.size(); ++i)
+            if (Player* bot = ObjectAccessor::FindPlayer(_slots[i].guid))
+                bot->TeleportTo(_mapId, _x, _y, _z, _o);
+        _followersTeleported = true;
+    }
+
+    // Arrival is the INSTANCE id, not the map id. Two members of one party can
+    // both be "on map 601" and never see each other, and the distance helpers
+    // do not check the instance either — a member in the wrong copy reports a
+    // plausible 30-yard distToTank and the run reads as a party that is merely
+    // lagging. Refusing here turns a twenty-minute run that could never have
+    // progressed into a setup failure that names the members and their copies.
+    std::string stranded;
     bool allThere = true;
     for (Slot const& slot : _slots)
     {
         Player* bot = ObjectAccessor::FindPlayer(slot.guid);
-        if (!bot || bot->GetMapId() != _mapId || !bot->IsInWorld() || bot->IsBeingTeleported())
+        if (!bot || !bot->IsInWorld() || bot->IsBeingTeleported())
         {
             allThere = false;
-            break;
+            continue;
+        }
+        if (bot->GetMapId() != _mapId || bot->GetInstanceId() != _destInstanceId)
+        {
+            allThere = false;
+            if (!stranded.empty())
+                stranded += ", ";
+            stranded += Acore::StringFormat("{} (map {} instance {})", bot->GetName(),
+                                            bot->GetMapId(), bot->GetInstanceId());
         }
     }
 
@@ -1163,7 +1265,14 @@ void DcTestRunJob::TickTeleporting()
     }
 
     if (_stageMs >= TELEPORT_TIMEOUT_MS)
-        FailSetup("party did not arrive at the dungeon entrance");
+    {
+        if (stranded.empty())
+            FailSetup("party did not arrive at the dungeon entrance");
+        else
+            FailSetup(Acore::StringFormat(
+                "party split across instance copies — the tank is in instance {} but {}",
+                _destInstanceId, stranded));
+    }
 }
 
 void DcTestRunJob::TickStarting()
@@ -2121,17 +2230,14 @@ void DcTestRunJob::Teardown()
     LogoutBots(gm);
 
     // Shed the saves the run just created so the characters go back clean (and
-    // the instance can reset) — the mirror of the pre-teleport unbind.
-    // Guid-keyed, so it works after the logout. Note this does NOT give back the
-    // AccountInstancesPerHour slot the entry consumed; that is time-based.
-    if (_realChars)
-        UnbindFromMap();
-    else if (_heroic)
-        for (Slot const& slot : _slots)
-            if (slot.guid)
-                sInstanceSaveMgr->PlayerUnbindInstance(slot.guid, _mapId,
-                                                       DUNGEON_DIFFICULTY_HEROIC,
-                                                       /*deleteFromDB*/ true);
+    // the instance can reset) — the mirror of the pre-teleport unbind, and
+    // unconditional for the same reason: a bind left behind here is a bind the
+    // next run has to teleport around. Guid-keyed, so it works after the logout.
+    // Note this does NOT give back the AccountInstancesPerHour slot the entry
+    // consumed; that is time-based. A run killed by a worldserver restart never
+    // reaches this at all, which is exactly why the pre-teleport sweep cannot
+    // rely on it.
+    UnbindFromMap();
 
     _record.endedAtMs = NowUnixMs();
     _record.durationS = static_cast<uint32>((_record.endedAtMs - _record.startedAtMs) / 1000);

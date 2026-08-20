@@ -26,7 +26,40 @@ namespace DcCombatFlag
 {
     bool IsEngaged(Player* p)
     {
-        return p && p->IsAlive() && (p->GetVictim() || !p->getAttackers().empty());
+        if (!p || !p->IsAlive() || !p->IsInWorld())
+            return false;
+
+        // Range-qualified on both sides (see DC_ENGAGEMENT_RADIUS). A combat
+        // reference survives the geometry that made it unusable, so "something is
+        // on my attacker list" is not the same question as "I am in a fight" the
+        // moment anything crosses a navmesh break. 3D distance, not 2D: the
+        // Azjol-Nerub case that produced this is 366yd of it VERTICAL.
+        //
+        // SQUARED distance, and IsInWorld before GetMap, both because of where
+        // this sits. It is the module's hottest predicate — every follower rung
+        // asks it every tick, AnyPartyEngagement fans it across the group, and a
+        // tank in an AoE pack carries a double-digit attacker set — so the sqrt
+        // is not worth paying and neither is a needless map compare. GetMap()
+        // ASSERTs on a null map, and the attacker set holds raw pointers we now
+        // dereference (the old `.empty()` test never did), so nothing here may
+        // touch a unit on its way out of the world.
+        Map const* const map = p->GetMap();
+        constexpr float radiusSq = DC_ENGAGEMENT_RADIUS * DC_ENGAGEMENT_RADIUS;
+
+        auto const inFight = [p, map, radiusSq](Unit const* other)
+        {
+            return other && other->IsInWorld() && other->GetMap() == map &&
+                   p->GetExactDistSq(other) <= radiusSq;
+        };
+
+        if (inFight(p->GetVictim()))
+            return true;
+
+        for (Unit const* const attacker : p->getAttackers())
+            if (inFight(attacker))
+                return true;
+
+        return false;
     }
 
     bool AnyPartyEngagement(Player* bot)
@@ -92,6 +125,21 @@ namespace DcCombatFlag
                 continue;
             if (other->GetCombatManager().IsInEvadeMode())
                 continue;  // holder is bailing home -> not a real threat
+            // RANGE FIRST, and it is not just an optimisation. DcEngageGeometry::
+            // IsReachable delegates to the CHUNKED pathfinder, which by design
+            // accepts any path with forward progress so the tank can walk a boss
+            // route farther than PathGenerator's ~296yd single-call cap. Handed a
+            // holder on the far side of a one-way relocation it therefore answers
+            // "reachable" — tr-20260818-223003-8's teardown reads `Skittering
+            // Swarmer(32593) 346.9yd 100% reachable -> LEGITIMATE` about a mob
+            // 350yd overhead through solid rock, and that verdict is what left the
+            // phantom-combat hatch inert while the party sat wedged for eleven
+            // minutes. Bound it at the same DC_ENGAGEMENT_RADIUS IsEngaged uses:
+            // one sanity radius for "a combat reference has outlived the geometry
+            // it was made in", asked the same way on both sides of the module.
+            // Cheap, too — this runs before the per-reference pathfind.
+            if (p->GetExactDistSq(other) > DC_ENGAGEMENT_RADIUS * DC_ENGAGEMENT_RADIUS)
+                continue;  // left behind by geometry -> not a fight, whatever the mesh says
             if (!DcEngageGeometry::IsReachable(p, other->GetPositionX(),
                                                other->GetPositionY(), other->GetPositionZ()))
                 continue;  // unreachable -> the phantom holder

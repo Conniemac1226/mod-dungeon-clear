@@ -80,11 +80,11 @@ def check_dungeon(rows, token, heroic):
     """Shared by plan, single-run and roster starts."""
     if token not in rows:
         raise HTTPException(400, f"unknown dungeon '{token}'")
-    # heroicLevel 0/absent = no heroic mode (classic, and WotLK until its
-    # content pass lands — mirrors the module-side gate).
+    # heroicLevel 0/absent = no heroic mode: classic dungeons, which have no
+    # heroic difficulty at all (mirrors the module-side gate).
     if heroic and not rows[token].get("heroicLevel"):
         raise HTTPException(400, f"'{token}' has no heroic mode "
-                                 "(TBC heroics only for now)")
+                                 "(classic dungeons have none)")
 
 
 def check_gear(rows, token, heroic, ilvl, quality):

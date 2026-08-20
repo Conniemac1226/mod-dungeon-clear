@@ -10,7 +10,9 @@
 #include <list>
 #include <optional>
 #include <unordered_set>
+#include <vector>
 
+#include "CombatManager.h"
 #include "Creature.h"
 #include "GameObject.h"
 #include "GameObjectData.h"
@@ -36,6 +38,8 @@
 #include "Ai/Dungeon/DungeonClear/DcApproachState.h"
 #include "Ai/Dungeon/DungeonClear/DcValueKeys.h"
 #include "Ai/Dungeon/DungeonClear/Util/ChunkedPathfinder.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcCombatFlag.h"
+#include "Ai/Dungeon/DungeonClear/Util/DungeonClearTuning.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonPathFollower.h"
 
 namespace
@@ -58,6 +62,17 @@ namespace
     // legitimately sits for its whole timeout, so this only fires well past the
     // point where the per-step timeout should already have escalated.
     constexpr uint32 DC_EVENT_NO_PROGRESS_FACTOR = 3;
+
+    // How long a TeleportParty will wait for the party to finish a fight before
+    // relocating anyway (see the step). Sized to cover a real trash camp at the
+    // checkpoint with room to spare — Azjol-Nerub's six-plus Skittering Swarmers
+    // die in well under a minute. The gate itself no longer arms on a bare combat
+    // flag (it asks AnyPartyHeldByLiveEnemy), so this bounds the case a flag test
+    // cannot: a fight that is real but unwinnable from the checkpoint, which
+    // would otherwise hold a REQUIRED event until the run's no-progress watchdog.
+    // Past it the relocation fires and DropCombatLeftBehind cleans up, which is a
+    // better outcome than either stalling or teleporting instantly.
+    constexpr uint32 DC_RELOCATION_COMBAT_HOLD_MS = 60000;
 
     // Gap after which a Drive call reads as a FRESH activation rather than a
     // tick-to-tick continuation.
@@ -187,6 +202,106 @@ namespace
                       "[dungeon-clear] {} pulled stranded follower {} across the jump gap",
                       leader->GetName(), member->GetName());
         }
+    }
+
+    // Drop the combat the party is carrying across a one-way relocation.
+    //
+    // A TeleportParty crosses a navmesh break BY DEFINITION — that is the whole
+    // reason the step exists — so anything still swinging at the party when it
+    // fires is left on the far side of geometry nobody can walk back through. The
+    // combat references survive the teleport in both directions: the party stays
+    // flagged, and the bots' own combat engine keeps driving them at attackers it
+    // can never reach. Live on Azjol-Nerub, whose drop checkpoint sits inside a
+    // Skittering Swarmer camp (six spawns within 16yd of it): the party teleported
+    // mid-fight and then ran back up the lower kingdom toward mobs 350yd away and
+    // 360yd up.
+    //
+    // The RunStep gate below means this should normally have nothing to do — the
+    // relocation waits for combat to end. It is the backstop for the cases the
+    // gate cannot cover: a follower flagged by something the leader is not, an
+    // add that aggros on the teleport tick, and the bounded-hold expiry.
+    //
+    // Both directions, or it does not stick: clearing only the party's side leaves
+    // the creature's threat reference to re-flag them on its next update.
+    //
+    // AND THE HOLDERS LIVE IN THE COMBAT MANAGER, NOT IN getAttackers(). That set
+    // holds only units whose CURRENT VICTIM is this member; a mob that tagged a
+    // bot and then picked someone else — or picked nobody, which is every add
+    // whose target just vanished 360yd downward — is not in it at all, while its
+    // CombatReference goes on holding the member flagged. The first cut of this
+    // function walked getAttackers() alone and cleared NOTHING in the case it was
+    // written for: tr-20260818-223003-8's teardown reads
+    //
+    //   Oschue [engine=combat attackers=0 victim=-] held by Skittering Swarmer
+    //   (32593) 346.9yd 100% reachable -> LEGITIMATE
+    //
+    // — `attackers=0` next to a live holder, eleven minutes after the drop. The
+    // PvE combat refs are the authoritative "who has me in combat" list (it is
+    // what DcCombatFlag::ScanCombatHolders and the teardown snapshot both walk),
+    // so walk those, and keep the attacker set as a superset guard for anything
+    // mid-swing that has not registered a reference yet.
+    //
+    // Holders are collected BEFORE anything is cleared: CombatReference::EndCombat
+    // deletes the reference it is iterating and CombatStop mutates the attacker
+    // set, so both containers are unsafe to walk while dropping. GUID-deduped
+    // because the two sources overlap, and re-checked for IsInWorld because a
+    // summon's AI may despawn itself out of JustExitedCombat.
+    void DropCombatLeftBehind(Player* leader)
+    {
+        Group* group = leader->GetGroup();
+        uint32 cleared = 0;
+
+        auto dropFor = [&cleared](Player* member)
+        {
+            if (!member || !member->IsInWorld())
+                return;
+
+            std::vector<Unit*> holders;
+            std::unordered_set<uint64> seen;
+            auto const collect = [&holders, &seen](Unit* u)
+            {
+                if (u && seen.insert(u->GetGUID().GetRawValue()).second)
+                    holders.push_back(u);
+            };
+            for (auto const& kv : member->GetCombatManager().GetPvECombatRefs())
+                if (CombatReference* const ref = kv.second)
+                    collect(ref->GetOther(member));
+            for (Unit* const attacker : member->getAttackers())
+                collect(attacker);
+
+            for (Unit* const holder : holders)
+            {
+                if (!holder->IsInWorld())
+                    continue;
+                holder->GetThreatMgr().ClearAllThreat();
+                holder->CombatStop(true);
+                ++cleared;
+            }
+            member->GetThreatMgr().ClearAllThreat();
+            member->CombatStop(true);
+        };
+
+        dropFor(leader);
+        if (group)
+        {
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            {
+                Player* member = ref->GetSource();
+                if (!member || member == leader)
+                    continue;
+                if (member->GetMapId() != leader->GetMapId())
+                    continue;
+                if (!GET_PLAYERBOT_AI(member))  // never touch a human's combat
+                    continue;
+                dropFor(member);
+            }
+        }
+
+        if (cleared)
+            LOG_INFO("playerbots.dungeonclear",
+                     "[dungeon-clear] {}: relocation dropped {} combat holder(s) left on "
+                     "the far side of the break",
+                     leader->GetName(), cleared);
     }
 }
 
@@ -686,6 +801,63 @@ StepResult DungeonEventExecutor::RunStep(Player* bot, AiObjectContext* context,
                 PullStrandedFollowersAcross(bot, step.landX, step.landY, step.landZ);
                 return StepResult::Done;
             }
+
+            // NOT MID-FIGHT. The relocation crosses a navmesh break, so every
+            // attacker the party is holding when it fires is stranded on the far
+            // side — still in each other's combat, with the bots' combat engine
+            // driving them back at mobs they cannot reach. Azjol-Nerub made this
+            // unmissable: its checkpoint sits inside a Skittering Swarmer camp
+            // (six spawns within 16yd), so the party arrived in combat almost
+            // every run, teleported anyway, and then ran back toward the swarmers
+            // 350yd behind and 360yd above them.
+            //
+            // ASK THE PARTY, NOT THE LEADER, AND ASK FOR A FIGHT RATHER THAN A
+            // FLAG. This step only ever runs from the NON-combat engine
+            // (DungeonClearStrategy is STRATEGY_TYPE_NONCOMBAT and owns the
+            // at-objective rung), so a leader swinging at something never reaches
+            // here at all. The Azjol-Nerub shape is a swarmer chewing on a
+            // FOLLOWER while the leader — no victim, and often not even flagged,
+            // since the core flag is per-unit and does not propagate to the group
+            // — walks up and fires the teleport. A leader-only `IsInCombat()`
+            // gate is blind to exactly the case it was written for, and that is
+            // how tr-20260818-223003-8 relocated with follower Oschue mid-fight:
+            // the hold never armed and the step logged no wait at all.
+            //
+            // The other half is WHICH combat may hold a required event. A bare
+            // flag must not: a phantom flag (an area aura, a stale reference, a
+            // holder on the far side of a gate) would park this for the full
+            // bound every single run, and the whole point of the bound is that
+            // parking is the bad outcome. AnyPartyHeldByLiveEnemy asks the
+            // question that matters — is a live, reachable enemy within
+            // DC_FIGHT_HOLDER_RADIUS of any member — so a real camp fight holds
+            // the relocation and a phantom one goes straight through to the
+            // teleport and the scrub below, which is where it gets fixed.
+            //
+            // Waiting is nearly always right when it does arm — the camp is on
+            // the route and the pull pipeline is already killing it — so hold,
+            // and DON'T let the wait burn the step's timeout: a fight is not a
+            // wedged step, and letting it escalate to Failed would stall a
+            // REQUIRED event and end the run. Still bounded, because a fight that
+            // genuinely cannot be finished at the checkpoint must not hold the
+            // run to the no-progress watchdog: past the bound, relocate anyway
+            // and let DropCombatLeftBehind clean up.
+            if (DcCombatFlag::AnyPartyHeldByLiveEnemy(bot, DC_FIGHT_HOLDER_RADIUS))
+            {
+                if (!prog.relocationCombatHoldMs)
+                    prog.relocationCombatHoldMs = nowMs;
+                if (getMSTimeDiff(prog.relocationCombatHoldMs, nowMs) < DC_RELOCATION_COMBAT_HOLD_MS)
+                {
+                    prog.stepStartMs = nowMs;
+                    prog.progressMs = nowMs;
+                    return StepResult::Running;
+                }
+                LOG_INFO("playerbots.dungeonclear",
+                         "[dungeon-clear] {}: party still fighting after {} ms at the "
+                         "relocation checkpoint -> teleporting anyway and dropping the "
+                         "leftover combat",
+                         bot->GetName(), getMSTimeDiff(prog.relocationCombatHoldMs, nowMs));
+            }
+            prog.relocationCombatHoldMs = 0;
             // The at-objective Hold keeps the leader on the checkpoint; with a
             // generous gate radius the objective's own arrival always satisfies this,
             // so the teleport never fires from mid-ramp. (Reached only if combat
@@ -703,6 +875,11 @@ StepResult DungeonEventExecutor::RunStep(Player* bot, AiObjectContext* context,
             bot->GetMotionMaster()->Clear();
             bot->NearTeleportTo(step.landX, step.landY, step.landZ, bot->GetOrientation());
             PullStrandedFollowersAcross(bot, step.landX, step.landY, step.landZ);
+            // Backstop for whatever combat survived the gate above (a follower
+            // flagged by something the leader was not, an add that landed on the
+            // teleport tick, or the bounded hold expiring). Everything the party
+            // was fighting is now on the far side of the break.
+            DropCombatLeftBehind(bot);
             // The leader just moved a long way in zero ticks: every cached route
             // artifact — the long-path polyline, its follower cursor, and any
             // in-flight async build (submitted from the PRE-teleport position) —
@@ -724,6 +901,18 @@ StepResult DungeonEventExecutor::RunStep(Player* bot, AiObjectContext* context,
                 context->GetValue<DungeonFollowerState&>(DcKey::FollowerState)->Get() =
                     DungeonFollowerState{};
                 context->GetValue<uint32>(DcKey::CurrentHop)->Set(0u);
+                // AND THE TARGET ITSELF. The objective latches cleared the moment
+                // this returns Done, but NextDungeonBossValue is a CACHED value: for
+                // the rest of its interval it keeps naming the objective we just
+                // completed, whose anchor is the checkpoint — now 360yd overhead and
+                // on the far side of the break. Advance duly builds a route to it,
+                // gets an unreachable partial that wanders off across the landing
+                // chamber, and glides it. Live on Azjol-Nerub: one second after the
+                // teleport the tank issued a 110yd spline from the landing back
+                // NORTH to (565.9, 572.3, 300.8) and ran it. Dropping the cache here
+                // makes the next tick re-derive with the latch already in place.
+                context->GetValue<std::optional<DungeonBossInfo>>(DcKey::NextDungeonBoss)
+                    ->Reset();
             }
             LOG_DEBUG("playerbots.dungeonclear",
                       "[dungeon-clear] {} TeleportParty: ({:.1f},{:.1f},{:.1f}) -> "

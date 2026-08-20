@@ -43,6 +43,7 @@
 #include "Ai/Dungeon/DungeonClear/Util/DcSmartRest.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearMath.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTickMemo.h"
+#include "Ai/Dungeon/DungeonClear/Util/DungeonPathFollower.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonEventExecutor.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearTuning.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearUtil.h"
@@ -268,31 +269,43 @@ bool DungeonClearAtBossTrigger::IsActive()
     if (DcEngageGeometry::ClosedDoorBetween(bot, bx, by, bz))
         return false;
 
-    // When the long-path cache is anchored (registered route), make sure
-    // all intermediate anchors have been resolved before firing. This
-    // prevents the bot from "engaging" a boss it's geometrically near but
-    // separated from by a wall or door — the cached anchor list runs the
-    // bot around through the actual corridor first.
+    // When the long-path cache is anchored (registered route), make sure the
+    // intermediate anchors STILL AHEAD OF US have been resolved before firing.
+    // This prevents the bot from "engaging" a boss it's geometrically near but
+    // separated from by a wall or door — the cached anchor list runs the bot
+    // around through the actual corridor first.
+    //
+    // FROM THE FOLLOWER'S CURSOR, NOT FROM ZERO. This loop used to start at
+    // segment 0, which asks the bot to be within one arriveRadius (6yd) of every
+    // anchor on the route SIMULTANEOUSLY — satisfiable only by a route whose
+    // anchors all sit inside a 6yd bubble, and false forever for any real one.
+    // It went unnoticed because DungeonClearRouteRegistry had no rows until
+    // Azjol-Nerub's; the first registered route (12 anchors over 250yd) turned
+    // it into a hard stall — 19 of 20 runs in tp-20260818-200553-1 parked 29yd
+    // from Anub'arak at full health, out of combat, watchdogs clear, until the
+    // no-progress watchdog ended them.
+    //
+    // DcAdvanceAction's copy of this check (its atBoss handoff, the one that
+    // logs "holding for at-boss") already started at followerNow.segmentIdx and
+    // was right; the two disagreeing is precisely why Advance said it was done
+    // navigating while the trigger never fired. Same cursor, same answer.
     ChunkedPathfinder::Result const& path =
         AI_VALUE(ChunkedPathfinder::Result&, DcKey::LongPath);
     if (path.reachable && !path.segments.empty())
     {
-        bool anyAnchored = false;
-        for (PathSegment const& seg : path.segments)
-            if (seg.anchored) { anyAnchored = true; break; }
-        if (anyAnchored)
+        DungeonFollowerState const& follower =
+            AI_VALUE(DungeonFollowerState&, DcKey::FollowerState);
+        // Last segment is the boss anchor; the anchored ones between the cursor
+        // and it must be within their arriveRadius. Anchors already walked past
+        // don't gate the engage.
+        for (size_t i = follower.segmentIdx; i + 1 < path.segments.size(); ++i)
         {
-            // Last segment is the boss anchor; everything before it must
-            // be within its arriveRadius.
-            for (size_t i = 0; i + 1 < path.segments.size(); ++i)
-            {
-                PathSegment const& seg = path.segments[i];
-                if (!seg.anchored)
-                    continue;
-                float const d = bot->GetDistance(seg.ex, seg.ey, seg.ez);
-                if (d > seg.arriveRadius)
-                    return false;
-            }
+            PathSegment const& seg = path.segments[i];
+            if (!seg.anchored)
+                continue;
+            float const d = bot->GetDistance(seg.ex, seg.ey, seg.ez);
+            if (d > seg.arriveRadius)
+                return false;
         }
     }
 
@@ -1069,7 +1082,21 @@ bool DungeonClearPullTrigger::IsActive()
     // tank at commit range while it waits the patrol out. Keep the trigger live in
     // that state too. (Reading pull mode current FIRST runs the governor that may
     // set decision == 3 this tick.)
+    //
+    // NEVER off a verdict the governor can no longer revise. This rung is the one
+    // place a pull code keeps the action alive with the behavioural bool reading
+    // false, so it is also the one place a STALE code can plant the tank forever:
+    // while a persistent anchored event drives, DungeonClearPullModeCurrentValue
+    // stands the whole pull system down and the governor does not run, so nothing
+    // would ever move `decision` off PatrolHold — and the pull action (DcRel::Pull,
+    // 35) outranks the event's own rung (DcRel::AtObjective, 30), so the event could
+    // never drive another step. That is tr-20260817-100413-43/44/45 in Shattered
+    // Halls. The value now clears the verdict on its stand-down, which fixes it at
+    // the root; this reads the same stand-down so the rung can't be resurrected by a
+    // code latched between the two.
+    bool const eventOwnsTank = DungeonEventExecutor::IsPersistentAnchoredEventActive(context);
     bool const patrolWaiting =
+        !eventOwnsTank &&
         AI_VALUE(DcPullContext&, DcKey::PullContext).decision == DcPullDecisionCode::PatrolHold;
     // A PULL-BACK boss (BossPullbackRegistry) runs the maneuver REGARDLESS of the
     // player's pull setting. It isn't a tactical preference there: Ghaz'an's home

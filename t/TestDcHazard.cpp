@@ -236,7 +236,9 @@ TEST(DcHazardRegistry, GroundPoolRetreatPointClearsItsOwnKeepOut)
     // candidate it generates and falls through to its unvalidated last resort.
     // This is the exact trap the Destroyed Sentinel row's comment warns about.
     for (DcGroundHazard const* pool : { DcHazardRegistry::FindGround(289, 17742),
-                                        DcHazardRegistry::FindGround(349, 21070) })
+                                        DcHazardRegistry::FindGround(349, 21070),
+                                        DcHazardRegistry::FindGround(601, 53400),
+                                        DcHazardRegistry::FindGround(601, 59419) })
     {
         ASSERT_NE(pool, nullptr);
 
@@ -498,7 +500,8 @@ TEST(DcHazardMaraudonTest, EveryVacateRowOvershootsItsHoldBand)
     // the trigger re-fires, the action re-plots, and the bot thrashes in place
     // until something kills it.
     for (DcHazardEmitter const* e : { DcHazardRegistry::Find(552, 21761),
-                                      DcHazardRegistry::Find(349, 12222) })
+                                      DcHazardRegistry::Find(349, 12222),
+                                      DcHazardRegistry::Find(574, 23997) })
     {
         ASSERT_NE(e, nullptr);
         ASSERT_GT(e->vacateRadius, 0.0f);
@@ -506,7 +509,9 @@ TEST(DcHazardMaraudonTest, EveryVacateRowOvershootsItsHoldBand)
     }
 
     for (DcGroundHazard const* g : { DcHazardRegistry::FindGround(289, 17742),
-                                     DcHazardRegistry::FindGround(349, 21070) })
+                                     DcHazardRegistry::FindGround(349, 21070),
+                                     DcHazardRegistry::FindGround(601, 53400),
+                                     DcHazardRegistry::FindGround(601, 59419) })
     {
         ASSERT_NE(g, nullptr);
         ASSERT_GT(g->vacateRadius, 0.0f);
@@ -651,3 +656,88 @@ TEST(DcHazardArcatrazTest, RegisteredEmittersStillRejectLegs)
     ASSERT_NE(e, nullptr);
     EXPECT_TRUE(DcHazardRegistry::SegmentClips(*e, 0, 0, 22, -40, 0, 22, 40, 0, 22));
 }
+
+// --- Utgarde Keep (574): Ingvar's thrown axe ------------------------------
+// boss_ingvar_the_plunderer's phase-2 "Throw Axe" (42749) summons the Ingvar
+// Throw Dummy (23997) at a RANDOM party member's feet. The dummy carries the
+// permanent creature_template_addon aura 42750 (PERIODIC_TRIGGER_SPELL, 1000ms)
+// firing 42751 — 1750-2250 shadow in 5yd — until the script despawns it ~10s
+// later. It is UNIT_FLAG_NOT_SELECTABLE with NullCreatureAI, so there is nothing
+// to target and nothing to interrupt: leaving is the only answer, which makes it
+// a threat-2 emitter by construction.
+TEST(DcHazardUtgardeKeepTest, IngvarThrowDummyIsAVacateEmitter)
+{
+    DcHazardEmitter const* axe = DcHazardRegistry::Find(574, 23997);
+    ASSERT_NE(axe, nullptr) << "Ingvar's Throw Dummy (23997) is not registered";
+    EXPECT_EQ(axe->mapId, 574u);
+    EXPECT_EQ(axe->creatureEntry, 23997u);
+
+    // It must be FLED, not merely avoided in placement — a vacateRadius of 0
+    // would leave the party standing in ~2000 dps that nothing can be done about.
+    EXPECT_FLOAT_EQ(axe->vacateRadius, 5.0f) << "the raw 42751 radius";
+
+    // "Leave, then carry on" bands, NOT Maraudon's wide stay-out pair: the party
+    // is mid-encounter with a boss it must keep tanking and the dummy deletes
+    // itself in ~10s, so a wide hold band would walk the melee off Ingvar.
+    EXPECT_FLOAT_EQ(axe->holdBand, 2.0f);
+    EXPECT_FLOAT_EQ(axe->retreatSlack, 6.0f);
+
+    // The retreat's aim point must clear this row's own placement radius, or
+    // PointIsHot rejects the landing spot and the bot re-plots forever.
+    float const aim = axe->vacateRadius + axe->retreatSlack;
+    EXPECT_GT(aim, axe->radius);
+    EXPECT_GE(aim - (axe->vacateRadius + axe->holdBand), 2.0f)
+        << "arrival margin, so a yard of snap-back is survivable";
+
+    // Modest placement radius on purpose: the axe lands on the floor the party is
+    // actively fighting on, so an over-wide keep-out sterilises Ingvar's arena.
+    EXPECT_LE(axe->radius, 8.0f);
+    EXPECT_GE(axe->radius, axe->vacateRadius);
+
+    EXPECT_TRUE(DcHazardRegistry::HasEmitters(574));
+    EXPECT_TRUE(DcHazardRegistry::HasAnyHazard(574));
+    // Utgarde Keep has no ground pool and no trap — the axe is a creature.
+    EXPECT_FALSE(DcHazardRegistry::HasGroundHazards(574));
+    EXPECT_FALSE(DcHazardRegistry::HasTrapHazards(574));
+}
+
+// --- Azjol-Nerub: Hadronox's Acid Cloud -----------------------------------
+// A PERSISTENT_AREA_AURA pool like Scholomance's, but with the two properties
+// that make it the worst one on the clear: it lasts NINETY seconds (Spell.dbc
+// DurationIndex 23) at 707 nature/sec normal and 1414 heroic, and it is cast at
+// a RANDOM party member inside 100yd rather than under the boss — so it lands on
+// top of somebody and then outlives the fight it was cast in.
+
+TEST(DcHazardRegistry, AzjolNerubRegistersAcidCloudOnBothDifficulties)
+{
+    EXPECT_TRUE(DcHazardRegistry::HasAnyHazard(601));
+    EXPECT_TRUE(DcHazardRegistry::HasGroundHazards(601));
+    // No creature emitters and no traps on this map — the gate has to be
+    // HasAnyHazard, never HasEmitters, or the vacate is inert here.
+    EXPECT_FALSE(DcHazardRegistry::HasEmitters(601));
+
+    // boss_hadronox only ever CASTS 53400; spelldifficulty_dbc maps it to 59419
+    // on heroic and the DynamicObject then reports 59419 from GetSpellId(). A row
+    // for 53400 alone leaves the retreat inert on the difficulty where the pool
+    // does double damage.
+    DcGroundHazard const* normal = DcHazardRegistry::FindGround(601, 53400);
+    DcGroundHazard const* heroic = DcHazardRegistry::FindGround(601, 59419);
+    ASSERT_NE(normal, nullptr) << "Acid Cloud (normal) must be registered";
+    ASSERT_NE(heroic, nullptr) << "Acid Cloud (heroic 59419) must be registered too";
+
+    for (DcGroundHazard const* g : { normal, heroic })
+    {
+        EXPECT_EQ(g->mapId, 601u);
+        // vacateRadius is the RAW 5yd aura, not the padded keep-out — otherwise
+        // the retreat's own aim point fails PointIsHot and every candidate is
+        // rejected (the Destroyed Sentinel trap).
+        EXPECT_FLOAT_EQ(g->vacateRadius, 5.0f);
+        EXPECT_GT(g->radius, g->vacateRadius);
+        // Azjol-Nerub is a vertical shaft: the platform (z ~733), Hadronox's
+        // ledge (z ~675), the pit floor (z ~648) and the lower kingdom (z ~289)
+        // stack in the same column, and the tightest gap is 27yd. The z band must
+        // stay well inside that so a pool on one deck cannot fence off the next.
+        EXPECT_LT(g->zBand, 27.0f);
+    }
+}
+
