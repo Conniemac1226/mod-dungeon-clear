@@ -297,7 +297,6 @@ namespace
         return false;
     }
 }
-
 Player* DcLeaderSignal::FindLeaderTank(Player* reference)
 {
     if (!reference)
@@ -1547,4 +1546,3 @@ bool DcLeaderSignal::IsLeaderRazorgoreDriving(Player* bot)
     // and the camp must release rather than pin the raid in place.
     return GetMSTimeDiffToNow(st.razorDrivingMs) <= 3000;
 }
-

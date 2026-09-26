@@ -219,7 +219,6 @@ namespace
                 << what << " snapped " << d << "yd — it is not standing where it was authored";
     }
 }
-
 // Every authored anchor, crate and cluster is somewhere a bot can stand.
 TEST(CullingOfStratholmeRouteProbe, EveryAuthoredPointIsOnTheNavmesh)
 {
@@ -505,4 +504,3 @@ TEST(CullingOfStratholmeRouteProbe, TheBookcaseIsScriptOnlyAndNavigationIgnored)
                " purpose, and nothing in the core ever opens it.";
     }
 }
-

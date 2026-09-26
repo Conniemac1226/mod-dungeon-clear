@@ -17,7 +17,7 @@ class DcLootPolicy
 public:
     // Sentinel ttl meaning "never expire — give up for the rest of the run."
     // Pass as GiveUpCurrentLoot's ttl when the reason a corpse was skipped is
-    // permanent: empty, below the quality floor, skinnable-only, or holding only
+    // permanent: empty, below the quality floor, or holding only
     // loot this bot can never take by re-looting — roll-locked / won-by-another
     // (the winner's item auto-delivers, it is never re-looted), round-robin or
     // allowed-looter sets that exclude us, or bags full with no vendor to clear
@@ -79,14 +79,13 @@ public:
     // creature loot is generated at kill time, so the contents are knowable
     // without opening the corpse.
     //
-    // Dungeon-clear only ever stops for two kinds of loot: creature CORPSES
-    // (normal kill loot) and treasure CHESTS. Every other lootable interactable
-    // in the world is ignored so the bot walks straight past it instead of
-    // detouring onto — and often getting stuck on — it: herbalism / mining
-    // gathering nodes (chest-type gameobjects gated by a profession-skill lock),
-    // skinnable-only corpses, fishing holes, levers, quest objects and loose
-    // item loot. Anything that isn't a corpse-with-takeable-loot or a real chest
-    // is skipped on sight.
+    // Dungeon-clear stops for creature CORPSES (normal kill loot), valid
+    // skinning targets, valid herbalism / mining nodes, and treasure CHESTS
+    // when IgnoreChests is off. Every other lootable interactable in the world
+    // is ignored so the bot walks straight past it instead of detouring onto —
+    // and often getting stuck on — fishing holes, levers, quest objects and
+    // loose item loot. Anything outside those allowed categories is skipped on
+    // sight.
     //
     // Drains EVERY in-range unworthy corpse in one call, not just the nearest:
     // it re-evaluates the now-nearest pickup after each skip and repeats until
@@ -111,13 +110,14 @@ public:
     // The corpse-quality check is deliberately conservative — it skips a corpse
     // only when confident nothing is takeable — because a false skip drops real
     // loot, whereas a missed skip merely falls back to the existing timeout.
-    // Gameobjects are skipped unless they are genuine chests; all non-chest and
-    // gathering-node interactables are dropped outright. Returns true when it
-    // skipped at least one pickup this call. Module-only: mutates stock loot
-    // values via GiveUpCurrentLoot / StripSkippedLoot, never stock code.
+    // Gameobjects are skipped unless they are genuine chests or valid
+    // profession gathering nodes; all other non-chest interactables are dropped
+    // outright. Returns true when it skipped at least one pickup this call.
+    // Module-only: mutates stock loot values via GiveUpCurrentLoot /
+    // StripSkippedLoot, never stock code.
     //
-    // Every reason this function skips a corpse is PERMANENT for the run (empty,
-    // below the quality floor, skinnable-only, a gathering node, not a chest) —
+    // Every reason this function skips a corpse is PERMANENT for the run (empty
+    // or below the quality floor) —
     // none of it can become takeable later the way a pending group roll can — so
     // the skips are recorded as LOOT_SKIP_STICKY. That stops the backtrack
     // re-stutter: a field of below-floor / empty corpses stays skipped for the

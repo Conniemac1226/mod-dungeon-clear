@@ -252,18 +252,19 @@ bool DcLootPolicy::MaybeSkipUnworthyLoot(PlayerbotAI* botAI)
             break;  // nothing left to judge
 
         // Classify the next pickup. Dungeon-clear stops for creature CORPSES
-        // that hold loot we'd take, and (only when IgnoreChests is off) for
-        // genuine treasure CHESTS; everything else is skipped so the bot never
-        // detours onto it.
+        // that hold loot we'd take, valid skinning targets, and (only when
+        // IgnoreChests is off) genuine treasure CHESTS. Valid herbalism/mining
+        // nodes are also preserved; everything else is skipped so the bot
+        // never detours onto irrelevant objects.
         bool keep = false;
         if (Creature* creature = botAI->GetCreature(target.guid))
         {
             // A corpse. Worth a stop only if it carries loot this bot can
             // actually take (above the quality floor, not locked in someone
-            // else's roll). A skinnable-only corpse has no normal loot here, so
-            // CorpseHasTakeableLoot is false and it is skipped like a gathering
-            // node — the bot does not stop merely to skin.
-            keep = CorpseHasTakeableLoot(bot, creature, minQuality);
+            // else's roll). A valid skinnable-only corpse is also worth a stop
+            // so the bot can skin it after normal loot has been handled.
+            keep = target.skillId == SKILL_SKINNING ||
+                   CorpseHasTakeableLoot(bot, creature, minQuality);
         }
         else if (GameObject* go = botAI->GetGameObject(target.guid))
         {
@@ -271,11 +272,14 @@ bool DcLootPolicy::MaybeSkipUnworthyLoot(PlayerbotAI* botAI)
             // is ever worth a detour — the bot stops only for corpses. With it
             // off, stop only for real chests. Herbalism / mining gathering veins
             // are also chest-type gameobjects, but are gated by a profession-
-            // skill lock — skillId carries that profession — so exclude them;
-            // every non-chest gameobject (fishing hole, lever, quest object) is
-            // excluded by type.
-            keep = !ignoreChests && go->GetGoType() == GAMEOBJECT_TYPE_CHEST &&
-                   target.skillId != SKILL_HERBALISM && target.skillId != SKILL_MINING;
+            // skill lock — skillId carries that profession — so preserve valid
+            // nodes even when IgnoreChests is on. Every other non-chest
+            // gameobject (fishing hole, lever, quest object) remains excluded.
+            bool const isGatheringNode =
+                go->GetGoType() == GAMEOBJECT_TYPE_CHEST &&
+                (target.skillId == SKILL_HERBALISM || target.skillId == SKILL_MINING);
+            bool const isAllowedChest = !ignoreChests && go->GetGoType() == GAMEOBJECT_TYPE_CHEST;
+            keep = isGatheringNode || isAllowedChest;
         }
         // else: loose item loot or an unresolvable guid -> not a corpse or chest.
 
