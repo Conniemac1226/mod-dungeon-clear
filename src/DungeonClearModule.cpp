@@ -355,6 +355,26 @@ public:
     }
 };
 
+// A creature engaging a run member mid-fight. The player-side hook above only
+// fires on a player's 0->1 transition, so an add joining a running fight is
+// otherwise unrecorded. See DcFirstContact::OnCreatureEngage.
+class DungeonClearLateJoinerScript : public UnitScript
+{
+public:
+    DungeonClearLateJoinerScript()
+        : UnitScript("DungeonClearLateJoinerScript", true, {
+            UNITHOOK_ON_UNIT_ENTER_COMBAT
+        }) {}
+
+    void OnUnitEnterCombat(Unit* unit, Unit* victim) override
+    {
+        if (!DcModule::IsEnabled())
+            return;
+        if (Creature* creature = unit ? unit->ToCreature() : nullptr)
+            DcFirstContact::OnCreatureEngage(creature, victim);
+    }
+};
+
 // Spectator-camera teardown safety net. A leaked possession leaves the human
 // controlling nothing (their mover is a despawning/orphaned dummy), and only we
 // can clean it up — so every exit path below calls DcSpectator::Stop, which is
@@ -679,6 +699,7 @@ void AddSC_dungeon_clear_module()
     new DungeonClearRegistrarWorldScript();
     new DungeonClearLoginPlayerScript();
     new DungeonClearPullBrakeScript();
+    new DungeonClearLateJoinerScript();
     // Opening half only — the End script registers on the first world tick so
     // it sorts after playerbots' AI-update hook (see the ordering contract).
     new DungeonClearSpectatorMoverBeginScript();

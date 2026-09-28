@@ -261,6 +261,17 @@ function RunsTab() {
                     roster
                   </span>
                 )}
+                {r.scenario && (
+                  <span
+                    title={`scenario of ${r.scenarioOf ?? "?"}`}
+                    className="rounded bg-teal-500/15 px-1.5 py-0.5 text-xs text-teal-300"
+                  >
+                    scenario
+                    {r.successBy && r.successBy !== "allCleared"
+                      ? ` · by ${r.successBy}`
+                      : ""}
+                  </span>
+                )}
                 <WipeBadge r={r} />
                 {r.level !== undefined && (
                   <span className="text-xs text-ink-600">lv {r.level}</span>
@@ -453,6 +464,24 @@ function RunDetail({ r }: { r: RunRecord }) {
         </div>
       )}
 
+      {r.scenario && (
+        <Section title="Scenario">
+          <Line>
+            of {r.scenarioOf ?? "?"}
+            {r.focus?.length ? <> · focus {r.focus.join(", ")}</> : null} ·
+            passes on {r.successPredicate || "all-cleared"}
+          </Line>
+          {r.successBy && (
+            <Line tone={r.tailPending ? "warn" : ""}>
+              succeeded by {r.successBy}
+              {r.tailPending ? " — the event's tail was still pending" : ""}
+            </Line>
+          )}
+        </Section>
+      )}
+
+      <ExtrasSection extras={r.extras} />
+
       {r.wipeOpponent && (
         <Section title="Wiped on">
           <Line tone={r.wipeOnBoss ? "warn" : ""}>
@@ -536,6 +565,27 @@ function RunDetail({ r }: { r: RunRecord }) {
 /* Every pull the Dynamic governor took a verdict on (schema 7+), predicted
  * size against what turned up. Flagged when the two disagree by 2+ bodies —
  * that row, not the total, is where an over-pull actually happened. */
+/* The flat key/value map a running event published (record schema 13). */
+function ExtrasSection({ extras }: { extras?: RunRecord["extras"] }) {
+  const entries = Object.entries(extras ?? {});
+  if (!entries.length) return null;
+  return (
+    <Section title="Event extras">
+      <div className="flex flex-wrap gap-2 text-sm">
+        {entries.map(([k, v]) => (
+          <span
+            key={k}
+            className="rounded-lg border border-ink-800 bg-ink-950 px-2 py-1"
+          >
+            <span className="text-ink-500">{k}</span>{" "}
+            <span className="font-mono text-ink-200">{String(v)}</span>
+          </span>
+        ))}
+      </div>
+    </Section>
+  );
+}
+
 function PullLine({ p }: { p: PullEntry }) {
   const over = (p.observed ?? 0) - (p.predicted ?? 0);
   const tone = p.wipedHere || over >= 2 ? "warn" : "dim";
@@ -671,6 +721,16 @@ function PlansTab() {
     () => api.get<{ plans: PlanRecord[] }>("/api/testplans?limit=50"),
     15000,
   );
+  /* The plan summary carries no per-run extras; a scenario plan's detail
+     joins them in from the run history by runId. */
+  const { data: runData } = usePoll(
+    () => api.get<{ runs: RunRecord[] }>("/api/testruns?limit=200"),
+    30000,
+  );
+  const runsById = useMemo(
+    () => new Map((runData?.runs ?? []).map((r) => [r.runId ?? "", r])),
+    [runData],
+  );
   const { session } = useSession();
   const toast = useToast();
   const [open, setOpen] = useState<Set<string>>(new Set());
@@ -766,7 +826,7 @@ function PlansTab() {
                   />
                 </span>
               </div>
-              {expanded && <PlanDetail p={p} />}
+              {expanded && <PlanDetail p={p} runsById={runsById} />}
             </Card>
           );
         })}
@@ -775,7 +835,18 @@ function PlansTab() {
   );
 }
 
-function PlanDetail({ p }: { p: PlanRecord }) {
+function PlanDetail({
+  p,
+  runsById,
+}: {
+  p: PlanRecord;
+  runsById: Map<string, RunRecord>;
+}) {
+  const withExtras = (p.runIds ?? [])
+    .map((id) => runsById.get(id))
+    .filter(
+      (r): r is RunRecord => !!r && Object.keys(r.extras ?? {}).length > 0,
+    );
   const launched = p.runs?.launched ?? 0;
   const dur = p.duration ?? {};
   const pulls = p.pulls;
@@ -911,6 +982,26 @@ function PlanDetail({ p }: { p: PlanRecord }) {
           </Line>
         </Section>
       ) : null}
+
+      {withExtras.length > 0 && (
+        <Section title="Event extras per run" scroll>
+          {withExtras.map((r) => (
+            <Line key={r.runId}>
+              <span className="font-mono text-xs text-ink-500">{r.runId}</span>{" "}
+              <span className={r.result === "success" ? "" : "text-red-300"}>
+                {r.result}
+              </span>
+              {r.successBy && r.successBy !== "allCleared" && (
+                <span className="text-ink-500"> ({r.successBy})</span>
+              )}{" "}
+              ·{" "}
+              {Object.entries(r.extras ?? {})
+                .map(([k, v]) => `${k} ${v}`)
+                .join(" · ")}
+            </Line>
+          ))}
+        </Section>
+      )}
 
       {p.runIds && p.runIds.length > 0 && (
         <Section title="Runs" scroll>

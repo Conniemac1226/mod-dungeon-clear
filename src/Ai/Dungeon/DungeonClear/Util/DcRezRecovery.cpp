@@ -608,7 +608,8 @@ namespace DcRezRecovery
         // falls back to the classic disable.
         DcTestDungeonRegistry::Row const* row = nullptr;
         for (DcTestDungeonRegistry::Row const& r : DcTestDungeonRegistry::All())
-            if (r.mapId == map->GetId())
+            // A scenario's drop point is mid-instance, never the entrance.
+            if (r.mapId == map->GetId() && !DcTestDungeonRegistry::IsScenario(r))
             {
                 row = &r;
                 break;

@@ -6,8 +6,11 @@
 #ifndef _PLAYERBOT_DCRUNSTATE_H
 #define _PLAYERBOT_DCRUNSTATE_H
 
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <string>
-
+#include <utility>
 #include <vector>
 
 #include "ObjectGuid.h"
@@ -52,6 +55,16 @@
 // through ApplyPullSetting / DisableDungeonClear and are excluded from every
 // blanket reset anyway, so folding them here would add surface without any
 // reset-safety gain. They stay as their own values.
+// One key/value an event hands the test harness for its run record (see
+// DcRunState::SetTestExtra). `numeric` values are written to the record's JSON
+// as bare numbers, everything else as strings.
+struct DcTestExtra
+{
+    std::string key;
+    std::string value;
+    bool numeric = false;
+};
+
 struct DcRunState
 {
     // === run session — cleared by Reset() (dc on / dc off / death / all-cleared) ===
@@ -454,6 +467,97 @@ struct DcRunState
     bool   ocStallReissued = false;
     uint8  ocRiderAction = 0;          // DcOculusRider::Action last logged
 
+    // === test-harness telemetry (leader-owned; SURVIVES Reset) ====================
+    // The seam between a long scripted event and the `.dc test` harness
+    // (Karazhan chess plan, T1). Both fields are written by the event on the RUN
+    // OWNER's DcRunState (the leader; the harness's tank) and only ever read by
+    // DcTestRunJob — nothing in the clear itself reacts to them, so an ordinary
+    // (non-test) run pays two stores per event step and nothing else.
+    //
+    // WHY THEY SURVIVE Reset(): the run's own success path is DisableDungeonClear,
+    // which Reset()s this struct, and the harness only samples at 1 Hz. A value
+    // wiped in the same tick the event completed would never reach the record —
+    // exactly the final `looted` / `gameTimeS` the record exists to carry. So
+    // Reset() carries this block across, and the harness clears it explicitly
+    // (ClearTestTelemetry) before it issues `dc on`, which is the one boundary a
+    // test run's telemetry actually belongs to.
+    //
+    // eventProgressSeq — the EVENT PROGRESS SEQUENCE. A counter a running DC
+    // event bumps (BumpEventProgress) whenever it makes real headway that the
+    // harness cannot see for itself: chess bumps it on each accepted move, each
+    // piece death and each phase change. The harness treats a CHANGE in it
+    // exactly like a boss kill or an anchor clear — it resets the no-progress
+    // clock — so a ten-minute game with no kills and no anchor movement is not
+    // failed as a livelock. Only the change matters (the harness compares it to
+    // the last value it saw), so wrap-around is harmless. Any future long event
+    // can use the same counter; bump it on genuine progress only, never on a
+    // timer, or it blinds the livelock net it is exempting the event from.
+    //
+    // testExtras — a flat key/value map the event fills for the run record
+    // (schema 13 `extras`): chess writes attempts, losses, gameTimeS, restarts,
+    // material, cheat counts, controllerChurn, looted. Setting an existing key
+    // overwrites it in place (insertion order is kept for the record), so an
+    // event can simply re-publish its counters on every change. Keep it small —
+    // it is copied into the harness once a second.
+    uint32 eventProgressSeq = 0;
+    std::vector<DcTestExtra> testExtras;
+
+    void BumpEventProgress() { ++eventProgressSeq; }
+
+    void SetTestExtra(std::string const& key, std::string value, bool numeric = false)
+    {
+        for (DcTestExtra& e : testExtras)
+            if (e.key == key)
+            {
+                e.value = std::move(value);
+                e.numeric = numeric;
+                return;
+            }
+        testExtras.push_back(DcTestExtra{key, std::move(value), numeric});
+    }
+
+    void SetTestExtra(std::string const& key, char const* value)
+    {
+        SetTestExtra(key, std::string(value ? value : ""));
+    }
+
+    // Numeric extras. Integral values print without a fraction ("12", not
+    // "12.000000"); a non-finite value is stored as a string so the record stays
+    // valid JSON.
+    void SetTestExtraNum(std::string const& key, double value)
+    {
+        if (!std::isfinite(value))
+        {
+            SetTestExtra(key, std::string(std::isnan(value) ? "nan" : "inf"));
+            return;
+        }
+        char buf[48];
+        if (value == std::floor(value) && std::fabs(value) < 1e15)
+            std::snprintf(buf, sizeof(buf), "%.0f", value);
+        else
+            std::snprintf(buf, sizeof(buf), "%.6g", value);
+        SetTestExtra(key, std::string(buf), true);
+    }
+
+    // Counter convenience: add `delta` to a numeric extra (absent = 0).
+    void AddTestExtra(std::string const& key, double delta = 1.0)
+    {
+        double current = 0.0;
+        for (DcTestExtra const& e : testExtras)
+            if (e.key == key && e.numeric)
+            {
+                current = std::strtod(e.value.c_str(), nullptr);
+                break;
+            }
+        SetTestExtraNum(key, current + delta);
+    }
+
+    void ClearTestTelemetry()
+    {
+        eventProgressSeq = 0;
+        testExtras.clear();
+    }
+
     // --- per-bot throttles (see Util/DcThrottle.h) --------------------------
 
     DcThrottleSlot throttles[kDcThrottleCount]{};
@@ -638,7 +742,16 @@ struct DcRunState
     // Full run teardown: every session + signal field. Used on dc on / dc off /
     // death / all-cleared. (The pull preference/bool are NOT here — see the header
     // note; they are reset explicitly by ApplyPullSetting / DisableDungeonClear.)
-    void Reset() { *this = DcRunState{}; }
+    // The test-harness telemetry block is the one exception, carried across —
+    // see its comment for why; ClearTestTelemetry() is its own reset.
+    void Reset()
+    {
+        uint32 const seq = eventProgressSeq;
+        std::vector<DcTestExtra> extras = std::move(testExtras);
+        *this = DcRunState{};
+        eventProgressSeq = seq;
+        testExtras = std::move(extras);
+    }
 
     // Pause-cluster teardown — the resume path (manual `dc pause` resume AND the
     // door auto-resume) and re-arm on `dc on`. Clears the paused flag together with

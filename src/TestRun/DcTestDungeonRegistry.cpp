@@ -5,8 +5,10 @@
 
 #include "DcTestDungeonRegistry.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <fstream>
+#include <set>
 #include <sstream>
 
 #include "DBCStores.h"
@@ -95,7 +97,7 @@ namespace DcTestDungeonRegistry
             { "hor",             "Halls of Reflection",           668,  5239.01f,  1932.64f,  707.70f, 0.801f, 80, "", 80 },
 
             // --- RAIDS (raid-support Plan D/E). Entrances are the world-DB
-            // areatrigger targets (MC 2886, BWL 3726, Gruul 4535); no heroic
+            // areatrigger targets (MC 2886, BWL 3726, Gruul 4535, Kara 4131); no heroic
             // mode (heroicLevel stays 0 — a raid's size is its difficulty); a
             // raid run picks its size via `size=` (default 10 for iteration
             // speed — see the raid-support plan). Classic rows run at 60.
@@ -113,16 +115,43 @@ namespace DcTestDungeonRegistry
             // comp missing any of those leaves that ogre loose (pick the comp
             // on the roster page when it matters).
             { "gruul",           "Gruul's Lair",                  565,    62.78f,    35.46f,   -3.98f, 1.418f, 70, "" },
+            // Karazhan (TBC, level 70, 10-man only — MapDifficulty caps it
+            // at 10, so the launch form offers no 25 preset and a bigger run
+            // is refused before it spawns). Main entrance, areatrigger 4131;
+            // no key requirement in dungeon_access_template, min level 68.
+            // Kill-credit encounters with a static spawn auto-derive (Moroes,
+            // Maiden, Curator, Terestian, Aran, Netherspite, Malchezaar), but
+            // four need event data this row does not carry yet: Attumen has
+            // no spawn (Midnight summons him), Opera credits Barnes (a
+            // friendly gossip NPC who starts the play), Chess credits the
+            // status-bar trigger, and Nightbane lands only after the urn.
+            { "kara",            "Karazhan",                      532, -11100.00f, -2003.98f,   49.89f, 0.577f, 70, "" },
+
+            // --- SCENARIOS (Karazhan chess plan, T1). A scenario is a slice of
+            // a parent row: an in-map drop point, a focus roster and (usually)
+            // its own success predicate — see the Row's scenario fields. Kept
+            // at the END of the table so every by-map scan (DcRezRecovery's
+            // entrance lookup) meets the parent first. Spelled positionally:
+            //   { token, name, map, x, y, z, o, level, "", 0 (no heroic),
+            //     "<parent>", { focus entries }, InstanceDataEquals(id, v),
+            //     graceS, overallTimeoutS, noProgressS },
+            // ValidateScenario (gtest-pinned over this table) rejects a row
+            // whose parent, map or focus does not line up.
         };
         return rows;
     }
 
     Row const* Find(std::string const& tokenOrMapId)
     {
+        return Find(tokenOrMapId, All());
+    }
+
+    Row const* Find(std::string const& tokenOrMapId, std::vector<Row> const& rows)
+    {
         if (tokenOrMapId.empty())
             return nullptr;
 
-        for (Row const& row : All())
+        for (Row const& row : rows)
             if (tokenOrMapId == row.token)
                 return &row;
 
@@ -133,20 +162,136 @@ namespace DcTestDungeonRegistry
             return nullptr;
 
         Row const* hit = nullptr;
-        for (Row const& row : All())
-            if (row.mapId == asMap)
-            {
-                if (hit)
-                    return nullptr;  // wing-split map: demand a wing token
-                hit = &row;
-            }
+        for (Row const& row : rows)
+        {
+            // A scenario is a slice of its parent, never "the dungeon on map N":
+            // `.dc test start 532` must keep meaning the whole of Karazhan no
+            // matter how many scenarios hang off it.
+            if (IsScenario(row) || row.mapId != asMap)
+                continue;
+            if (hit)
+                return nullptr;  // wing-split map: demand a wing token
+            hit = &row;
+        }
         return hit;
+    }
+
+    std::string DescribePredicate(SuccessPredicate const& p)
+    {
+        switch (p.kind)
+        {
+            case SuccessPredicate::Kind::InstanceDataEquals:
+                return "instanceData(" + std::to_string(p.dataId) + ")==" + std::to_string(p.value);
+            case SuccessPredicate::Kind::None:
+                break;
+        }
+        return "";
+    }
+
+    std::string ValidateScenario(Row const& row, std::vector<Row> const& rows,
+                                 std::vector<std::uint32_t> const* rosterEntries)
+    {
+        if (!IsScenario(row))
+        {
+            // The scenario-only knobs mean nothing on a full-dungeon row, and a
+            // focus there would silently skip most of the dungeon.
+            if (!row.focusEntries.empty() || row.success.IsSet() || row.successGraceS)
+                return "focus/success set on a row that is not a scenario (no scenarioOf)";
+            return "";
+        }
+
+        std::string const parentToken = row.scenarioOf;
+        if (parentToken.empty())
+            return "scenarioOf is empty";
+        if (parentToken == row.token)
+            return "scenario names itself as its parent";
+
+        Row const* parent = nullptr;
+        for (Row const& r : rows)
+            if (parentToken == r.token)
+            {
+                parent = &r;
+                break;
+            }
+        if (!parent)
+            return "parent '" + parentToken + "' is not in the catalogue";
+        if (IsScenario(*parent))
+            return "parent '" + parentToken + "' is itself a scenario";
+        if (parent->mapId != row.mapId)
+            return "scenario map " + std::to_string(row.mapId) + " differs from parent '" +
+                   parentToken + "' map " + std::to_string(parent->mapId);
+
+        if (row.heroicLevel)
+            return "scenarios offer no heroic mode (heroicLevel must be 0)";
+
+        if (row.focusEntries.empty())
+            return "scenario has no focusEntries";
+        std::set<std::uint32_t> seen;
+        for (std::uint32_t entry : row.focusEntries)
+        {
+            if (entry == 0)
+                return "focus entry 0";
+            if (!seen.insert(entry).second)
+                return "duplicate focus entry " + std::to_string(entry);
+            if (rosterEntries &&
+                std::find(rosterEntries->begin(), rosterEntries->end(), entry) ==
+                    rosterEntries->end())
+                return "focus entry " + std::to_string(entry) + " is not on map " +
+                       std::to_string(row.mapId) + "'s roster";
+        }
+
+        if (row.success.IsSet() && row.success.dataId == 0)
+            return "success predicate names no instance data id";
+        if (row.successGraceS && !row.success.IsSet())
+            return "successGraceS without a success predicate";
+        return "";
+    }
+
+    std::string ScenarioSidecarFields(Row const& row)
+    {
+        if (!IsScenario(row))
+            return "";
+        using DcTestRunRecord::EscapeJson;
+        std::ostringstream s;
+        s << ",\"scenario\":true,\"scenarioOf\":\"" << EscapeJson(row.scenarioOf)
+          << "\",\"focus\":[";
+        for (std::size_t i = 0; i < row.focusEntries.size(); ++i)
+            s << (i ? "," : "") << row.focusEntries[i];
+        s << "],\"success\":\"" << EscapeJson(DescribePredicate(row.success)) << '"'
+          << ",\"successGraceS\":" << row.successGraceS
+          << ",\"overallTimeoutS\":" << row.overallTimeoutS
+          << ",\"noProgressS\":" << row.noProgressS;
+        return s.str();
     }
 
     std::uint32_t ExpansionOf(Row const& row)
     {
         MapEntry const* mapEntry = sMapStore.LookupEntry(row.mapId);
         return mapEntry ? mapEntry->Expansion() : 0u;
+    }
+
+    std::uint32_t MaxPlayers(Row const& row)
+    {
+        if (MapDifficulty const* diff = GetMapDifficultyData(row.mapId, Difficulty(0)))
+            if (diff->maxPlayers)
+                return diff->maxPlayers;
+        MapEntry const* mapEntry = sMapStore.LookupEntry(row.mapId);
+        return mapEntry ? mapEntry->maxPlayers : 0u;
+    }
+
+    std::vector<std::uint32_t> RaidSizePresets(std::uint32_t cap)
+    {
+        std::vector<std::uint32_t> out;
+        for (std::uint32_t preset : {10u, 25u})
+            if (SizeFits(preset, cap))
+                out.push_back(preset);
+        return out;
+    }
+
+    std::uint32_t RaidSizeMax(std::uint32_t cap)
+    {
+        auto const hardMax = static_cast<std::uint32_t>(DcTestComp::kMaxPartySize);
+        return cap == 0 ? hardMax : std::min(cap, hardMax);
     }
 
     void WriteSidecar()
@@ -212,18 +357,31 @@ namespace DcTestDungeonRegistry
               << ",\"expansion\":" << ExpansionOf(row)
               << ",\"level\":" << row.recommendedLevel
               << ",\"heroicLevel\":" << row.heroicLevel
-              << ",\"wing\":\"" << EscapeJson(row.wing) << '"';
+              << ",\"wing\":\"" << EscapeJson(row.wing) << '"'
+              // Scenario rows: the Deck shelves them under the parent dungeon,
+              // locks the size to the parent's default and hides heroic.
+              << ScenarioSidecarFields(row);
             // RAID rows (raid-support Plan D): tell the dashboard's launch
             // form to offer the size control, with the module's own bounds so
-            // the two can't drift. defaultSize 10 mirrors the plan's
-            // iteration-speed choice; the worldserver still validates.
+            // the two can't drift. The upper bound and presets are capped by
+            // the map's own player limit (Karazhan: 10, no 25 preset).
+            // defaultSize 10 mirrors the plan's iteration-speed choice; the
+            // worldserver still validates.
             if (MapEntry const* mapEntry = sMapStore.LookupEntry(row.mapId);
                 mapEntry && mapEntry->IsRaid())
+            {
+                std::uint32_t const cap = MaxPlayers(row);
                 s << ",\"raid\":true"
                   << ",\"sizeMin\":" << DcTestComp::kMinPartySize
-                  << ",\"sizeMax\":" << DcTestComp::kMaxPartySize
-                  << ",\"sizePresets\":[10,25]"
-                  << ",\"defaultSize\":10";
+                  << ",\"sizeMax\":" << RaidSizeMax(cap) << ",\"sizePresets\":[";
+                bool firstPreset = true;
+                for (std::uint32_t preset : RaidSizePresets(cap))
+                {
+                    s << (firstPreset ? "" : ",") << preset;
+                    firstPreset = false;
+                }
+                s << "],\"defaultSize\":10";
+            }
             s << ",\"gear\":";
             appendLadder(s, row.mapId, row.recommendedLevel);
             if (row.heroicLevel)

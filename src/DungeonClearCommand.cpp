@@ -900,10 +900,13 @@ public:
         handler->SendSysMessage("Supported test dungeons (.dc test start <token> [heroic]):");
         for (DcTestDungeonRegistry::Row const& row : DcTestDungeonRegistry::All())
             handler->SendSysMessage(Acore::StringFormat(
-                "  {:<16} {} (map {}, level {}{})", row.token, row.name, row.mapId,
+                "  {:<16} {} (map {}, level {}{}{})", row.token, row.name, row.mapId,
                 row.recommendedLevel,
                 row.heroicLevel ? Acore::StringFormat(", heroic {}", row.heroicLevel)
-                                : std::string()));
+                                : std::string(),
+                DcTestDungeonRegistry::IsScenario(row)
+                    ? Acore::StringFormat(", scenario of {}", row.scenarioOf)
+                    : std::string()));
         return true;
     }
 

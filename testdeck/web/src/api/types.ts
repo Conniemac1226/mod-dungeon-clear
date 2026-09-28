@@ -54,6 +54,17 @@ export interface Dungeon {
   defaultSize?: number;
   gear?: GearChoice[];
   gearHeroic?: GearChoice[];
+  /* SCENARIO rows (module T1): a slice of a parent dungeon — dropped at an
+   * in-map point, scoped to `focus`, passing on its own `success` predicate.
+   * Launched by its own token; the form locks the size to the parent's
+   * default and never offers heroic. Absent on every ordinary row. */
+  scenario?: boolean;
+  scenarioOf?: string;
+  focus?: number[];
+  success?: string;          // "instanceData(9)==3", "" = all-cleared only
+  successGraceS?: number;
+  overallTimeoutS?: number;  // 0 = the server's global budget
+  noProgressS?: number;
 }
 
 export interface Catalogue {
@@ -331,6 +342,16 @@ export interface RunRecord {
   wipeOpponent?: string;
   wipeOpponentEntry?: number;
   diag?: RunDiag;
+  /* schema 13: the scenario block. `extras` is the flat key/value map the
+   * running event published (chess: attempts, losses, gameTimeS, …) — present
+   * (possibly empty) on every schema-13 record. */
+  scenario?: string;
+  scenarioOf?: string;
+  focus?: number[];
+  successPredicate?: string;
+  successBy?: string;        // "allCleared" | "predicate" | "grace"
+  tailPending?: boolean;
+  extras?: Record<string, string | number>;
   [k: string]: unknown;
 }
 

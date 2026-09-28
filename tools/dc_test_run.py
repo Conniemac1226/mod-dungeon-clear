@@ -4,7 +4,7 @@ dc_test_run.py — everything known about one test run, by its id.
 
 `.dc test` scatters a single run's evidence across five places:
 
-  dc_testruns.jsonl        the finished-run record (schema v7-v9): comp, result,
+  dc_testruns.jsonl        the finished-run record (schema v7-v13): comp, result,
                            fail reason, boss timeline, deaths, pulls, status
                            timeline, pauses, watchdog config, and the teardown
                            DcDiag snapshot
@@ -51,7 +51,7 @@ import os
 import re
 import sys
 import time
-from collections import Counter, OrderedDict
+from collections import Counter, OrderedDict, deque
 from datetime import datetime
 from pathlib import Path
 
@@ -72,6 +72,13 @@ PAD_AFTER_S = 30
 LEVELS = ["TRACE", "DEBUG", "INFO", "WARN", "WARNING", "ERROR", "FATAL"]
 LEVEL_RANK = {"TRACE": 0, "DEBUG": 1, "INFO": 2, "WARN": 3, "WARNING": 3, "ERROR": 4, "FATAL": 5}
 
+# Tags a long scripted event stamps on its own diagnostic lines (the Karazhan
+# chess conductor's state / order / assignment lines are `DC_CHESS ...`). Lines
+# carrying one are pulled into the run's slice even when they name no bot, and
+# the triage view prints them FIRST — for a scenario run they are the story,
+# and the generic INFO stream would bury them.
+EVENT_TAGS = ["DC_CHESS"]
+
 # Substrings worth counting in a run's slice. These are the lines that have
 # actually explained a stuck run before; extend freely, order is display order.
 SIGNALS = [
@@ -85,6 +92,7 @@ SIGNALS = [
     # objective that shows up here is one that joined a fight nobody pulled it into.
     ("first contact", ["first contact:"]),
     ("OBJECTIVE joined a fight", ["OBJECTIVE JOINED AN ONGOING FIGHT"]),
+    ("late joiner", ["late joiner:"]),
     # Both halves of the MgT interrupt pass. The hits alone cannot say whether a low count
     # means the bots missed or that nothing kickable was cast, so the misses are grepped too.
     ("interrupt landed", ["interrupt: '"]),
@@ -293,16 +301,19 @@ def parse_stamp(text, cache):
     return hit
 
 
-def slice_log(path, start_s, end_s, matcher, cap=400000):
+def slice_log(path, start_s, end_s, matcher, cap=0):
     """Return (lines, meta) for the lines of `path` inside the window that name
     one of this run's bots.
+
+    `cap` > 0 keeps only the newest `cap` lines — a run's failure lives at its
+    end, so a capped slice drops the oldest lines, never the stall. 0 = all.
 
     Correlation is name-plus-window because no log line carries a run id: bot
     characters are provisioned per run and never shared by two runs at once, so
     within the window a name identifies exactly one run. Continuation lines (no
     leading timestamp) inherit the previous line's verdict.
     """
-    out = []
+    out = deque(maxlen=cap) if cap > 0 else []
     meta = {"path": str(path), "name": path.name, "scanned": 0, "matched": 0,
             "first": None, "last": None, "truncated": False, "levels": Counter()}
     cache = {}
@@ -311,13 +322,13 @@ def slice_log(path, start_s, end_s, matcher, cap=400000):
     try:
         fh = path.open("r", encoding="utf-8", errors="replace")
     except OSError:
-        return out, meta
+        return list(out), meta
     with fh:
         for raw in fh:
             meta["scanned"] += 1
             m = LINE_RE.match(raw)
             if not m:
-                if keep_prev and len(out) < cap:
+                if keep_prev:
                     out.append((prev_stamp, "", raw.rstrip("\n")))
                 continue
             stamp_text, level, body = m.group(1), (m.group(2) or ""), m.group(3).rstrip("\n")
@@ -339,15 +350,15 @@ def slice_log(path, start_s, end_s, matcher, cap=400000):
             keep_prev = True
             meta["matched"] += 1
             meta["levels"][level.upper() or "-"] += 1
-            if len(out) < cap:
-                out.append((stamp, level.upper(), body))
-            else:
+            if cap > 0 and len(out) == cap:
                 meta["truncated"] = True
-    return out, meta
+            out.append((stamp, level.upper(), body))
+    return list(out), meta
 
 
 def build_matcher(names, ids):
-    tokens = sorted({t for t in list(names) + list(ids) if t}, key=len, reverse=True)
+    tokens = sorted({t for t in list(names) + list(ids) + EVENT_TAGS if t},
+                    key=len, reverse=True)
     if not tokens:
         return re.compile(r"(?!)")
     return re.compile(r"(?<![\w-])(?:" + "|".join(re.escape(t) for t in tokens) + r")(?![\w-])")
@@ -437,10 +448,22 @@ def render_header(rec, live_rec, plan, plan_live, start_s, end_s):
     if rec.get("instanceId"):
         bits.append(f"instance {rec['instanceId']}")
     lines.append("  " + " · ".join(str(b) for b in bits))
+    # Scenario runs (schema 13): a slice of the parent dungeon with its own
+    # success predicate — say so before anything else, or "1/1 killed" and a
+    # success with the chest still on the floor read as nonsense.
+    if rec.get("scenario"):
+        sc = [f"scenario of {rec.get('scenarioOf') or '?'}"]
+        if rec.get("focus"):
+            sc.append("focus " + ",".join(str(e) for e in rec["focus"]))
+        sc.append(f"success {rec.get('successPredicate') or 'all-cleared'}")
+        lines.append("  " + " · ".join(sc))
 
     if rec:
         result = rec.get("result", "?")
         lines.append(f"  result   : {bold(result)}")
+        if rec.get("successBy"):
+            tail = " (event tail still pending)" if rec.get("tailPending") else ""
+            lines.append(f"  success  : by {rec['successBy']}{tail}")
         for field, label in (("failReason", "fail"), ("disableReason", "disabled"),
                              ("setupStage", "setup stage"), ("stallAtEnd", "stall at end"),
                              ("phaseAtEnd", "phase at end")):
@@ -527,6 +550,29 @@ def render_bosses(rec, live_rec):
                        "TARGET" if o.get("isTarget") else ""]
                       for o in rec["diag"]["roster"]],
                      ["#", "name", "kind", "status", "via", ""])
+    return out
+
+
+def render_extras(rec):
+    """The flat key/value map a running event published (schema 13 `extras`)."""
+    extras = rec.get("extras") or {}
+    if not extras:
+        return []
+    width = max(len(k) for k in extras)
+    return [f"  {k:<{width}}  {v}" for k, v in extras.items()]
+
+
+def render_event_lines(lines, limit):
+    """Every slice line carrying an EVENT_TAGS tag, any level, in time order."""
+    hits = [ln for ln in lines if any(tag in ln[2] for tag in EVENT_TAGS)]
+    if not hits:
+        return []
+    shown = hits[-limit:] if limit > 0 else hits
+    out = []
+    if len(hits) > len(shown):
+        out.append(f"  … {len(hits)-len(shown)} earlier (--notable 0 for all)")
+    for stamp, level, body in shown:
+        out.append(f"  {clock(stamp)} {level:<5} {body}")
     return out
 
 
@@ -919,7 +965,7 @@ def render_log_summary(slices, start_s, end_s, names, session_s, run_start_s):
                                                         key=lambda kv: -LEVEL_RANK.get(kv[0], 9)))
         rows.append([meta["name"], meta["matched"], meta["scanned"],
                      clock(meta["first"]), levels,
-                     "⚠ slice capped" if meta["truncated"] else ""])
+                     "⚠ capped: oldest lines dropped" if meta["truncated"] else ""])
     out += table(rows, ["log", "run lines", "file lines", "opens", "levels", ""])
     return out
 
@@ -1085,6 +1131,8 @@ def main():
     ap.add_argument("--level", metavar="L", help="only log lines at or above this level")
     ap.add_argument("--head", type=int, default=0, help="first N dumped lines")
     ap.add_argument("--tail", type=int, default=0, help="last N dumped lines")
+    ap.add_argument("--max-lines", type=int, default=0, metavar="N",
+                    help="keep only the newest N lines per log file (default 0 = uncapped)")
     ap.add_argument("--dump", metavar="DIR", help="write each per-run log slice to DIR")
     ap.add_argument("--pad", type=int, default=None, metavar="S",
                     help=f"seconds of slack on both ends of the window "
@@ -1163,7 +1211,7 @@ def main():
     if not args.no_logs and start_s:
         matcher = build_matcher(names, [wanted, plan_id])
         for path in candidate_logs(data_dir, win_start):
-            lines, meta = slice_log(path, win_start, win_end, matcher)
+            lines, meta = slice_log(path, win_start, win_end, matcher, args.max_lines)
             if meta["first"] is None:
                 if meta["scanned"]:
                     untimestamped.append(meta)
@@ -1187,6 +1235,9 @@ def main():
     print("\n".join(render_header(rec, live_rec, plan, plan_live, start_s, end_s)))
     print(hr("PARTY"));            print("\n".join(render_comp(rec, live_rec)))
     print(hr("BOSSES"));           print("\n".join(render_bosses(rec, live_rec)))
+    extras = render_extras(rec)
+    if extras:
+        print(hr("EVENT EXTRAS"));  print("\n".join(extras))
     print(hr("DEATHS"));           print("\n".join(render_deaths(rec)))
     print(hr("PULLS"));            print("\n".join(render_pulls(rec)))
     print(hr("STATUS TIMELINE"));  print("\n".join(render_status_timeline(rec, live_rec, args.timeline)))
@@ -1215,6 +1266,10 @@ def main():
         print("\n".join(render_log_summary(slices, win_start, win_end, names, session_s, start_s)))
         if untimestamped:
             print("\n".join(render_untimestamped(data_dir, untimestamped)))
+        event_lines = render_event_lines(all_lines, args.notable)
+        if event_lines:
+            print(hr("EVENT LINES (" + ", ".join(EVENT_TAGS) + ")"))
+            print("\n".join(event_lines))
         print(hr("SIGNALS"))
         print("\n".join(render_signals(all_lines)))
         print(hr("NOTABLE LOG LINES (INFO+)"))

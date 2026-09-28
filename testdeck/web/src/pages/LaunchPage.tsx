@@ -7,7 +7,12 @@
  * The catalogue is ~60 rows and growing, so the list is shelved: filter
  * pills (expansion, or raids-only) over compact one-line rows grouped into
  * titled sections. Raids always sit in their own sections — a raid launch
- * fields a different party and is never picked by accident. */
+ * fields a different party and is never picked by accident.
+ *
+ * SCENARIOS (a registry row with `scenario: true`) are slices of a parent
+ * dungeon — Karazhan's chess event, say — and never stand on their own: each
+ * section carries a "Scenarios" shelf under its grid for the scenarios whose
+ * parent sits in that section, labelled "Karazhan · Chess". */
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
@@ -57,10 +62,21 @@ const EXP_SHELF = ["classic", "tbc", "wotlk"] as const;
  * sections. A shelf is a filter over the buckets, so "Classic" includes the
  * classic raids and "Raids" spans every expansion, and either agrees with
  * the section a row sits under on "All". */
-function sectionsFor(dungeons: Dungeon[], shelf: Shelf) {
+function sectionsFor(dungeons: Dungeon[], shelf: Shelf, byToken: Map<string, Dungeon>) {
   const buckets: Dungeon[][] = [[], [], [], [], [], []];
-  for (const d of dungeons)
-    buckets[expansionOfRow(d) + (d.raid ? 3 : 0)].push(d);
+  const scenarios: Dungeon[][] = [[], [], [], [], [], []];
+  const bucketOf = (d: Dungeon) => expansionOfRow(d) + (d.raid ? 3 : 0);
+  for (const d of dungeons) {
+    if (d.scenario) {
+      /* Shelved by the PARENT's bucket, so a scenario always sits under the
+         dungeon it is a slice of. An orphan (stale sidecar) is dropped — the
+         Deck's own launch route would refuse it anyway. */
+      const parent = byToken.get(d.scenarioOf ?? "");
+      if (parent) scenarios[bucketOf(parent)].push(d);
+      continue;
+    }
+    buckets[bucketOf(d)].push(d);
+  }
   const titles = [
     ...EXPANSION_NAME,
     ...EXPANSION_NAME.map((n) => `${n} — raids`),
@@ -72,8 +88,17 @@ function sectionsFor(dungeons: Dungeon[], shelf: Shelf) {
         ? [3, 4, 5]
         : [EXP_SHELF.indexOf(shelf), EXP_SHELF.indexOf(shelf) + 3];
   return order
-    .filter((i) => buckets[i].length)
-    .map((i) => ({ title: titles[i], items: buckets[i] }));
+    .filter((i) => buckets[i].length || scenarios[i].length)
+    .map((i) => ({ title: titles[i], items: buckets[i], scenarios: scenarios[i] }));
+}
+
+/* "Karazhan: Chess" under parent "Karazhan" reads "Karazhan · Chess". */
+function scenarioLabel(d: Dungeon, parent?: Dungeon) {
+  if (!parent) return d.name;
+  const tail = d.name.startsWith(parent.name)
+    ? d.name.slice(parent.name.length).replace(/^[\s:·—-]+/, "")
+    : d.name;
+  return `${parent.name} · ${tail || d.name}`;
 }
 
 export default function LaunchPage() {
@@ -96,6 +121,7 @@ export default function LaunchPage() {
   }
 
   const all = useMemo(() => catalogue?.dungeons ?? [], [catalogue]);
+  const byToken = useMemo(() => new Map(all.map((d) => [d.token, d])), [all]);
   const q = query.trim().toLowerCase();
 
   /* A typed search suspends the shelf filter — a tester hunting a name
@@ -109,18 +135,21 @@ export default function LaunchPage() {
             d.token.toLowerCase().includes(q),
         )
       : all;
-    return sectionsFor(matched, q ? "all" : shelf);
-  }, [all, q, shelf]);
+    return sectionsFor(matched, q ? "all" : shelf, byToken);
+  }, [all, q, shelf, byToken]);
 
+  /* Scenarios are shelved under their parent, so the pill counts are
+     dungeons only. */
   const counts = useMemo(() => {
+    const dungeons = all.filter((d) => !d.scenario);
     const c: Record<Shelf, number> = {
-      all: all.length,
+      all: dungeons.length,
       classic: 0,
       tbc: 0,
       wotlk: 0,
       raids: 0,
     };
-    for (const d of all) {
+    for (const d of dungeons) {
       c[EXP_SHELF[expansionOfRow(d)]]++;
       if (d.raid) c.raids++;
     }
@@ -203,6 +232,23 @@ export default function LaunchPage() {
               />
             ))}
           </div>
+          {s.scenarios.length > 0 && (
+            <div className="mt-2.5">
+              <h3 className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-teal-400/70">
+                Scenarios
+              </h3>
+              <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 xl:grid-cols-3">
+                {s.scenarios.map((d) => (
+                  <DungeonRow
+                    key={d.token}
+                    d={d}
+                    parent={byToken.get(d.scenarioOf ?? "")}
+                    onPick={() => setSelected(d)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
         </section>
       ))}
       {!sections.length && (
@@ -212,6 +258,7 @@ export default function LaunchPage() {
       {selected && (
         <LaunchDrawer
           dungeon={selected}
+          parent={selected.scenario ? byToken.get(selected.scenarioOf ?? "") : undefined}
           catalogue={catalogue}
           onClose={() => setSelected(null)}
         />
@@ -224,18 +271,38 @@ export default function LaunchPage() {
  * show their party size instead — level 60/70/80 says less about a raid than
  * how many bots it fields). The old two-line cards made 58 rows into three
  * screens of scrolling. */
-function DungeonRow({ d, onPick }: { d: Dungeon; onPick: () => void }) {
+function DungeonRow({
+  d,
+  parent,
+  onPick,
+}: {
+  d: Dungeon;
+  parent?: Dungeon;
+  onPick: () => void;
+}) {
   return (
     <button
       onClick={onPick}
       className="group flex items-center gap-2 rounded-xl border border-ink-800 bg-ink-900/60 px-3 py-2 text-left transition hover:border-iris-500/50 hover:bg-ink-900"
     >
       <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink-100 group-hover:text-iris-200">
-        {d.name}
+        {d.scenario ? scenarioLabel(d, parent) : d.name}
       </span>
       <span className="hidden shrink-0 font-mono text-xs text-ink-600 group-hover:text-ink-500 sm:inline">
         {d.token}
       </span>
+      {d.scenario && (
+        <span
+          title={
+            d.success
+              ? `Scenario · passes on ${d.success}`
+              : "Scenario · passes on all-cleared"
+          }
+          className="shrink-0 rounded bg-teal-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-teal-300"
+        >
+          S
+        </span>
+      )}
       {d.heroicLevel > 0 && (
         <span
           title={`Heroic · lv ${d.heroicLevel}`}
@@ -285,13 +352,20 @@ function Segmented<T extends string>({
 
 function LaunchDrawer({
   dungeon,
+  parent,
   catalogue,
   onClose,
 }: {
   dungeon: Dungeon;
+  parent?: Dungeon;
   catalogue: Catalogue;
   onClose: () => void;
 }) {
+  /* A scenario runs at its parent's default size (its focus, grace and
+     watchdog budget were authored for that raid) and has no heroic mode; the
+     Deck's launch route enforces both too. */
+  const scenario = !!dungeon.scenario;
+  const lockedSize = scenario && dungeon.raid ? dungeon.defaultSize ?? 0 : 0;
   const toast = useToast();
   const [mode, setMode] = useState<Mode>("quick");
   const [heroic, setHeroic] = useState(false);
@@ -317,13 +391,13 @@ function LaunchDrawer({
 
   const level = Number(levelText || 0);
   const seed = Number(seedText || 0);
-  const size = dungeon.raid ? Number(sizeText || 0) : 0;
+  const size = lockedSize || (dungeon.raid ? Number(sizeText || 0) : 0);
   const sizeMin = dungeon.sizeMin ?? 2;
   const sizeMax = dungeon.sizeMax ?? 40;
   const total = Number(totalText);
   const concurrent = Number(concurrentText);
 
-  const canHeroic = dungeon.heroicLevel > 0;
+  const canHeroic = dungeon.heroicLevel > 0 && !scenario;
   const ladder = (heroic ? dungeon.gearHeroic : dungeon.gear) ?? dungeon.gear ?? [];
   const maxTotal = catalogue.limits?.planMaxTotal || 0;
   /* Both caps are 0/absent = unlimited, which is the module's own default
@@ -458,12 +532,34 @@ function LaunchDrawer({
         {/* header */}
         <div className="flex items-start justify-between gap-4 border-b border-ink-800 px-6 py-5">
           <div>
-            <h2 className="text-lg font-semibold">{dungeon.name}</h2>
+            <h2 className="text-lg font-semibold">
+              {scenario ? scenarioLabel(dungeon, parent) : dungeon.name}
+            </h2>
             <div className="mt-0.5 text-xs text-ink-500">
               <span className="font-mono">{dungeon.token}</span> · level{" "}
               {heroic ? dungeon.heroicLevel : dungeon.level}
               {dungeon.wing && <> · {dungeon.wing}</>}
             </div>
+            {scenario && (
+              <div className="mt-1.5 flex flex-wrap gap-x-2 gap-y-1 text-xs text-teal-300/80">
+                <span className="rounded bg-teal-500/15 px-1.5 py-0.5 font-semibold text-teal-300">
+                  Scenario
+                </span>
+                <span>of {parent?.name ?? dungeon.scenarioOf}</span>
+                {dungeon.focus?.length ? (
+                  <span>· focus {dungeon.focus.join(", ")}</span>
+                ) : null}
+                <span>
+                  · passes on {dungeon.success || "all-cleared"}
+                  {dungeon.success && dungeon.successGraceS
+                    ? ` (+${dungeon.successGraceS}s grace)`
+                    : ""}
+                </span>
+                {dungeon.overallTimeoutS ? (
+                  <span>· {Math.round(dungeon.overallTimeoutS / 60)} min cap</span>
+                ) : null}
+              </div>
+            )}
           </div>
           <button
             onClick={onClose}
@@ -570,7 +666,12 @@ function LaunchDrawer({
             </>
           ) : (
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              {dungeon.raid && (
+              {lockedSize > 0 && (
+                <Field label="Raid size" hint="locked to the parent raid's default">
+                  <div className={`${FIELD} text-ink-400`}>{lockedSize}</div>
+                </Field>
+              )}
+              {dungeon.raid && !lockedSize && (
                 <Field
                   label="Raid size"
                   hint={

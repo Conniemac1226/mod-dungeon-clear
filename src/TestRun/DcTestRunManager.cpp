@@ -73,6 +73,15 @@ bool DcTestRunManager::Start(Player* gm, std::string const& dungeonToken,
         return fail(StartErr::UnknownDungeon,
                     "'" + std::string(row->token) + "' has no heroic mode (classic dungeons have none)");
 
+    // The instance's own player cap (Karazhan 10, Gruul 25): the core refuses
+    // entry past it, so an oversized run would strand the overflow at the door.
+    uint32 const runSize = size ? size : static_cast<uint32>(DcTestComp::kPartySize);
+    if (uint32 const cap = DcTestDungeonRegistry::MaxPlayers(*row);
+        !DcTestDungeonRegistry::SizeFits(runSize, cap))
+        return fail(StartErr::UnknownDungeon,
+                    "'" + std::string(row->token) + "' admits at most " + std::to_string(cap) +
+                    " players (size=" + std::to_string(runSize) + ")");
+
     if (!gm || !GET_PLAYERBOT_MGR(gm))
         return fail(StartErr::NoMgr, "no playerbot manager on this account");
 
@@ -87,7 +96,6 @@ bool DcTestRunManager::Start(Player* gm, std::string const& dungeonToken,
     // AddPlayerBot, so without the pre-check a party over the cap surfaces only
     // as a 60s spawn timeout. Name the knob instead.
     uint32 const currentBots = GET_PLAYERBOT_MGR(gm)->GetPlayerbotsCount();
-    uint32 const runSize = size ? size : static_cast<uint32>(DcTestComp::kPartySize);
     if (sPlayerbotAIConfig.maxAddedBots > 0 &&
         currentBots + runSize > static_cast<uint32>(sPlayerbotAIConfig.maxAddedBots))
         return fail(StartErr::BotBudget,
@@ -165,6 +173,12 @@ bool DcTestRunManager::StartRoster(Player* gm, std::string const& dungeonToken,
     DcTestRoster::Result const parsed = DcTestRoster::Parse(partySpec);
     if (parsed.kind != DcTestRoster::Kind::Ok)
         return fail(StartErr::BadRoster, parsed.detail);
+
+    if (uint32 const cap = DcTestDungeonRegistry::MaxPlayers(*row);
+        !DcTestDungeonRegistry::SizeFits(parsed.members.size(), cap))
+        return fail(StartErr::BadRoster,
+                    "'" + std::string(row->token) + "' admits at most " + std::to_string(cap) +
+                    " players (the roster names " + std::to_string(parsed.members.size()) + ")");
 
     std::vector<DcTestRunJob::RosterEntry> roster;
     roster.reserve(parsed.members.size());

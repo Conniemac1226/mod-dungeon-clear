@@ -85,7 +85,18 @@ def check_dungeon(rows, token, heroic):
         raise HTTPException(400, f"unknown dungeon '{token}'")
     # heroicLevel 0/absent = no heroic mode: classic dungeons, which have no
     # heroic difficulty at all (mirrors the module-side gate).
-    if heroic and not rows[token].get("heroicLevel"):
+    row = rows[token]
+    # Scenario rows (module T1): a slice of a parent dungeon, launched by its
+    # own token. The module refuses heroic on them (heroicLevel is always 0);
+    # the parent must be in the same catalogue, or the row is a stale sidecar.
+    if row.get("scenario"):
+        parent = row.get("scenarioOf") or ""
+        if parent not in rows or rows[parent].get("scenario"):
+            raise HTTPException(400, f"scenario '{token}' has no parent dungeon "
+                                     f"'{parent}' in the catalogue")
+        if heroic:
+            raise HTTPException(400, f"scenario '{token}' has no heroic mode")
+    if heroic and not row.get("heroicLevel"):
         raise HTTPException(400, f"'{token}' has no heroic mode "
                                  "(classic dungeons have none)")
 
@@ -100,6 +111,12 @@ def check_size(rows, token, size):
     if not row.get("raid"):
         raise HTTPException(400, f"'{token}' is not a raid — size only applies "
                                  "to raid rows")
+    # A scenario runs at its parent's default size: its focus, grace and
+    # watchdog budget were authored for that raid, so the form locks it.
+    if row.get("scenario"):
+        locked = int(row.get("defaultSize") or 0)
+        if locked and size != locked:
+            raise HTTPException(400, f"scenario '{token}' runs at size {locked} only")
     lo = int(row.get("sizeMin") or 2)
     hi = int(row.get("sizeMax") or 40)
     if not lo <= size <= hi:

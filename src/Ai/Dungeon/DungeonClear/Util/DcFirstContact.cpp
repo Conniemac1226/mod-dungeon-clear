@@ -166,3 +166,77 @@ void DcFirstContact::OnEnterCombat(Player* bot, Unit* enemy)
                      : "is being towed",
                  alreadyFighting);
 }
+
+void DcFirstContact::OnCreatureEngage(Creature* creature, Unit* target)
+{
+    if (!creature || !target)
+        return;
+
+    // Realm-wide hook: cheapest gates first.
+    Map const* map = creature->GetMap();
+    if (!map || !map->IsDungeon())
+        return;
+    Player* bot = target->GetCharmerOrOwnerPlayerOrPlayerItself();
+    if (!bot)
+        return;
+    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+    if (!botAI)
+        return;
+    Player* owner = DcLeaderSignal::FindRunOwner(bot);
+    PlayerbotAI* ownerAI = owner ? GET_PLAYERBOT_AI(owner) : nullptr;
+    if (!ownerAI)
+        return;
+    DcRunState const& run = DcRun::Of(ownerAI);
+    if (!run.enabled || run.paused)
+        return;
+
+    // A fresh fight is OnEnterCombat's line; only a join into a running one is
+    // missing from the record.
+    uint32 const alreadyFighting = CountPartyAlreadyInCombat(bot) + (bot->IsInCombat() ? 1 : 0);
+    if (alreadyFighting == 0)
+        return;
+
+    Position const home = creature->GetHomePosition();
+    float const homeDist = creature->GetDistance(home);
+
+    // Nearest living party member: the one most likely to have walked into it.
+    Player* nearest = nullptr;
+    float nearestDist = 0.0f;
+    if (Group* group = bot->GetGroup())
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* m = ref->GetSource();
+            if (!m || !m->IsAlive() || m->GetMapId() != creature->GetMapId())
+                continue;
+            float const d = creature->GetExactDist(m);
+            if (!nearest || d < nearestDist)
+            {
+                nearest = m;
+                nearestDist = d;
+            }
+        }
+
+    std::string campText = "none";
+    if (AiObjectContext* ownerCtx = ownerAI->GetAiObjectContext())
+    {
+        DcPullContext const& pull =
+            ownerCtx->GetValue<DcPullContext&>(DcKey::PullContext)->Get();
+        if (pull.HasCamp())
+            campText = Acore::StringFormat("({:.1f},{:.1f},{:.1f}) {:.1f}yd off",
+                                           pull.camp.GetPositionX(), pull.camp.GetPositionY(),
+                                           pull.camp.GetPositionZ(),
+                                           creature->GetExactDist(&pull.camp));
+    }
+
+    DC_PULL_INFO("[DC:{}] late joiner: {} (entry {}) engaged {} at {:.1f}yd (LOS {}) | "
+                 "mob ({:.1f},{:.1f},{:.1f}) {:.1f}yd from spawn ({:.1f},{:.1f},{:.1f}) | "
+                 "nearest member {} {:.1f}yd | tank {} ({:.1f},{:.1f},{:.1f}) | camp {} | "
+                 "party fighting: {}",
+                 bot->GetName(), creature->GetName(), creature->GetEntry(), target->GetName(),
+                 creature->GetExactDist(target), creature->IsWithinLOSInMap(target) ? "y" : "n",
+                 creature->GetPositionX(), creature->GetPositionY(), creature->GetPositionZ(),
+                 homeDist, home.GetPositionX(), home.GetPositionY(), home.GetPositionZ(),
+                 nearest ? nearest->GetName() : std::string("-"), nearestDist,
+                 owner->GetName(), owner->GetPositionX(), owner->GetPositionY(),
+                 owner->GetPositionZ(), campText, alreadyFighting);
+}
