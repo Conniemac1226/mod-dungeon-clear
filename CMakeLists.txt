@@ -87,6 +87,11 @@ AC_ADD_CONFIG_FILE("${CMAKE_CURRENT_LIST_DIR}/conf/mod_dungeon_clear.conf.dist")
 #    post-validation dungeon set and roles back out of LFGMgr only once the
 #    queue has settled into LFG_STATE_QUEUED, so RBAC/deserter/cooldown/lock
 #    checks have all already run. The planner half is engine-free and gtested.)
+# New files added: Util/DcPoolBots.{h,cpp}
+#   (the pool-bot plumbing both queue fills share — claim an offline addclass
+#    character, evict it to its capital, sanitise it, release it — lifted out
+#    of DcDungeonQueueFillJob so the dungeon and battleground fills draw
+#    through one reservation check.)
 # New files added: Util/DcProvisionBudget.{h,cpp}
 #   (module-root src/Util/ — the realm-wide "one PlayerbotFactory::Randomize per
 #    world tick" ration, hoisted out of DcTestRunManager::Tick's local bool so

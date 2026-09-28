@@ -40,9 +40,9 @@
 #include "Random.h"
 
 #include "DcStrategyGate.h"
-#include "DungeonQueueFill/DcDungeonQueueFillManager.h"
 #include "Util/DcBotProvisioning.h"
 #include "Util/DcDungeonAccess.h"
+#include "Util/DcPoolBots.h"
 #include "Util/DcProvisionBudget.h"
 #include "Ai/Dungeon/DungeonClear/Action/DcActionShared.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
@@ -313,11 +313,11 @@ std::unique_ptr<DcTestRunJob> DcTestRunJob::Create(Player* gm, DcTestDungeonRegi
                 continue;
             if (reservedGuids.find(guid) != reservedGuids.end())
                 continue;
-            // The RDF queue fill draws from this same pool. Its claim is
+            // The queue fills draw from this same pool. Their claims are
             // invisible here for the tick between picking a guid and
-            // AddPlayerBot landing, so ask it rather than relying on the
+            // AddPlayerBot landing, so ask them rather than relying on the
             // "already online" test below.
-            if (DcDungeonQueueFillManager::Instance().IsClaimed(guid))
+            if (DcPoolBots::IsClaimedByFill(guid))
                 continue;
             // (No botLoading check — it is protected on PlayerbotHolder;
             // AddPlayerBot itself no-ops on an in-flight load, and a char
