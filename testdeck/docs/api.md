@@ -113,3 +113,28 @@ Pick a floor by rect containment first, using `floorRule.zsteps` (Blizzard's own
 whose rects both contain the position. `pick_floor()` in `testdeck/mappack.py`
 is the reference implementation. A position on no floor is a real answer, not a
 failure.
+
+## Continuous mode (soak)
+
+A session spans one endless pool plan per worldserver lifetime; its state lives
+in `<data_dir>/soaks/<sk-id>/`. Mutations need the session's owner or
+`admin_gmlevel`, and each is written to the audit log.
+
+| Route | Notes |
+|---|---|
+| `GET /api/soak` | `{active (with stats), recent[], supported, evidenceTool, me, admin, botBudget}`; `supported` mirrors the catalogue's `limits.planPool` |
+| `POST /api/soak/start` | `{pool:[{token,heroic}], concurrent, pick: bag\|random, level, seed, ilvl, quality, autoResume, breaker}`; 409 while another session runs or on a server without pool plans |
+| `GET /api/soak/{id}` | One session with stats (past sessions too) |
+| `POST /api/soak/{id}/edit` | `{pool?, concurrent?}` → `.dc test plan edit`; 409 until the plan is registered |
+| `POST /api/soak/{id}/pause` · `/resume` | Stop / restart launching; live runs play out |
+| `POST /api/soak/{id}/stop` | `{mode: drain\|now}` — drain pauses, then ends the plan once idle |
+| `GET /api/soak/{id}/runs` | Ledger newest-first: `result=all\|fail\|ok\|lost`, `dungeon=<token[:heroic]>`, `cluster=<label>`, `cursor`, `limit≤200` → `{runs, total, nextCursor}`. No cap |
+| `GET /api/soak/{id}/runs/{runId}` | The full record, read by offset |
+| `GET /api/soak/{id}/stats` | Per-dungeon rates / median / last-20, failure clusters, runs per hour, disk use |
+| `GET /api/soak/{id}/evidence/{runId}` | `{state, report, error, files[]}`; `…/{file}` downloads one (resolved-then-contained); `POST …/capture` retries a failed capture |
+| `DELETE /api/soak/{id}` | Only when stopped; removes the folder |
+| `GET/POST /api/soak-presets`, `DELETE /api/soak-presets/{name}` | Named pools, owned like rosters |
+
+`GET /api/testruns` also takes `planId=` and `result=` (a verdict, or `fail`),
+and `GET /api/testplans` hides endless plans' checkpoint lines unless
+`checkpoints=true`.

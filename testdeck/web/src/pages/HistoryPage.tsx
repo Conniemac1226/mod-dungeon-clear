@@ -26,6 +26,8 @@ import {
   useToast,
 } from "../components/ui";
 import { useSession } from "../auth/SessionContext";
+import type { SoakIndex } from "../api/types";
+import { SessionList } from "./ContinuousPage";
 
 const QUALITY_NAME: Record<number, string> = Object.fromEntries(
   QUALITY_CHOICES.map((q) => [q.v, q.label]),
@@ -36,7 +38,7 @@ const fmtT = (t?: number) =>
   t === undefined ? "·" : fmtDuration(t).replace(" ", "");
 
 export default function HistoryPage() {
-  const [tab, setTab] = useState<"runs" | "plans">("runs");
+  const [tab, setTab] = useState<"runs" | "plans" | "continuous">("runs");
   return (
     <div>
       <div className="mb-6 flex items-end justify-between">
@@ -48,7 +50,7 @@ export default function HistoryPage() {
         </div>
         {/* Same segmented treatment as the launch drawer's mode tabs. */}
         <div className="flex gap-1 rounded-xl border border-ink-800 bg-ink-950/70 p-1">
-          {(["runs", "plans"] as const).map((t) => (
+          {(["runs", "plans", "continuous"] as const).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -63,9 +65,31 @@ export default function HistoryPage() {
           ))}
         </div>
       </div>
-      {tab === "runs" ? <RunsTab /> : <PlansTab />}
+      {tab === "runs" ? <RunsTab /> : tab === "plans" ? <PlansTab /> : <ContinuousTab />}
     </div>
   );
+}
+
+/* ---- continuous sessions ---- */
+
+function ContinuousTab() {
+  const { data, error } = usePoll(() => api.get<SoakIndex>("/api/soak"), 15000);
+  if (error)
+    return (
+      <EmptyState icon="⚠️" title="Cannot reach the server">
+        {error}
+      </EmptyState>
+    );
+  if (!data) return <Spinner label="loading sessions…" />;
+  const all = [...(data.active ? [data.active] : []), ...data.recent];
+  if (!all.length)
+    return (
+      <EmptyState icon="♾️" title="No continuous sessions yet">
+        Start one from the Continuous page; every session stays listed here,
+        with every failure it recorded.
+      </EmptyState>
+    );
+  return <SessionList sessions={all} />;
 }
 
 /* ---- shared row plumbing ---- */
@@ -222,7 +246,7 @@ function RunsTab() {
         {session?.admin && (
           <ConfirmButton
             label="Clear history"
-            message="Wipe the entire run history? A one-level .bak backup is kept on the server."
+            message="Wipe the entire run history? A one-level .bak backup is kept on the server. Continuous sessions keep their own ledgers and are not affected."
             className="ml-auto rounded-lg border border-ink-800 px-3 py-1.5 text-xs text-ink-500 hover:border-red-900 hover:text-red-300"
             onConfirm={() => {
               api
@@ -420,7 +444,7 @@ function WipeBadge({ r }: { r: RunRecord }) {
   );
 }
 
-function RunDetail({ r }: { r: RunRecord }) {
+export function RunDetail({ r }: { r: RunRecord }) {
   return (
     <div className="space-y-4 border-t border-ink-800/70 px-4 py-4">
       <Line tone="dim">

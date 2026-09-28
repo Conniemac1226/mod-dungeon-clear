@@ -175,3 +175,10 @@ status_check = "auto"
 #testplans_file = "dc_testplans.jsonl"
 #live_file = "dc_testrun_live.json"
 #dungeons_file = "dc_test_dungeons.json"
+
+#[soak]
+# Continuous mode snapshots the evidence for every failed run (a report plus
+# per-run log slices) with the module's tools/dc_test_run.py, before the next
+# worldserver restart truncates the logs. Found beside this checkout; set this
+# only if Test Deck was copied somewhere without the module's tools/.
+#dc_test_run = "/home/youruser/azerothcore/modules/mod-dungeon-clear/tools/dc_test_run.py"

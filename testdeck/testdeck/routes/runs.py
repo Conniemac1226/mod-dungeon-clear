@@ -127,9 +127,19 @@ async def api_testruns_live():
 
 
 @router.get("/api/testruns")
-async def api_testruns(limit: int = 100):
-    """Test-run history: tail dc_testruns.jsonl, newest first."""
-    return {"runs": tail_jsonl(ctx.cfg.testruns_file, limit)}
+async def api_testruns(limit: int = 100, planId: str = "", result: str = ""):
+    """Test-run history: tail dc_testruns.jsonl, newest first. planId keeps
+    one plan's runs; result is a verdict token, or "fail" for any
+    non-success."""
+    def keep(row):
+        if planId and row.get("planId") != planId:
+            return False
+        if result == "fail":
+            return row.get("result") != "success"
+        return not result or row.get("result") == result
+
+    return {"runs": tail_jsonl(ctx.cfg.testruns_file, limit,
+                               keep if (planId or result) else None)}
 
 
 async def refuse_if_live(what):
@@ -214,7 +224,8 @@ async def api_testruns_stop(req: RunStopRequest, request: Request):
 
 @router.post("/api/testruns/clear")
 async def api_testruns_clear(request: Request):
-    """Wipe dc_testruns.jsonl (backed up to dc_testruns.jsonl.bak)."""
+    """Wipe dc_testruns.jsonl (backed up to dc_testruns.jsonl.bak).
+    Continuous sessions keep their own ledgers and are not touched."""
     require_admin(request, "clearing run history")
     await refuse_if_live("run history")
     audit(request, "clear run history")

@@ -33,9 +33,12 @@ async def api_testdungeons():
 
 
 @router.get("/api/testplans")
-async def api_testplans(limit: int = 50):
-    """Completed test-plan summaries: tail dc_testplans.jsonl, newest first."""
-    return {"plans": tail_jsonl(ctx.cfg.testplans_file, limit)}
+async def api_testplans(limit: int = 50, checkpoints: bool = False):
+    """Completed test-plan summaries: tail dc_testplans.jsonl, newest first.
+    An endless (continuous-mode) plan also appends periodic checkpoint lines
+    while it runs; those are left out unless asked for."""
+    keep = None if checkpoints else (lambda row: not row.get("checkpoint"))
+    return {"plans": tail_jsonl(ctx.cfg.testplans_file, limit, keep)}
 
 
 @router.post("/api/testplans/clear")

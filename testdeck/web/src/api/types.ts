@@ -24,6 +24,9 @@ export interface Status {
   bridge: string;
   health: { problems: { level: string; key: string; message: string }[] };
   version: string;
+  /* The running continuous session, if any — just enough for the nav badge
+     and the tab-title failure count. */
+  soak?: { soakId: string; status: string; runs: number; fail: number } | null;
 }
 
 /* ---- catalogue (dc_test_dungeons.json) ---- */
@@ -68,7 +71,12 @@ export interface Dungeon {
 }
 
 export interface Catalogue {
-  limits: { maxConcurrent?: number; maxPlans?: number; planMaxTotal?: number };
+  limits: {
+    maxConcurrent?: number;
+    maxPlans?: number;
+    planMaxTotal?: number;
+    planPool?: boolean;      // server takes `.dc test plan start pool=…`
+  };
   gearDefaults?: { ilvl: number; quality: number };
   qualities?: { v: number; label: string }[];
   dungeons: Dungeon[];
@@ -174,6 +182,12 @@ export interface LivePlan {
   heroic?: boolean;
   state?: string;
   elapsedS?: number;
+  /* Pool (continuous) plans. */
+  endless?: boolean;
+  paused?: boolean;
+  nextPick?: string;
+  resetHoldUntil?: number;     // unix s; 0 = no reset guard active
+  pool?: { token: string; heroic?: boolean; size?: number; launched?: number; ok?: number; fail?: number }[];
 }
 
 export interface Live {
@@ -454,4 +468,127 @@ export interface LogFile {
   name: string;
   size: number;
   mtime: number;
+}
+
+/* ---- continuous mode (soak) ---- */
+
+export interface SoakPoolEntry {
+  token: string;
+  heroic: boolean;
+}
+
+export interface SoakConfig {
+  pool: SoakPoolEntry[];
+  concurrent: number;
+  pick: "bag" | "random";
+  level: number;
+  seed: number;
+  ilvl: number;
+  quality: number;
+  autoResume: boolean;
+  breaker: number;
+}
+
+export interface SoakLiveRun {
+  runId: string;
+  dungeon?: string;
+  dungeonName?: string;
+  heroic?: boolean;
+  stage?: string;
+  state?: string;
+  bossName?: string;
+  bossesKilled?: number;
+  bossesTotal?: number;
+  elapsedS?: number;
+  stall?: string;
+  inCombat?: boolean;
+  wiped?: boolean;
+}
+
+export interface SoakPerDungeon {
+  key: string;
+  dungeon: string;
+  dungeonName: string;
+  heroic: boolean;
+  runs: number;
+  ok: number;
+  fail: number;
+  medianS: number;
+  last: string[];
+}
+
+export interface SoakCluster {
+  label: string;
+  count: number;
+  result: string;
+  sample: string;
+  where: { key: string; count: number }[];
+}
+
+export interface SoakStats {
+  perDungeon: SoakPerDungeon[];
+  clusters: SoakCluster[];
+  runs: number;
+  ok: number;
+  fail: number;
+  lost: number;
+  runsPerHour: number;
+  elapsedS: number;
+  diskBytes: number;
+}
+
+export interface SoakView {
+  soakId: string;
+  owner: string;
+  status: string;
+  statusDetail: string;
+  createdAtMs: number;
+  stoppedAtMs?: number | null;
+  config: SoakConfig;
+  planIds: string[];
+  currentPlanId: string;
+  restarts: number;
+  runs: number;
+  ok: number;
+  fail: number;
+  lost: number;
+  plan: LivePlan | null;
+  liveRuns: SoakLiveRun[];
+  stopMode: string;
+  stats?: SoakStats;
+}
+
+export interface SoakIndex {
+  active: SoakView | null;
+  recent: SoakView[];
+  supported: boolean;
+  evidenceTool: boolean;
+  me: string;
+  admin: boolean;
+  botBudget: number;         // AiPlayerbot.MaxAddedBots; 0 = unknown
+}
+
+export interface SoakRunRow extends RunRecord {
+  lost?: boolean;
+  evidence?: "done" | "failed" | "pending" | "queued";
+}
+
+export interface SoakRunsPage {
+  runs: SoakRunRow[];
+  total: number;
+  nextCursor: number | null;
+}
+
+export interface SoakEvidence {
+  state: "done" | "failed" | "pending" | "queued";
+  report: string;
+  error: string;
+  files: { name: string; size: number }[];
+}
+
+export interface SoakPreset {
+  name: string;
+  pool: SoakPoolEntry[];
+  owner: string;
+  writable: boolean;
 }

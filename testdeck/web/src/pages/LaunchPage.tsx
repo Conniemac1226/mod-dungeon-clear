@@ -45,10 +45,10 @@ const MODE_HELP: Record<Mode, string> = {
   roster: "A saved party of real characters instead of pool bots.",
 };
 
-type Shelf = "all" | "classic" | "tbc" | "wotlk" | "raids";
+export type Shelf = "all" | "classic" | "tbc" | "wotlk" | "raids";
 
 const SHELF_KEY = "tdeck.launch.shelf";
-const SHELVES: [Shelf, string][] = [
+export const SHELVES: [Shelf, string][] = [
   ["all", "All"],
   ["classic", "Classic"],
   ["tbc", "Burning Crusade"],
@@ -56,13 +56,13 @@ const SHELVES: [Shelf, string][] = [
   ["raids", "Raids"],
 ];
 
-const EXP_SHELF = ["classic", "tbc", "wotlk"] as const;
+export const EXP_SHELF = ["classic", "tbc", "wotlk"] as const;
 
 /* Six buckets — dungeons and raids per expansion — rendered as titled
  * sections. A shelf is a filter over the buckets, so "Classic" includes the
  * classic raids and "Raids" spans every expansion, and either agrees with
  * the section a row sits under on "All". */
-function sectionsFor(dungeons: Dungeon[], shelf: Shelf, byToken: Map<string, Dungeon>) {
+export function sectionsFor(dungeons: Dungeon[], shelf: Shelf, byToken: Map<string, Dungeon>) {
   const buckets: Dungeon[][] = [[], [], [], [], [], []];
   const scenarios: Dungeon[][] = [[], [], [], [], [], []];
   const bucketOf = (d: Dungeon) => expansionOfRow(d) + (d.raid ? 3 : 0);
@@ -93,7 +93,7 @@ function sectionsFor(dungeons: Dungeon[], shelf: Shelf, byToken: Map<string, Dun
 }
 
 /* "Karazhan: Chess" under parent "Karazhan" reads "Karazhan · Chess". */
-function scenarioLabel(d: Dungeon, parent?: Dungeon) {
+export function scenarioLabel(d: Dungeon, parent?: Dungeon) {
   if (!parent) return d.name;
   const tail = d.name.startsWith(parent.name)
     ? d.name.slice(parent.name.length).replace(/^[\s:·—-]+/, "")
@@ -321,7 +321,7 @@ function DungeonRow({
 /* A row of mutually-exclusive buttons. Used for the mode tabs and for
  * difficulty — a checkbox for "Heroic" hid the single most consequential knob
  * in the form among four gear dropdowns. */
-function Segmented<T extends string>({
+export function Segmented<T extends string>({
   value,
   onChange,
   options,
