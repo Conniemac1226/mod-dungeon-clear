@@ -1458,9 +1458,11 @@ bool DungeonClearPullManeuverTrigger::IsActive()
     // so the pack arrives late and strung out, and the tank has to be held on the
     // authored camp for the duration or the chase walks it back into the room the
     // plan just emptied. The action still YIELDS on every tick the tank is in
-    // position, so this costs the rotation nothing while nothing is wrong.
+    // position, so this costs the rotation nothing while nothing is wrong. A boxed
+    // room-clear pull (roomCampFight) is held the same way: Moroes' Guests are
+    // tagged at range and hold at range, and chasing them walks toward the dais.
     if (phase == static_cast<uint32>(DcPullPhase::Engage))
-        return AI_VALUE(DcPullContext&, DcKey::PullContext).scriptedStage >= 0;
+        return AI_VALUE(DcPullContext&, DcKey::PullContext).AnchoredCampFight();
 
     return phase == static_cast<uint32>(DcPullPhase::Forming) ||
            phase == static_cast<uint32>(DcPullPhase::Advancing) ||
@@ -1697,7 +1699,14 @@ bool DungeonClearAssistCampTrigger::IsActive()
     //
     // So: fire, but only once the fight is at the camp. A seed pointing at a mob
     // already inside the follower leash cannot invite anyone anywhere.
-    if (DcLeaderSignal::IsLeaderScriptedCampFight(bot) && !ScriptedCampFightIsAtCamp(bot))
+    //
+    // A room-clear camp fight seeds without waiting for that. There is no no-go room
+    // next door for a seed to invite anyone into — the hold-at-camp leash, stretched
+    // to reach (ScriptedFollowerReachLeash), bounds where the follower may stand —
+    // and Moroes' Phantom Guests hold 20-30yd off the camp casting, so "the fight has
+    // reached the camp" may never come true and the ranged would stand idle.
+    if (DcLeaderSignal::IsLeaderScriptedCampFight(bot) &&
+        !DcLeaderSignal::IsLeaderRoomCampFight(bot) && !ScriptedCampFightIsAtCamp(bot))
         return false;
     return DcLeaderSignal::IsLeaderFightAssistWanted(bot);
 }

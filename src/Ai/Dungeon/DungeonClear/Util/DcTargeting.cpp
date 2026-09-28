@@ -909,6 +909,11 @@ bool DcTargeting::IsStickyPullTargetValid(Player* bot, AiObjectContext* ctx, Uni
     if (!pull.abortTarget.IsEmpty() && u->GetGUID() == pull.abortTarget)
         return false;
 
+    // Same for a room-trash pack with no clean lane while a cleaner one is left:
+    // it is pulled last (see NearestRoomTrash), so the latch must let go of it.
+    if (IsRoomLaneRefused(bot, ctx, u->GetGUID()) && HasUnrefusedRoomTrash(bot, ctx, u))
+        return false;
+
     if (bot->GetExactDist2d(u) > kPullLookAhead + kPullStickySlack)
         return false;
     if (!DcEngageGeometry::IsLevelReachable(bot, u))
@@ -1327,29 +1332,109 @@ RoomAggroBoss const* DcTargeting::ActiveRoomCampBox(Player* bot, AiObjectContext
 
     return IsRoomClearActive(bot, ctx) ? room : nullptr;
 }
+namespace
+{
+    // The live units of "dungeon clear room trash remaining", in list order.
+    std::vector<Unit*> LiveRoomTrash(Player* bot, AiObjectContext* ctx)
+    {
+        std::vector<Unit*> live;
+        for (ObjectGuid const guid :
+             ctx->GetValue<GuidVector>(DcKey::RoomTrashRemaining)->Get())
+        {
+            Unit* u = ObjectAccessor::GetUnit(*bot, guid);
+            if (u && u->IsAlive())
+                live.push_back(u);
+        }
+        return live;
+    }
+
+    // The refusal list was measured against the room as it stood; drop it once a
+    // kill has changed that room (DungeonClearMath::ShouldDropLaneRefusals).
+    DcPullContext& PrunedLaneRefusals(AiObjectContext* ctx, std::size_t liveNow)
+    {
+        DcPullContext& pull = ctx->GetValue<DcPullContext&>(DcKey::PullContext)->Get();
+        if (!pull.laneRefused.empty() &&
+            DungeonClearMath::ShouldDropLaneRefusals(static_cast<uint32>(liveNow),
+                                                     pull.laneRefusedLive))
+        {
+            pull.laneRefused.clear();
+            pull.laneRefusedLive = 0;
+        }
+        return pull;
+    }
+
+    bool InLaneRefused(DcPullContext const& pull, ObjectGuid guid)
+    {
+        return std::find(pull.laneRefused.begin(), pull.laneRefused.end(), guid) !=
+               pull.laneRefused.end();
+    }
+}
+
 Unit* DcTargeting::NearestRoomTrash(Player* bot, AiObjectContext* ctx)
 {
     if (!bot || !ctx)
         return nullptr;
 
-    GuidVector const& remaining =
-        ctx->GetValue<GuidVector>(DcKey::RoomTrashRemaining)->Get();
+    std::vector<Unit*> const live = LiveRoomTrash(bot, ctx);
+    DcPullContext const& pull = PrunedLaneRefusals(ctx, live.size());
 
-    Unit* best = nullptr;
-    float bestDist = std::numeric_limits<float>::max();
-    for (ObjectGuid const guid : remaining)
+    std::vector<float> dist;
+    std::vector<bool> refused;
+    dist.reserve(live.size());
+    refused.reserve(live.size());
+    for (Unit* u : live)
     {
-        Unit* u = ObjectAccessor::GetUnit(*bot, guid);
-        if (!u || !u->IsAlive())
-            continue;
-        float const d = bot->GetExactDist2d(u);
-        if (d < bestDist)
-        {
-            best = u;
-            bestDist = d;
-        }
+        dist.push_back(bot->GetExactDist2d(u));
+        refused.push_back(InLaneRefused(pull, u->GetGUID()));
     }
-    return best;
+    int const idx = DungeonClearMath::PickRoomTrashIndex(dist, refused);
+    return idx >= 0 ? live[static_cast<std::size_t>(idx)] : nullptr;
+}
+
+void DcTargeting::RefuseRoomLane(Player* bot, AiObjectContext* ctx, Unit* trash,
+                                 float packRadius)
+{
+    if (!bot || !ctx || !trash)
+        return;
+
+    std::vector<Unit*> const live = LiveRoomTrash(bot, ctx);
+    DcPullContext& pull = PrunedLaneRefusals(ctx, live.size());
+    auto refuse = [&](Unit* u)
+    {
+        if (!InLaneRefused(pull, u->GetGUID()))
+            pull.laneRefused.push_back(u->GetGUID());
+    };
+    refuse(trash);
+    for (Unit* u : live)
+        if (u->GetExactDist2d(trash) <= packRadius &&
+            std::fabs(u->GetPositionZ() - trash->GetPositionZ()) <= DC_Z_LEVEL_TOLERANCE)
+            refuse(u);
+    pull.laneRefusedLive = static_cast<uint32>(live.size());
+}
+
+bool DcTargeting::HasUnrefusedRoomTrash(Player* bot, AiObjectContext* ctx, Unit* except)
+{
+    if (!bot || !ctx)
+        return false;
+
+    std::vector<Unit*> const live = LiveRoomTrash(bot, ctx);
+    DcPullContext const& pull = PrunedLaneRefusals(ctx, live.size());
+    for (Unit* u : live)
+        if (u != except && !InLaneRefused(pull, u->GetGUID()))
+            return true;
+    return false;
+}
+
+bool DcTargeting::IsRoomLaneRefused(Player* bot, AiObjectContext* ctx, ObjectGuid guid)
+{
+    if (!bot || !ctx)
+        return false;
+
+    // Cheap common case first: nothing refused, no list walk.
+    if (ctx->GetValue<DcPullContext&>(DcKey::PullContext)->Get().laneRefused.empty())
+        return false;
+    DcPullContext const& pull = PrunedLaneRefusals(ctx, LiveRoomTrash(bot, ctx).size());
+    return InLaneRefused(pull, guid);
 }
 
 Unit* DcTargeting::NearestHostileNearPoint(Player* bot, AiObjectContext* ctx,

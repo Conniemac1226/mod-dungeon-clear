@@ -1285,7 +1285,7 @@ std::optional<Position> DcPullPlanner::ComputeSafeCamp(PlayerbotAI* botAI, Unit*
 }
 std::optional<DcPullPlanner::RoomClearLane> DcPullPlanner::ComputeRoomClearLane(
     PlayerbotAI* botAI, Unit* target, Unit* boss, float bossRadius, float standDist,
-    float setback, float safeRadius)
+    float setback, float safeRadius, bool requireClean)
 {
     if (!botAI || !target || !boss)
         return std::nullopt;
@@ -1348,6 +1348,10 @@ std::optional<DcPullPlanner::RoomClearLane> DcPullPlanner::ComputeRoomClearLane(
     std::size_t tried = 0;
     for (DungeonClearMath::StraightPullLane const& lane : lanes)
     {
+        // Skipped, not a stop: the ranking charges for the walk, so a clean lane
+        // can sit behind an unclean one that is merely closer.
+        if (requireClean && lane.margin < 0.0f)
+            continue;
         if (tried++ >= kMaxValidated)
             break;
         std::optional<Position> stand = snapOnFloor(lane.standX, lane.standY);

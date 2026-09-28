@@ -306,8 +306,21 @@ public:
     // The nearest remaining room-trash unit (from "dungeon clear room trash
     // remaining"), or nullptr. Nearest-first so the tank clears the room from
     // its edge inward and reaches the boss's own aggro sphere last, minimising
-    // the chance of waking the boss while clearing.
+    // the chance of waking the boss while clearing. A unit whose lane was refused
+    // (DcPullContext::laneRefused) is skipped while any other is left — see
+    // DungeonClearMath::PickRoomTrashIndex.
     static Unit* NearestRoomTrash(Player* bot, AiObjectContext* ctx);
+
+    // Room-clear lane refusals (DcPullContext::laneRefused), all on `bot`'s own
+    // pull context. RefuseRoomLane records `trash` and every live room-trash unit
+    // within `packRadius` of it (its formation — same lanes, same answer).
+    // HasUnrefusedRoomTrash: is any live room-trash unit other than `except` still
+    // unrefused, i.e. is there something cleaner to pull first? IsRoomLaneRefused
+    // is the membership test (false once a kill has dropped the list).
+    static void RefuseRoomLane(Player* bot, AiObjectContext* ctx, Unit* trash,
+                               float packRadius);
+    static bool HasUnrefusedRoomTrash(Player* bot, AiObjectContext* ctx, Unit* except);
+    static bool IsRoomLaneRefused(Player* bot, AiObjectContext* ctx, ObjectGuid guid);
 
     // The nearest reachable, attackable hostile within `radius` (2D) of the point
     // (px,py,pz) and within `zBand` vertically — or nullptr. Backs the ClearRadius

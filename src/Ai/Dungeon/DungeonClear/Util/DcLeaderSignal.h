@@ -164,8 +164,12 @@ public:
     // and the rest of it is still standing in a room the party must not enter.
     // Followers stay ANCHORED (not passive — they fight what comes to them) for
     // the duration. Drives DungeonClearHoldAtCampCombatTrigger and the camp-hold
-    // action's leash radius / movement priority.
+    // action's leash radius / movement priority. A boxed room-clear pull
+    // (DcPullContext::roomCampFight) counts as scripted here and below.
     static bool IsLeaderScriptedCampFight(Player* bot);
+
+    // The room-clear subset of IsLeaderScriptedCampFight (roomCampFight, Engage).
+    static bool IsLeaderRoomCampFight(Player* bot);
 
     // True while `bot`'s leader has ANY scripted-pull stage in flight — the tag leg
     // and the drag as well as the camp fight. Wider than IsLeaderScriptedCampFight

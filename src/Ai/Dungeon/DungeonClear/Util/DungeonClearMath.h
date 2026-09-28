@@ -1443,9 +1443,16 @@ namespace DungeonClearMath
     // For each of `bearings` directions out of the pack: stand spot `standDist`
     // out, camp straight on along the same line at the farthest drag in
     // [minDrag, drag] that is inside the camp box (when there is one). The lane
-    // scored is stand -> camp, where the tank and the fight stand; its margin is
-    // the worst clearance over the keep-aways. Bearings with no in-box camp are
-    // dropped.
+    // scored is stand -> camp, where the tank and the fight stand, AND the tank's
+    // walk out to the stand spot; its margin is the worst clearance over the
+    // keep-aways. Bearings with no in-box camp are dropped.
+    //
+    // The walk counts because that is where the second pack came from in
+    // tr-20260927-210901-8: the lane itself cleared everything, and the tank woke
+    // a Ghostly Steward and a whole Guest formation on its way to the stand spot.
+    // A keep-away the tank is already standing inside is left out of the walk
+    // term — every walk starts in it, so it would sink every lane equally and
+    // rank nothing.
     inline std::vector<StraightPullLane> RankStraightPullLanes(
         float packX, float packY, float tankX, float tankY, float standDist,
         float drag, float minDrag, std::vector<LaneKeepAway> const& keepAways,
@@ -1492,10 +1499,19 @@ namespace DungeonClearMath
 
             lane.margin = StraightPullMarginCap;
             for (LaneKeepAway const& k : keepAways)
+            {
                 lane.margin = std::min(
                     lane.margin, PointSegmentDist2d(k.x, k.y, lane.standX, lane.standY,
                                                     lane.campX, lane.campY) -
                                      k.radius);
+                float const tdx = tankX - k.x;
+                float const tdy = tankY - k.y;
+                if (tdx * tdx + tdy * tdy >= k.radius * k.radius)
+                    lane.margin = std::min(
+                        lane.margin, PointSegmentDist2d(k.x, k.y, tankX, tankY,
+                                                        lane.standX, lane.standY) -
+                                         k.radius);
+            }
             float const wx = lane.standX - tankX;
             float const wy = lane.standY - tankY;
             lane.walk = std::sqrt(wx * wx + wy * wy);
@@ -1507,6 +1523,40 @@ namespace DungeonClearMath
                          [](StraightPullLane const& l, StraightPullLane const& r)
                          { return l.score > r.score; });
         return out;
+    }
+
+    // Which room-trash unit a room clear pulls next: the nearest one whose lane has
+    // not been refused, else — everything left is refused — the nearest of all, so
+    // the clear can never stall on its own refusals. -1 when there is nothing.
+    //
+    // Refused = no clean straight lane (DcPullPlanner::ComputeRoomClearLane with
+    // requireClean). Nearest-first alone took a Guest pack 26.8yd from a dinner
+    // guest whose best lane's walk ran inside the next formation's reach
+    // (tr-20260927-210901-8); pulling the packs that CAN be taken cleanly first
+    // clears the room outside-in and opens lanes for the rest.
+    inline int PickRoomTrashIndex(std::vector<float> const& dist,
+                                  std::vector<bool> const& refused)
+    {
+        int best = -1;
+        int bestAny = -1;
+        for (std::size_t i = 0; i < dist.size(); ++i)
+        {
+            int const idx = static_cast<int>(i);
+            if (bestAny < 0 || dist[i] < dist[bestAny])
+                bestAny = idx;
+            bool const isRefused = i < refused.size() && refused[i];
+            if (!isRefused && (best < 0 || dist[i] < dist[best]))
+                best = idx;
+        }
+        return best >= 0 ? best : bestAny;
+    }
+
+    // Lane refusals were measured against the room as it stood; a kill since then
+    // (fewer live room-trash units than when the list was written) can open any of
+    // them, so the list is dropped and every pack is measured again.
+    inline bool ShouldDropLaneRefusals(uint32_t liveNow, uint32_t liveAtWrite)
+    {
+        return liveNow < liveAtWrite;
     }
 }
 

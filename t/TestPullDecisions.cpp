@@ -377,3 +377,33 @@ TEST(DcPullScoutAggro, ResetClearsStamp)
     pull.Reset();
     EXPECT_FALSE(pull.ScoutAggroHolding(10001u, 2000u));
 }
+
+// DcPullContext::AnchoredCampFight — which camp fights keep the camp leashes.
+TEST(DcPullAnchoredCampFight, OrdinaryPullIsNotAnchored)
+{
+    DcPullContext pull;
+    EXPECT_FALSE(pull.AnchoredCampFight());
+}
+
+TEST(DcPullAnchoredCampFight, ScriptedStageOrBoxedRoomClearIsAnchored)
+{
+    DcPullContext pull;
+    pull.scriptedStage = 0;
+    EXPECT_TRUE(pull.AnchoredCampFight());
+
+    DcPullContext room;
+    room.roomCampFight = true;
+    EXPECT_TRUE(room.AnchoredCampFight());
+}
+
+TEST(DcPullAnchoredCampFight, ResetDropsTheRoomLatchAndRefusals)
+{
+    DcPullContext pull;
+    pull.roomCampFight = true;
+    pull.laneRefused.push_back(ObjectGuid::Empty);
+    pull.laneRefusedLive = 24;
+    pull.Reset();
+    EXPECT_FALSE(pull.roomCampFight);
+    EXPECT_TRUE(pull.laneRefused.empty());
+    EXPECT_EQ(pull.laneRefusedLive, 0u);
+}

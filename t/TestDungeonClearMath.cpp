@@ -3269,6 +3269,60 @@ TEST(DungeonClearStraightPullTest, OpenRoomTiesBreakTowardTheTank)
     EXPECT_NEAR(lanes.front().standY, -20.0f, 1e-3f);
 }
 
+TEST(DungeonClearStraightPullTest, WalkToTheStandSpotCountsAgainstTheMargin)
+{
+    // tr-20260927-210901-8: the lane cleared every pack, and the tank woke a Ghostly
+    // Steward on its way OUT to the stand spot. Pack at the origin, tank 40yd east;
+    // a bystander stands north of the straight walk to the west stand spot.
+    std::vector<DungeonClearMath::LaneKeepAway> const keep = {{20.0f, 20.0f, 25.0f}};
+    auto const lanes = DungeonClearMath::RankStraightPullLanes(
+        0, 0, 40.0f, 0, 20.0f, 25.0f, 12.5f, keep, false, 0, 0, 0, 0);
+    ASSERT_FALSE(lanes.empty());
+    for (auto const& l : lanes)
+    {
+        float const walk = DungeonClearMath::PointSegmentDist2d(20.0f, 20.0f, 40.0f, 0,
+                                                                l.standX, l.standY);
+        EXPECT_LE(l.margin, walk - 25.0f + 1e-3f);
+    }
+}
+
+TEST(DungeonClearStraightPullTest, AKeepAwayTheTankStandsInDoesNotSinkEveryWalk)
+{
+    // The tank is already inside the disc: every walk starts in it, so the walk term
+    // skips it and the lanes that lead AWAY keep their margin.
+    std::vector<DungeonClearMath::LaneKeepAway> const keep = {{40.0f, 0.0f, 25.0f}};
+    auto const lanes = DungeonClearMath::RankStraightPullLanes(
+        0, 0, 30.0f, 0, 20.0f, 25.0f, 12.5f, keep, false, 0, 0, 0, 0);
+    ASSERT_FALSE(lanes.empty());
+    EXPECT_GT(lanes.front().margin, 0.0f);
+    EXPECT_LT(std::cos(lanes.front().bearing), -0.7f);  // pulled west, away from it
+}
+
+TEST(DungeonClearRoomTrashTest, NearestUnrefusedPackGoesFirst)
+{
+    std::vector<float> const dist = {10.0f, 20.0f, 30.0f};
+    EXPECT_EQ(DungeonClearMath::PickRoomTrashIndex(dist, {false, false, false}), 0);
+    EXPECT_EQ(DungeonClearMath::PickRoomTrashIndex(dist, {true, false, false}), 1);
+    EXPECT_EQ(DungeonClearMath::PickRoomTrashIndex(dist, {true, true, false}), 2);
+}
+
+TEST(DungeonClearRoomTrashTest, AllRefusedFallsBackToTheNearest)
+{
+    std::vector<float> const dist = {25.0f, 12.0f, 30.0f};
+    EXPECT_EQ(DungeonClearMath::PickRoomTrashIndex(dist, {true, true, true}), 1);
+    EXPECT_EQ(DungeonClearMath::PickRoomTrashIndex({}, {}), -1);
+    // A short refusal vector reads as "not refused" past its end.
+    EXPECT_EQ(DungeonClearMath::PickRoomTrashIndex(dist, {true}), 1);
+}
+
+TEST(DungeonClearRoomTrashTest, AKillDropsTheRefusals)
+{
+    EXPECT_TRUE(DungeonClearMath::ShouldDropLaneRefusals(23u, 24u));
+    EXPECT_FALSE(DungeonClearMath::ShouldDropLaneRefusals(24u, 24u));
+    // A late spawn or a rescan that grew the list is not a kill.
+    EXPECT_FALSE(DungeonClearMath::ShouldDropLaneRefusals(25u, 24u));
+}
+
 TEST(DungeonClearMathTest, RegroupAnchorRejectsTheStrandedFarHolder)
 {
     // tr-20260927-103044-10: a Ghostly Philanthropist stranded at the Opera stage

@@ -110,8 +110,10 @@ public:
     // every other pack (at `safeRadius`) as the room allows. The stand spot sits
     // `standDist` from the pack; the camp `setback` beyond it, shortened to stay
     // inside the room's camp box. Both points are navmesh-snapped, reachable,
-    // on the pack's floor, and the stand spot sees the pack. nullopt when no
-    // bearing passes — the caller falls back to the walk-in and trail camp.
+    // on the pack's floor, and the stand spot sees the pack. `requireClean`
+    // also rejects every lane with a negative margin (its walk, tag spot or drag
+    // inside a keep-away). nullopt when no bearing passes — the caller defers the
+    // pack, or on its last resort falls back to the walk-in and trail camp.
     struct RoomClearLane
     {
         Position stand;
@@ -123,7 +125,8 @@ public:
                                                              float bossRadius,
                                                              float standDist,
                                                              float setback,
-                                                             float safeRadius);
+                                                             float safeRadius,
+                                                             bool requireClean);
 
     // Lean, target-less twin of ComputeSafeCamp for the Idle SCOUT phase: returns
     // a point `setback` back along the breadcrumb trail behind the tank (the

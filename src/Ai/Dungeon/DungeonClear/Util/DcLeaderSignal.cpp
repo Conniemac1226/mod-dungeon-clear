@@ -818,8 +818,10 @@ namespace
         if (!DcRun::Of(ctx).enabled)
             return nullptr;
 
+        // A boxed room-clear pull (roomCampFight) anchors its party exactly like a
+        // scripted stage — see DcPullContext::AnchoredCampFight.
         DcPullContext const& pull = ctx->GetValue<DcPullContext&>(DcKey::PullContext)->Get();
-        if (pull.scriptedStage < 0 || !pull.HasCamp())
+        if (!pull.AnchoredCampFight() || !pull.HasCamp())
             return nullptr;
         return &pull;
     }
@@ -834,6 +836,11 @@ bool DcLeaderSignal::IsLeaderScriptedCampFight(Player* bot)
 {
     DcPullContext const* const pull = LeaderScriptedPull(bot);
     return pull && pull->phase == DcPullPhase::Engage;
+}
+bool DcLeaderSignal::IsLeaderRoomCampFight(Player* bot)
+{
+    DcPullContext const* const pull = LeaderScriptedPull(bot);
+    return pull && pull->roomCampFight && pull->phase == DcPullPhase::Engage;
 }
 bool DcLeaderSignal::IsLeaderFightAssistWanted(Player* bot)
 {
