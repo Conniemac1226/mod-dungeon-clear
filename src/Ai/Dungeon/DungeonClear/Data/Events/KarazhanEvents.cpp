@@ -35,9 +35,21 @@
 //     stands (only BossPullbackRegistry drags one, and it has no row here), so
 //     the fight stays in the stables.
 //
-//   * CHESS is skipped by design (it will be its own plan), and PRINCE with it:
-//     only Chess's DONE handler opens the Gamesman's Hall Exit Door (184277),
-//     the only way to Prince. Drop the Prince skip when Chess ships.
+//   * CHESS's credit spawn is the Status Bar (22520), a NOT_SELECTABLE trigger
+//     that never dies — the script never sets a boss state or a kill bit for the
+//     game at all. It is removed; the chess objective re-adds the encounter and
+//     completes on GetData(DATA_CHESS_EVENT) == DONE (doneInstanceData), read
+//     live because the win is not saved. See Chess() below and
+//     Overrides/KarazhanChessDriver.cpp.
+//
+//   * PRINCE follows Chess, and only Chess: its DONE handler is the only thing
+//     that opens the Gamesman's Hall Exit Door (184277), his only way in, and the
+//     win is not saved. The clear orders Chess ahead of him, and the chess
+//     objective reads DONE live, so after an instance reload the clear plays
+//     chess again before it walks to Prince. A Chess skipped by hand leaves the
+//     exit door shut — the approach stalls on it, which is the honest outcome.
+//     His fight is the playerbots `karazhan` strategy's (enfeeble, infernals);
+//     Netherspace is a sealed room (SealedEncounterRegistry).
 //
 //   * OPERA's credit spawn is Barnes (16812), a friendly NPC whose gossip starts
 //     the play. He is removed here; the Opera event re-adds the encounter as an
@@ -48,7 +60,7 @@
 //     and re-added on the Master's Terrace behind the Blackened Urn event.
 //
 // Order: Attumen, Moroes, Maiden, Opera, Nightbane, Curator, Terestian, Aran,
-// Netherspite. Nightbane's slot was measured on the navmesh: fitting the urn in
+// Netherspite, Chess. Nightbane's slot was measured on the navmesh: fitting the urn in
 // after Opera costs 249yd of extra walking, the next best slot 693yd.
 
 using namespace DcKarazhan;
@@ -153,10 +165,55 @@ namespace
     }
 }
 
+namespace
+{
+    // Chess (plan: deployment-files/docs/mod-dungeon-clear_karazhan-chess_plan.md).
+    // Echo of Medivh's game is played by the raid through ten charmed pieces, and
+    // DC plays all of it: the conductor starts the game, gives each bot a piece,
+    // plays them through the pure policy, retries a loss and loots the chest.
+    //
+    //   0. walk into the Gamesman's Hall (the door on the west balcony is a
+    //      lock-free click; the floor is 69yd on foot below it);
+    //   1. raid muster: everyone alive, topped off and together — once the game
+    //      is on, nobody can drink (Game In Session pacifies every player);
+    //   2. hook 43: arm the conductor;
+    //   3. hook 42: the game. The conductor runs INSIDE the members' chess rung
+    //      (it has to own every bot's tick, combat-flagged or not), so this step
+    //      is only called before the game and after it, and reports the
+    //      conductor's verdict: Done (won, chest looted) or Blocked (lost three
+    //      games, or could not start one).
+    //
+    // Everything that can go wrong in the game — a loss, a stalemate restart, a
+    // server restart mid-game (adopted, never re-started) — is handled inside step
+    // 3, because an anchored objective latches forever and only a conditional
+    // event may repeat.
+    //
+    // Plain Anchored + Persistent, like the Opera. The plan also named
+    // DrivesInCombat / EncounterActive / StepsOwnMovement, but those are seams of
+    // the CONDITIONAL-event and objective-hold paths, and none of the game runs
+    // there: the rung is dual-engine and exempt from the boss stand-down on its
+    // own, and it issues its own movement. On this row they would only have
+    // widened three containment lints for no behaviour.
+    DungeonEvent Chess()
+    {
+        return EventBuilder(MAP, EV_CHESS, "Chess: the Gamesman's Hall")
+            .Anchored(ORDER_CHESS)
+            .Persistent()  // three games' worth of combat gaps; never rewind on one
+            .MoveTo(HALL_X, HALL_Y, HALL_Z, /*radius*/ 6.0f)
+            .Custom(DC_HOOK_RAID_MUSTER)
+                .Timeout(240000)
+            .Custom(HOOK_KZ_CHESS_SETUP)
+            .Custom(HOOK_KZ_CHESS_PLAY)
+                .Timeout(60 * 60 * 1000)  // three 15-minute games, the retries and the chest
+            .Build();
+    }
+}
+
 void RegisterKarazhanEvents(std::vector<DungeonEvent>& out)
 {
     out.push_back(Opera());
     out.push_back(NightbaneUrn());
+    out.push_back(Chess());
 }
 
 void RegisterKarazhanRoster(std::vector<BossRosterPatch>& t)
@@ -170,7 +227,7 @@ void RegisterKarazhanRoster(std::vector<BossRosterPatch>& t)
                                     MIDNIGHT_X, MIDNIGHT_Y, MIDNIGHT_Z, BIT_ATTUMEN,
                                     ORDER_ATTUMEN));
 
-    p.remove = { NPC_BARNES, NPC_NIGHTBANE };
+    p.remove = { NPC_BARNES, NPC_NIGHTBANE, NPC_CHESS };
 
     // Opera: the Barnes objective owns the encounter (see Opera) and is finished
     // when the Opera slot reads DONE. Barnes' own row is removed above: a boss
@@ -195,7 +252,18 @@ void RegisterKarazhanRoster(std::vector<BossRosterPatch>& t)
     p.add.push_back(MakeBoss(NPC_NIGHTBANE, MAP, "Nightbane",
                              LANDING_X, LANDING_Y, LANDING_Z,
                              /*completionFrom*/ NPC_NIGHTBANE, ORDER_NIGHTBANE));
-    p.skipByDesign = { NPC_CHESS, NPC_PRINCE };
+    // Chess: the Status Bar's row is removed above (a trigger that never dies);
+    // the objective owns the game and is finished while GetData(9) reads DONE.
+    // Read live: the win is not saved, and after an instance reload the exit door
+    // to Prince is shut again, so the game has to be played again.
+    DungeonBossInfo chess = MakeObjective(OBJ(OBJ_CHESS), /*encounterIndex*/ BIT_CHESS, MAP,
+                                          "Chess: the Gamesman's Hall", HALL_X, HALL_Y, HALL_Z,
+                                          /*arriveRadius*/ 12.0f, /*gateEntry*/ 0, /*hook*/ 0,
+                                          EV_CHESS, ORDER_CHESS);
+    chess.doneInstanceDataId = static_cast<int32>(DATA_CHESS_EVENT);
+    chess.doneInstanceDataValue = CHESS_EVENT_DONE;
+    p.add.push_back(chess);
+
 
     // The DBC order is Attumen, Moroes, Maiden, Opera, Curator, Terestian, Aran,
     // Netherspite, Chess, Prince, Nightbane. Curator onward move up two slots to
@@ -207,7 +275,6 @@ void RegisterKarazhanRoster(std::vector<BossRosterPatch>& t)
         { NPC_TERESTIAN,   ORDER_TERESTIAN },
         { NPC_ARAN,        ORDER_ARAN },
         { NPC_NETHERSPITE, ORDER_NETHERSPITE },
-        { NPC_CHESS,       ORDER_CHESS },
         { NPC_PRINCE,      ORDER_PRINCE },
     };
 

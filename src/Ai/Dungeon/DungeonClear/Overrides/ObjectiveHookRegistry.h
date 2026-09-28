@@ -167,4 +167,11 @@ void RegisterTrialOfTheChampionHooks(ObjectiveHookRegistry::HookTable& out);
 // rider rung (Action/DcOculusRiderAction.cpp).
 void RegisterOculusHooks(ObjectiveHookRegistry::HookTable& out);
 
+// Karazhan (map 532) — the chess event: arm the conductor (43) and report its
+// verdict back to the event (42). See KarazhanChessDriver.cpp. The game itself is
+// the conductor inside the member rung (Action/DcChessPieceAction.cpp); its
+// decisions are the pure kernels Util/DcChessBoard.h, Util/DcChessDecision.h and
+// Util/DcChessConductor.h.
+void RegisterKarazhanChessHooks(ObjectiveHookRegistry::HookTable& out);
+
 #endif

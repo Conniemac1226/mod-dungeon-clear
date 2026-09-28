@@ -994,6 +994,10 @@ bool DungeonClearStalledTrigger::IsActive()
     if (DcBossStandDown::IsActive(bot))
         return false;
 
+    // ...nor into Karazhan's chess game, which owns the whole raid for its length.
+    if (DcKarazhan::ChessIsOn(bot))
+        return false;
+
     // Only fall back when there is an actual stall reason set by Advance or
     // EngageBoss. If the path is clear, this trigger never fires.
     std::string const& reason = AI_VALUE(std::string&, DcKey::StallReason);
@@ -1871,7 +1875,10 @@ bool DungeonClearBreakStuckCombatTrigger::IsActive()
     // multiplier; gating here too keeps the per-tick holder scan off the books
     // for the whole fight.
     Map* const map = bot->GetMap();
-    if (!map || DcBossStandDown::IsActive(bot))
+    // Karazhan's chess game holds its controllers combat-flagged by their pieces'
+    // fight with nothing a bot could or should attack: exactly the phantom shape,
+    // and not one. Same stand-down as a boss encounter, clocks and all.
+    if (!map || DcBossStandDown::IsActive(bot) || DcKarazhan::ChessIsOn(bot))
     {
         stuckCombatSinceMs = 0;
         holderCloseWatch.Reset();

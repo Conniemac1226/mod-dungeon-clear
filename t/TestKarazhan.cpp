@@ -14,6 +14,7 @@
 #include "Ai/Dungeon/DungeonClear/Overrides/BossRosterRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Overrides/ObjectiveHookRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcDifficulty.h"
+#include "TestRun/DcTestDungeonRegistry.h"
 
 // Karazhan (map 532). The ten derived anchors come from BossSpawnIndex at runtime;
 // these tests pin the authored patch against stand-ins for them.
@@ -67,18 +68,97 @@ TEST(DcKarazhanTest, RosterOpensOnMidnightAtBitZero)
     EXPECT_EQ(out.front().doneBossStateIndex, -1);  // the DBC bit is the completion
 }
 
-TEST(DcKarazhanTest, ChessAndPrinceAreSkippedByDesign)
+TEST(DcKarazhanTest, NothingIsSkippedByDesign)
+{
+    for (DungeonBossInfo const& b : Patched())
+        EXPECT_FALSE(b.skipByDesign) << b.entry;
+}
+
+// Prince is reachable only through the chess exit door, which opens only on the
+// win: the clear must order him after the chess objective, keep his real kill
+// bit, and never reach him first.
+TEST(DcKarazhanTest, PrinceComesStraightAfterChess)
 {
     auto const out = Patched();
-    for (uint32 entry : { NPC_CHESS, NPC_PRINCE })
-    {
-        DungeonBossInfo const* b = FindEntry(out, entry);
-        ASSERT_NE(b, nullptr) << entry;
-        EXPECT_TRUE(b->skipByDesign) << entry;
-    }
+    DungeonBossInfo const* prince = FindEntry(out, NPC_PRINCE);
+    DungeonBossInfo const* chess = FindEntry(out, BossRosterRegistry::ObjectiveEntry(OBJ_CHESS));
+    ASSERT_NE(prince, nullptr);
+    ASSERT_NE(chess, nullptr);
+    EXPECT_EQ(prince->kind, DungeonAnchorKind::Boss);
+    EXPECT_EQ(prince->encounterIndex, 9u) << "his real DBC bit is the completion";
+    EXPECT_EQ(BossOrderKey(*prince), static_cast<uint32>(ORDER_PRINCE));
+    // Nothing sits between the two.
     for (DungeonBossInfo const& b : out)
-        if (b.entry != NPC_CHESS && b.entry != NPC_PRINCE)
-            EXPECT_FALSE(b.skipByDesign) << b.entry;
+        EXPECT_FALSE(BossOrderKey(b) > BossOrderKey(*chess) && BossOrderKey(b) < BossOrderKey(*prince))
+            << b.entry;
+    EXPECT_LT(BossOrderKey(*chess), BossOrderKey(*prince));
+}
+
+TEST(DcKarazhanTest, NetherspaceIsSealed)
+{
+    SealedEncounterRow const* row = SealedEncounterRegistry::Find(MAP, NPC_PRINCE);
+    ASSERT_NE(row, nullptr);
+    // Prince and the platform are inside.
+    EXPECT_TRUE(SealedEncounterRegistry::InSealedRoom(*row, -10962.2f, -2018.7f, 275.4f));
+    EXPECT_TRUE(SealedEncounterRegistry::InSealedRoom(*row, -10930.0f, -1990.0f, 275.5f));
+    // The door, the landing outside it (same height) and the hall far below are out.
+    EXPECT_FALSE(SealedEncounterRegistry::InSealedRoom(*row, -11018.5f, -1967.9f, 276.6f));
+    EXPECT_FALSE(SealedEncounterRegistry::InSealedRoom(*row, -11056.0f, -1966.3f, 274.7f));
+    EXPECT_FALSE(SealedEncounterRegistry::InSealedRoom(*row, -10962.2f, -2018.7f, 221.0f));
+    // The approach arms on the landing before the door, not in the chess hall.
+    EXPECT_TRUE(SealedEncounterRegistry::InApproachRange(*row, -11026.0f, -1967.0f, 275.0f,
+                                                         -10962.2f, -2018.7f, 275.4f));
+    EXPECT_FALSE(SealedEncounterRegistry::InApproachRange(*row, -11098.8f, -1853.6f, 221.2f,
+                                                          -10962.2f, -2018.7f, 275.4f));
+}
+
+// --- Chess --------------------------------------------------------------------
+// The Status Bar (22520) credits the encounter and never dies; the chess
+// objective plays the game and completes on GetData(DATA_CHESS_EVENT) == DONE.
+
+TEST(DcKarazhanTest, ChessObjectiveReplacesTheStatusBar)
+{
+    auto const out = Patched();
+    EXPECT_EQ(FindEntry(out, NPC_CHESS), nullptr) << "never a boss anchor on a trigger that cannot die";
+    DungeonBossInfo const* chess = FindEntry(out, BossRosterRegistry::ObjectiveEntry(3));
+    ASSERT_NE(chess, nullptr);
+    EXPECT_EQ(chess->kind, DungeonAnchorKind::Objective);
+    EXPECT_EQ(chess->eventId, EV_CHESS);
+    EXPECT_EQ(BossOrderKey(*chess), static_cast<uint32>(ORDER_CHESS));
+    EXPECT_EQ(chess->doneInstanceDataId, static_cast<int32>(DATA_CHESS_EVENT));
+    EXPECT_EQ(chess->doneInstanceDataValue, CHESS_EVENT_DONE);
+    EXPECT_EQ(chess->doneBossStateIndex, -1) << "the script sets no boss state for chess";
+    EXPECT_FALSE(chess->skipByDesign);
+    // After Netherspite, before Prince.
+    EXPECT_LT(BossOrderKey(*FindEntry(out, NPC_NETHERSPITE)), BossOrderKey(*chess));
+    EXPECT_LT(BossOrderKey(*chess), BossOrderKey(*FindEntry(out, NPC_PRINCE)));
+    // Anchored in the hall, off the board.
+    EXPECT_NEAR(chess->z, HALL_Z, 0.5f);
+    EXPECT_EQ(AnchorDoneByInstanceValues(*chess, 0, 3), DcAnchorDoneVia::InstanceData);
+    EXPECT_EQ(AnchorDoneByInstanceValues(*chess, 0, 4), DcAnchorDoneVia::None) << "SPECIAL is PvP, not the win";
+}
+
+TEST(DcKarazhanTest, ChessEventShape)
+{
+    DungeonEvent const* ev = DungeonEventRegistry::Find(MAP, EV_CHESS);
+    ASSERT_NE(ev, nullptr);
+    EXPECT_EQ(ev->activation, EventActivation::Anchored);
+    EXPECT_EQ(ev->orderIndex, static_cast<uint32>(ORDER_CHESS));
+    EXPECT_TRUE(ev->persistent);
+    EXPECT_TRUE(ev->required);
+    ASSERT_EQ(ev->steps.size(), 4u);
+    EXPECT_EQ(ev->steps[0].kind, EventStepKind::MoveTo);
+    EXPECT_FLOAT_EQ(ev->steps[0].x, HALL_X);
+    EXPECT_EQ(ev->steps[1].kind, EventStepKind::Custom);
+    EXPECT_EQ(ev->steps[1].hookId, DC_HOOK_RAID_MUSTER);
+    EXPECT_EQ(ev->steps[2].kind, EventStepKind::Custom);
+    EXPECT_EQ(ev->steps[2].hookId, HOOK_KZ_CHESS_SETUP);
+    EXPECT_EQ(ev->steps[3].kind, EventStepKind::Custom);
+    EXPECT_EQ(ev->steps[3].hookId, HOOK_KZ_CHESS_PLAY);
+    // Long enough for three full games, the retries between them and the chest.
+    EXPECT_GE(ev->steps[3].timeoutMs, 3u * 15u * 60u * 1000u);
+    EXPECT_TRUE(ObjectiveHookRegistry::Has(HOOK_KZ_CHESS_SETUP));
+    EXPECT_TRUE(ObjectiveHookRegistry::Has(HOOK_KZ_CHESS_PLAY));
 }
 
 TEST(DcKarazhanTest, BarnesAndThePerchAreNotBossAnchors)
@@ -321,4 +401,39 @@ TEST(DcKarazhanTest, OperaHoldsUntilDoneAndRetriesAFail)
     // has no way down but the doors).
     EXPECT_FLOAT_EQ(hold.x, STAGE_X);
     EXPECT_FLOAT_EQ(hold.y, STAGE_Y);
+}
+
+// --- the Test Deck scenario (T2) ---------------------------------------------------
+
+TEST(DcKarazhanTest, TheChessScenarioPlaysTheChessObjective)
+{
+    DcTestDungeonRegistry::Row const* row = DcTestDungeonRegistry::Find("kara-chess");
+    ASSERT_NE(row, nullptr);
+    EXPECT_TRUE(DcTestDungeonRegistry::IsScenario(*row));
+    EXPECT_STREQ(row->scenarioOf, "kara");
+    EXPECT_EQ(row->mapId, MAP);
+    ASSERT_EQ(row->focusEntries.size(), 1u);
+
+    // The focus is the chess objective on the patched roster, and it is playable.
+    auto const out = Patched();
+    DungeonBossInfo const* chess = FindEntry(out, row->focusEntries.front());
+    ASSERT_NE(chess, nullptr);
+    EXPECT_EQ(chess->eventId, EV_CHESS);
+    EXPECT_FALSE(chess->skipByDesign) << "a skip-by-design focus is refused at start";
+
+    // It lands on the objective's own anchor, so the walk-in step is done on arrival.
+    EXPECT_NEAR(row->x, chess->x, 1.0f);
+    EXPECT_NEAR(row->y, chess->y, 1.0f);
+
+    // Success is the win itself, with time for the chest.
+    EXPECT_TRUE(row->success.IsSet());
+    EXPECT_EQ(row->success.dataId, DATA_CHESS_EVENT);
+    EXPECT_EQ(row->success.value, CHESS_EVENT_DONE);
+    EXPECT_GE(row->successGraceS, 30u);
+    EXPECT_GE(row->overallTimeoutS, 1800u);
+
+    // `.dc test start 532` still means the whole of Karazhan.
+    DcTestDungeonRegistry::Row const* whole = DcTestDungeonRegistry::Find("532");
+    ASSERT_NE(whole, nullptr);
+    EXPECT_STREQ(whole->token, "kara");
 }

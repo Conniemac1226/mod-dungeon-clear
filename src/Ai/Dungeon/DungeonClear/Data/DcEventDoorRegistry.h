@@ -1161,6 +1161,13 @@ namespace DcEventDoorRegistry
             // Curator->Terestian and Midnight->Terestian become unroutable, and
             // the room behind it is a dead end. A player opens it by clicking.
             case 184453:  // Karazhan — Strange Bookcase (Terestian's room)
+            // Karazhan — Gamesman's Hall Door (184276, guid 28214, at
+            // (-11120.0,-1826.9,241.8)), the way into the chess hall from its west
+            // balcony. Lock 0, spawns CLOSED (state 1), autoClose 3000ms, template
+            // addon flags 0, no ScriptName/AIName, no smart_scripts or conditions
+            // row, and instance_karazhan never registers it (it tracks only the
+            // hall's EXIT door, 184277). Nothing but a click ever opens it.
+            case 184276:  // Karazhan — Gamesman's Hall Door (chess hall entry)
                 return true;
             default:
                 return false;

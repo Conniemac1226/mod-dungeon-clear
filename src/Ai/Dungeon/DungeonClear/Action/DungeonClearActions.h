@@ -951,6 +951,19 @@ public:
     bool Execute(Event event) override;
 };
 
+// KARAZHAN ONLY, every member in the Gamesman's Hall, both engines: the chess seat
+// — take the assigned piece, keep it, stand on the sideline, fight nothing — and,
+// on the run owner, the conductor that plays the game. A PLAIN Action: it moves
+// its bot with its own point moves and must never be zeroed by a movement
+// multiplier. See Action/DcChessPieceAction.cpp. Driven by
+// DungeonClearKzChessTrigger.
+class DungeonClearKzChessAction : public Action
+{
+public:
+    DungeonClearKzChessAction(PlayerbotAI* botAI) : Action(botAI, "dungeon clear kz chess") {}
+    bool Execute(Event event) override;
+};
+
 // Leader-only, non-combat engine. The tank's mirror of the follower assist: a
 // groupmate is fighting a pack the tank never saw, so rather than stalling on the
 // Advance rest gate, find what the party is fighting, force the tank into combat

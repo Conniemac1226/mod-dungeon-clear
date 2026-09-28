@@ -15,6 +15,13 @@
 
 AC_ADD_SCRIPT("${CMAKE_CURRENT_LIST_DIR}/src")
 
+# New files added: Overrides/KarazhanChessDriver.cpp, Action/DcChessPieceAction.cpp,
+#   Util/DcChessBoard.h, Util/DcChessDecision.h, Util/DcChessConductor.h,
+#   Util/DcAnchorDone.h
+#   (Karazhan's chess event, map 532 — a conductor on the run owner that starts
+#    the game, hands out the ten pieces, plays them through a pure policy and
+#    loots the chest; a per-member rung that takes and holds each bot's piece.)
+
 # New files added: Data/Events/OculusEvents.cpp, Overrides/OculusDriver.cpp,
 #   Action/DcOculusRiderAction.cpp, Util/DcFlightLeg.{h,cpp}, Util/DcOculusPlan.h,
 #   Util/DcOculusDriverDecision.h, Util/DcOculusFlightDecision.h

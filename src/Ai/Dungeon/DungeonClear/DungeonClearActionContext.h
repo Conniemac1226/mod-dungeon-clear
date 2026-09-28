@@ -49,6 +49,7 @@ public:
         creators["dungeon clear hazard vacate"] = &DungeonClearActionContext::hazard_vacate;
         creators["dungeon clear hor stay ahead"] = &DungeonClearActionContext::hor_stay_ahead;
         creators["dungeon clear oc rider"] = &DungeonClearActionContext::oc_rider;
+        creators["dungeon clear kz chess"] = &DungeonClearActionContext::kz_chess;
         creators["dungeon clear razorgore orb"] = &DungeonClearActionContext::razorgore_orb;
         creators["dungeon clear razorgore camp"] = &DungeonClearActionContext::razorgore_camp;
         creators["dungeon clear transit pack"] = &DungeonClearActionContext::transit_pack;
@@ -116,6 +117,7 @@ private:
     static Action* hazard_vacate(PlayerbotAI* ai) { return new DungeonClearHazardVacateAction(ai); }
     static Action* hor_stay_ahead(PlayerbotAI* ai) { return new DungeonClearHorStayAheadAction(ai); }
     static Action* oc_rider(PlayerbotAI* ai) { return new DungeonClearOculusRiderAction(ai); }
+    static Action* kz_chess(PlayerbotAI* ai) { return new DungeonClearKzChessAction(ai); }
     static Action* razorgore_orb(PlayerbotAI* ai) { return new DungeonClearRazorgoreOrbAction(ai); }
     static Action* razorgore_camp(PlayerbotAI* ai) { return new DungeonClearRazorgoreCampAction(ai); }
     static Action* transit_pack(PlayerbotAI* ai) { return new DungeonClearTransitPackAction(ai); }

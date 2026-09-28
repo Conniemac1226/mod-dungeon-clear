@@ -16,6 +16,7 @@
 #include "ObjectGuid.h"
 #include "Timer.h"
 
+#include "Ai/Dungeon/DungeonClear/Util/DcChessConductor.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcRunProgress.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcThrottle.h"
 
@@ -467,6 +468,13 @@ struct DcRunState
     bool   ocStallReissued = false;
     uint8  ocRiderAction = 0;          // DcOculusRider::Action last logged
 
+    // --- Karazhan: the chess event (map 532) --------------------------------------
+    //
+    // The conductor's block on the RUN OWNER and each member's own half on every
+    // bot — see DcChessRunState (Util/DcChessConductor.h). Cleared by ClearChess
+    // when a finished game has to be played again, and by Reset().
+    DcChessRunState chess;
+
     // === test-harness telemetry (leader-owned; SURVIVES Reset) ====================
     // The seam between a long scripted event and the `.dc test` harness
     // (Karazhan chess plan, T1). Both fields are written by the event on the RUN
@@ -737,6 +745,17 @@ struct DcRunState
         razorEggBestDist = 0.0f;
         razorEggAttempts = 0;
         razorEggSkipped.clear();
+    }
+
+    // Drop the whole chess block. The hook calls it when it is asked to play a
+    // game that already finished — an instance reload forgets the (unsaved) win,
+    // so the objective comes round again and must start from Idle, not from Done.
+    void ClearChess()
+    {
+        chess = DcChessRunState{};
+        ClearThrottle(DcThrottle::ChessMoveIssue);
+        ClearThrottle(DcThrottle::ChessLog);
+        ClearThrottle(DcThrottle::ChessGossip);
     }
 
     // Full run teardown: every session + signal field. Used on dc on / dc off /

@@ -14,6 +14,8 @@
 #include "DBCStores.h"
 #include "PlayerbotAIConfig.h"
 
+#include "Ai/Dungeon/DungeonClear/Data/Events/DungeonEventTables.h"
+#include "Ai/Dungeon/DungeonClear/Overrides/BossRosterRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Settings/DcSettings.h"
 
 #include "TestRun/DcTestComp.h"
@@ -120,11 +122,12 @@ namespace DcTestDungeonRegistry
             // is refused before it spawns). Main entrance, areatrigger 4131;
             // no key requirement in dungeon_access_template, min level 68.
             // Kill-credit encounters with a static spawn auto-derive (Moroes,
-            // Maiden, Curator, Terestian, Aran, Netherspite, Malchezaar), but
-            // four need event data this row does not carry yet: Attumen has
-            // no spawn (Midnight summons him), Opera credits Barnes (a
-            // friendly gossip NPC who starts the play), Chess credits the
-            // status-bar trigger, and Nightbane lands only after the urn.
+            // Maiden, Curator, Terestian, Aran, Netherspite, Malchezaar); the
+            // other four run on event data (KarazhanEvents.cpp): Attumen has no
+            // spawn (engaged through Midnight), Opera credits Barnes (a friendly
+            // gossip NPC who starts the play), Chess credits the Status Bar
+            // trigger (the chess objective plays the game instead), and
+            // Nightbane lands only after the urn.
             { "kara",            "Karazhan",                      532, -11100.00f, -2003.98f,   49.89f, 0.577f, 70, "" },
 
             // --- SCENARIOS (Karazhan chess plan, T1). A scenario is a slice of
@@ -137,6 +140,23 @@ namespace DcTestDungeonRegistry
             //     graceS, overallTimeoutS, noProgressS },
             // ValidateScenario (gtest-pinned over this table) rejects a row
             // whose parent, map or focus does not line up.
+
+            // Karazhan: Chess (T2). The raid lands on the Gamesman's Hall floor
+            // off the board's col-0 edge (the chess objective's own anchor,
+            // facing the board), everything but the chess objective is skipped,
+            // and the run passes once GetData(DATA_CHESS_EVENT) reads DONE — with
+            // 60s of grace for the conductor to loot the Dust Covered Chest. The
+            // event's first step (walk into the hall) is satisfied on landing.
+            // Up to three games of fifteen minutes plus the retries fit in the
+            // half hour; the game bumps the event progress sequence on every
+            // accepted move, piece death and phase change, so five minutes with
+            // none of those is a real stall. No pre-loot: the harness revives and
+            // unbinds at teardown, which also clears the win's perm-bind.
+            { "kara-chess",      "Karazhan: Chess",               532,
+              DcKarazhan::HALL_X, DcKarazhan::HALL_Y, DcKarazhan::HALL_Z, 5.608f, 70, "", 0,
+              "kara", { BossRosterRegistry::ObjectiveEntry(DcKarazhan::OBJ_CHESS) },
+              InstanceDataEquals(DcKarazhan::DATA_CHESS_EVENT, DcKarazhan::CHESS_EVENT_DONE),
+              60, 1800, 300 },
         };
         return rows;
     }

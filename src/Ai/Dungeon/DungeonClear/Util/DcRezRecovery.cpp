@@ -282,10 +282,13 @@ namespace
         // A block clears it for the same reason and then some: time spent unable to
         // cast must not be charged to a recovery that has not been allowed to start,
         // or the timeout fires the moment the block lifts.
+        // A live chess game holds every body at the board (the rezzer included),
+        // so it stops the clock too: the tank that died at the board is raised
+        // once the game is over, not timed out in the middle of it.
         bool const partyEngaged = AnyMemberEngaged(players);
         if (mutate)
         {
-            if (partyEngaged || rezBlocked)
+            if (partyEngaged || rezBlocked || DcKarazhan::ChessIsOn(bot))
                 run.rezPendingSinceMs = 0;
             else if (run.rezPendingSinceMs == 0)
                 run.rezPendingSinceMs = now ? now : 1;

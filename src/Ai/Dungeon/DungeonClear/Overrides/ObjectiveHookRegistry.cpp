@@ -847,6 +847,7 @@ namespace
             RegisterCullingOfStratholmeHooks(t);
             RegisterTrialOfTheChampionHooks(t);
             RegisterOculusHooks(t);
+            RegisterKarazhanChessHooks(t);
             return t;
         }();
         return kHooks;

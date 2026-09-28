@@ -323,6 +323,15 @@ void DungeonClearStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         "dungeon clear oc rider",
         { NextAction("dungeon clear oc rider", DcRel::OcRider) }));
 
+    // Karazhan only: the chess seat and conductor. Registered in BOTH engines —
+    // a controller is combat-flagged by its piece's fight half the time, and the
+    // rung has to own every tick of every bot in the hall either way. Inert
+    // everywhere else: the trigger's first test is the map id. See
+    // DungeonClearKzChessTrigger.
+    triggers.push_back(new TriggerNode(
+        "dungeon clear kz chess",
+        { NextAction("dungeon clear kz chess", DcRel::KzChess) }));
+
     // Razorgore's orb runner (Blackwing Lair only, one elected member). Registered
     // in BOTH engines: the walk to the ledge starts before the raid pulls and has
     // to survive the pull, and the click itself can land either side of the combat
@@ -573,6 +582,15 @@ void DungeonClearCombatStrategy::InitTriggers(std::vector<TriggerNode*>& trigger
     triggers.push_back(new TriggerNode(
         "dungeon clear oc rider",
         { NextAction("dungeon clear oc rider", DcRel::OcRider) }));
+
+    // Karazhan only: the chess seat and conductor. Registered in BOTH engines —
+    // a controller is combat-flagged by its piece's fight half the time, and the
+    // rung has to own every tick of every bot in the hall either way. Inert
+    // everywhere else: the trigger's first test is the map id. See
+    // DungeonClearKzChessTrigger.
+    triggers.push_back(new TriggerNode(
+        "dungeon clear kz chess",
+        { NextAction("dungeon clear kz chess", DcRel::KzChess) }));
 
     // Razorgore's orb runner (Blackwing Lair only, one elected member). Registered
     // in BOTH engines: the walk to the ledge starts before the raid pulls and has

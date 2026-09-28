@@ -202,6 +202,25 @@ namespace
     //
     // approachRadius 107. The door is 97.5yd from Netherspite; 8/10yd out along
     // the corridor are 105.1/107.0yd.
+    // --- Karazhan (532) — Prince Malchezaar -------------------------------------
+    //
+    // The Netherspace Door (185134, at (-11018.5, -1967.9)) is a DOOR_TYPE_ROOM
+    // door on DATA_MALCHEZAAR: it shuts the moment he is engaged and stays shut
+    // for the whole fight, and Netherspace is the only way to him — anyone still
+    // on the stair landing outside is locked out, infernals and all.
+    //
+    // Netherspace lies east of the door: 32 polys flood-filled with the door cut
+    // (TestKarazhanChessProbe.PrintsNetherspace), x -11020.5..-10906.1,
+    // y -2033.1..-1938.7, z 275.1..275.9. minX -11015 keeps the door and its sill
+    // out. The stair landing outside is at the same height (z 274.7, x -11056),
+    // so the X bound is what keeps it out; no corridor poly lies east of the door
+    // line at platform height.
+    //
+    // Z BAND 272-280: the tower's lower floors below (the Gamesman's Hall is
+    // z 221-238) and the stair itself climbing to 274.
+    //
+    // approachRadius 86. The door is 75.8yd from Prince; 8/10yd out along the
+    // landing are ~84/86yd.
     SealedEncounterRow const kRows[] =
     {
         // mapId  boss   minX    maxX    minY    maxY   approach  muster
@@ -212,6 +231,7 @@ namespace
         //                                                           minZ    maxZ
         {   532, 16524, -11195.0f, -11135.0f, -1942.0f, -1886.0f, 50.0f, 10.0f, 225.0f, 245.0f },
         {   532, 15689, -11182.0f, -11058.0f, -1706.0f, -1550.0f, 107.0f, 10.0f, 276.0f, 284.0f },
+        {   532, 15690, -11015.0f, -10900.0f, -2040.0f, -1935.0f,  86.0f, 10.0f, 272.0f, 280.0f },
     };
 }
 

@@ -378,6 +378,28 @@ public:
     // call answers both "is there a pack to hold" and "hold it where".
     static bool GetTransitAnchor(Player* bot, Position& out);
 
+    // KARAZHAN, chess: the run's chess conductor, as the members read it.
+    //
+    // The conductor lives on the RUN OWNER (FindRunOwner — dead or alive, the bot
+    // whose run state is enabled), and every member's rung reads these three
+    // facts off it on its own tick. All three answer "nothing" unless the run is
+    // on, unpaused, armed, and the conductor has stamped within the freshness
+    // window — so a run switched off, paused, or finished releases every member
+    // within a tick or two, with no latch of its own to reset (the Razorgore
+    // shape).
+    //
+    // The piece the conductor gave `bot` (empty = none: hold at the sideline).
+    static ObjectGuid GetChessAssignment(Player* bot);
+    // Is the run's chess conductor armed and ticking? `stateOut` gets its
+    // DcChessConductor::State when it is.
+    static bool IsLeaderChessArmed(Player* bot, uint8* stateOut = nullptr);
+    // `bot`'s sideline slot, 0..9 — its index in the conductor's seat order, or a
+    // GUID-derived fallback before the conductor has seated anyone.
+    static uint32 GetChessSeat(Player* bot);
+    // A member gave up taking `piece` (the gossip never took): the conductor
+    // hands it something else on its next tick.
+    static void ReportChessRefusal(Player* bot, ObjectGuid piece);
+
     // The same read for a caller that has ALREADY resolved the leader. The wrapper
     // above is on two per-tick, per-bot paths and FindLeaderTank costs a
     // process-wide mutex acquisition; a caller that needs the leader for its own

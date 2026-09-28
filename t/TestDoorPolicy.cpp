@@ -461,6 +461,15 @@ TEST(DcDoorPolicyTest, KarazhanBookcaseIsClickable)
     EXPECT_FALSE(DcEventDoorRegistry::IsNavigationIgnored(184453));
 }
 
+// The chess hall's way in: a plain click opens it (the chess plan's C0.1).
+TEST(DcDoorPolicyTest, KarazhanGamesmanHallDoorIsClickable)
+{
+    EXPECT_TRUE(DcEventDoorRegistry::IsLockFreeClickable(184276));
+    EXPECT_FALSE(DcEventDoorRegistry::IsScriptOnly(184276));
+    EXPECT_FALSE(DcEventDoorRegistry::IsSelfClearing(184276));
+    EXPECT_FALSE(DcEventDoorRegistry::IsNavigationIgnored(184276));
+}
+
 TEST(DcDoorPolicyTest, KarazhanGamesmanExitIsScriptOnly)
 {
     EXPECT_TRUE(DcEventDoorRegistry::IsScriptOnly(184277));

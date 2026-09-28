@@ -50,6 +50,27 @@ static float RazorgorePossessionClamp(Player* bot, std::string const& name)
     return name == "dungeon clear razorgore orb" ? 1.0f : 0.0f;
 }
 
+// KARAZHAN, the chess game: while this bot is held by the game, NOTHING but the
+// chess rung is worth doing — the Razorgore-possession shape, for the whole raid.
+//
+// The rung owns the tick at KzChess (64.25), but stock actions reach higher than
+// that — ACTION_EMERGENCY at 90, `drop target` at 99 — and a controller has lost
+// Game In Session, so its own rotation, a heal, a potion or a pet command could
+// all land on a piece. That is cheating and it breaks the game (H1, H5). So every
+// other action is zeroed on every bot the rung holds; the one carve-out is the
+// `dc ...` chat commands, so a human can still pause or stop the run.
+//
+// Free everywhere else, and cheap here: the map compare, then one stamp the rung
+// leaves on the bot's own run state (DcKarazhan::ChessHoldsTheBot).
+static float KaraChessClamp(Player* bot, PlayerbotAI* botAI, std::string const& name)
+{
+    if (bot->GetMapId() != DcKarazhan::MAP || !DcKarazhan::ChessHoldsTheBot(bot, botAI))
+        return 1.0f;
+    if (name == "dungeon clear kz chess" || name.rfind("dc ", 0) == 0)
+        return 1.0f;
+    return 0.0f;
+}
+
 // HALLS OF REFLECTION, the escape: BACKWARDS IS FATAL, so nothing may move
 // backwards.
 //
@@ -160,6 +181,9 @@ float DungeonClearMultiplier::GetValue(Action* action)
     std::string const& name = action->getName();
 
     if (float const clamp = RazorgorePossessionClamp(bot, name); clamp != 1.0f)
+        return clamp;
+
+    if (float const clamp = KaraChessClamp(bot, botAI, name); clamp != 1.0f)
         return clamp;
 
     // Halls of Reflection's escape: no backwards movement, ever. See
@@ -327,6 +351,11 @@ float DungeonClearCombatMultiplier::GetValue(Action* action)
     // The runner is IN COMBAT for most of its window (the adds are on it), so the
     // combat engine is where this actually has to bite.
     if (float const clamp = RazorgorePossessionClamp(bot, name); clamp != 1.0f)
+        return clamp;
+
+    // The chess clamp, for the same reason and in the same place: a controller is
+    // combat-flagged by its piece's fight half the time.
+    if (float const clamp = KaraChessClamp(bot, botAI, name); clamp != 1.0f)
         return clamp;
 
     // Halls of Reflection's escape: no backwards movement, ever. ABOVE the
