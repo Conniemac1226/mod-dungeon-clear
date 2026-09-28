@@ -81,6 +81,7 @@
 #include "WarlockAiObjectContext.h"
 #include "WarriorAiObjectContext.h"
 
+#include "BgQueueFill/DcBgQueueFillManager.h"
 #include "DungeonQueueFill/DcDungeonQueueFillManager.h"
 #include "Util/DcProvisionBudget.h"
 #include "Util/DcSpectator.h"
@@ -520,6 +521,12 @@ public:
         // on a background test plan. Cheap no-op (an empty vector test)
         // whenever nobody is queueing.
         DcDungeonQueueFillManager::Instance().Tick(diff);
+
+        // Battleground instant queue fill: same shape, same reasons for
+        // running ahead of the module gate — it too releases what it holds
+        // when switched off, and it too gets a live player's claim on the
+        // provisioning ration ahead of the test harness.
+        DcBgQueueFillManager::Instance().Tick(diff);
 
         if (!DcModule::IsEnabled())
             return;

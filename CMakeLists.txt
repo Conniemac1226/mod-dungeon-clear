@@ -87,6 +87,17 @@ AC_ADD_CONFIG_FILE("${CMAKE_CURRENT_LIST_DIR}/conf/mod_dungeon_clear.conf.dist")
 #    post-validation dungeon set and roles back out of LFGMgr only once the
 #    queue has settled into LFG_STATE_QUEUED, so RBAC/deserter/cooldown/lock
 #    checks have all already run. The planner half is engine-free and gtested.)
+# New files added: BgQueueFill/DcBgQueueFillPlanner.{h,cpp},
+#   BgQueueFill/DcBgQueueFillJob.{h,cpp},
+#   BgQueueFill/DcBgQueueFillManager.{h,cpp},
+#   BgQueueFill/DcBgQueueFillHooks.cpp
+#   (BATTLEGROUND INSTANT QUEUE FILL. A real player queues for a battleground;
+#    Alliance AND Horde pool bots in the player's bracket queue for the same
+#    battleground solo, and the STOCK matchmaker pops the match. Sides fill to
+#    the template max, start-critical bots first so the match pops at its
+#    minimum; Random Battleground is topped up once the core rolls the map; a
+#    human premade is moved to the normal queue in OnAddGroup so it can match
+#    against bots. The planner half is engine-free and gtested.)
 # New files added: Util/DcPoolBots.{h,cpp}
 #   (the pool-bot plumbing both queue fills share — claim an offline addclass
 #    character, evict it to its capital, sanitise it, release it — lifted out

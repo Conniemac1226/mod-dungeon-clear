@@ -35,6 +35,7 @@
 
 #include "DcModuleEnable.h"
 #include "DungeonClearDispatch.h"
+#include "BgQueueFill/DcBgQueueFillManager.h"
 #include "DungeonQueueFill/DcDungeonQueueFillManager.h"
 #include "TestRun/DcTestDriver.h"
 #include "TestRun/DcTestDungeonRegistry.h"
@@ -323,14 +324,21 @@ public:
             { "plan",   dcTestPlanTable },
         };
         // `.dc dungeonqueuefill` — the RDF instant fill. Named in full rather
-        // than abbreviated because a battleground counterpart
-        // (`.dc bgqueuefill`) is a separate feature with its own switch, and
-        // the two must never have to be disambiguated after the fact.
+        // than abbreviated because the battleground counterpart
+        // (`.dc bgqueuefill`, below) is a separate feature with its own
+        // switch, and the two must never have to be disambiguated.
         static ChatCommandTable dcQueueFillTable =
         {
             { "status", HandleQueueFillStatus, SEC_GAMEMASTER, Console::Yes },
             { "cancel", HandleQueueFillCancel, SEC_GAMEMASTER, Console::Yes },
             { "test",   HandleQueueFillTest,   SEC_GAMEMASTER, Console::Yes },
+        };
+        // `.dc bgqueuefill` — the battleground instant fill.
+        static ChatCommandTable dcBgQueueFillTable =
+        {
+            { "status", HandleBgQueueFillStatus, SEC_GAMEMASTER, Console::Yes },
+            { "cancel", HandleBgQueueFillCancel, SEC_GAMEMASTER, Console::Yes },
+            { "test",   HandleBgQueueFillTest,   SEC_GAMEMASTER, Console::Yes },
         };
         static ChatCommandTable dcTable =
         {
@@ -346,6 +354,7 @@ public:
             { "spectate", HandleSpectate, SEC_PLAYER, Console::No },
             { "test",   dcTestTable },
             { "dungeonqueuefill", dcQueueFillTable },
+            { "bgqueuefill", dcBgQueueFillTable },
         };
         static ChatCommandTable root = { { "dc", dcTable } };
         return root;
@@ -566,6 +575,68 @@ public:
 
         std::string msg;
         DcDungeonQueueFillManager::Instance().ForceFill(target, &msg);
+        handler->SendSysMessage(msg);
+        return true;
+    }
+
+    // --- `.dc bgqueuefill` — the battleground instant fill -----------------
+
+    // `.dc bgqueuefill status` — on/off, every fill in flight with its stage
+    // and per-side bot counts, deferred players, and released bots still
+    // waiting for somebody else's match to end.
+    static bool HandleBgQueueFillStatus(ChatHandler* handler)
+    {
+        if (DcDisabledNotice(handler))
+            return true;
+
+        handler->SendSysMessage(DcBgQueueFillManager::Instance().StatusText());
+        return true;
+    }
+
+    // `.dc bgqueuefill cancel <player>` — force-release one fill. The player
+    // keeps their place in the real queue (or their match, if they are in
+    // one: bots in a match a real player is still playing stay until it ends).
+    static bool HandleBgQueueFillCancel(ChatHandler* handler, Tail playerName)
+    {
+        if (DcDisabledNotice(handler))
+            return true;
+
+        std::string const name = std::string(playerName);
+        if (name.empty())
+        {
+            handler->SendSysMessage("Usage: .dc bgqueuefill cancel <player>");
+            return true;
+        }
+
+        std::string msg;
+        DcBgQueueFillManager::Instance().Cancel(name, &msg);
+        handler->SendSysMessage(msg);
+        return true;
+    }
+
+    // `.dc bgqueuefill test <player>` — open a fill for a player who is
+    // ALREADY waiting in a battleground queue, without them re-queueing.
+    static bool HandleBgQueueFillTest(ChatHandler* handler, Tail playerName)
+    {
+        if (DcDisabledNotice(handler))
+            return true;
+
+        std::string const name = std::string(playerName);
+        if (name.empty())
+        {
+            handler->SendSysMessage("Usage: .dc bgqueuefill test <player>");
+            return true;
+        }
+
+        Player* const target = ObjectAccessor::FindPlayerByName(name, false);
+        if (!target)
+        {
+            handler->PSendSysMessage("No player named '%s' is online.", name.c_str());
+            return true;
+        }
+
+        std::string msg;
+        DcBgQueueFillManager::Instance().ForceFill(target, &msg);
         handler->SendSysMessage(msg);
         return true;
     }

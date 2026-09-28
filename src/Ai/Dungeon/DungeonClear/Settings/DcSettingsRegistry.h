@@ -829,7 +829,7 @@ inline constexpr DcSettingDef kDcSettings[] =
     // manager, so it goes through DcSettings for the same anti-spam reason the
     // TestRun rows do.
     //
-    // The DungeonClear.BgQueueFill.* prefix is RESERVED for the battleground
+    // The DungeonClear.BgQueueFill.* rows below are the battleground
     // counterpart — a separate feature with a separate switch, because an
     // operator must be able to run dungeon fill without battleground fill.
     // Nothing is ever named plain QueueFill.
@@ -843,6 +843,23 @@ inline constexpr DcSettingDef kDcSettings[] =
     { "DungeonQueueFill.GearQuality",     DcType::UInt,   0,  0,      7, false },
     { "DungeonQueueFill.AutoClear",       DcType::Bool,   0,  0,      1, false },
     { "DungeonQueueFill.LogoutOnRelease", DcType::Bool,   1,  0,      1, false },
+
+    // Battleground instant queue fill (DungeonClear.BgQueueFill.*). Same
+    // server-policy / read-every-tick shape as the dungeon fill above, and a
+    // separate switch so either can run without the other.
+    { "BgQueueFill.Enable",          DcType::Bool,   0,  0,      1, false },
+    // Bounds the fills SETTING UP; a fill whose player is in the match does
+    // not count — see the conf.dist.
+    { "BgQueueFill.MaxConcurrent",   DcType::UInt,   2,  0,    100, false },
+    // 0 = auto: one healer per five seats of the battleground's maximum.
+    { "BgQueueFill.HealersPerSide",  DcType::UInt,   0,  0,     40, false },
+    { "BgQueueFill.LevelSpread",     DcType::UInt,   2,  0,     10, false },
+    { "BgQueueFill.MinPlayerLevel",  DcType::UInt,  10,  1,     80, false },
+    { "BgQueueFill.SetupTimeoutSec", DcType::UInt,  90, 10,    600, false },
+    { "BgQueueFill.MatchTimeoutSec", DcType::UInt, 180, 10,   1800, false },
+    { "BgQueueFill.GearIlvl",        DcType::UInt,   0,  0, 100000, false },
+    { "BgQueueFill.GearQuality",     DcType::UInt,   0,  0,      7, false },
+    { "BgQueueFill.LogoutOnRelease", DcType::Bool,   1,  0,      1, false },
 
     // Server-only (not overridable from the addon).
     { "AsyncPathfinding",      DcType::Bool,   1,   0,   1,  false },
