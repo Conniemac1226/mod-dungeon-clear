@@ -185,8 +185,12 @@ public:
     // resolves (so a caller can still aim at where the fight is). This is the
     // fight-anchor scan the combat regroup samples its standoff ring around; it is
     // the same nearest-attacker→victim ladder DungeonClearAssistCampActionBase
-    // uses (kept as a shared, testable helper).
-    static Unit* LeaderFightAnchor(Player* bot, Player* leader, Position& anchorPos);
+    // uses (kept as a shared, testable helper). Only a holder inside
+    // DC_ENGAGEMENT_RADIUS and level-reachable qualifies
+    // (DungeonClearMath::IsRegroupAnchorCandidate); a stranded far holder must not
+    // pull the party back to it.
+    static Unit* LeaderFightAnchor(Player* bot, AiObjectContext* ctx, Player* leader,
+                                   Position& anchorPos);
 
     // Returns a live creature with the given entry on the bot's map, or nullptr
     // if none exists or all are dead. Walks the creature-by-spawn-id store, then

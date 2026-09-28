@@ -4,6 +4,7 @@
  */
 
 #include "DungeonClearActions.h"
+#include "Ai/Dungeon/DungeonClear/Data/HealLeashRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcRun.h"
 #include "TestRun/DcTestRunManager.h"
 
@@ -906,7 +907,8 @@ bool DcMovementAction::DcMoveTo(uint32 mapId, float x, float y, float z, bool id
 }
 
 bool DcMovementAction::FindStandoffPoint(Map* map, Position const& center, float ringRadius,
-                                         float maxRadius, float& x, float& y, float& z)
+                                         float maxRadius, float& x, float& y, float& z,
+                                         Position const* leashCenter, float leashRadius)
 {
     if (!map)
         return false;
@@ -933,6 +935,12 @@ bool DcMovementAction::FindStandoffPoint(Map* map, Position const& center, float
         float const sdx = snap.x - cx;
         float const sdy = snap.y - cy;
         if (std::sqrt(sdx * sdx + sdy * sdy) > maxRadius)
+            continue;
+
+        if (leashCenter &&
+            !HealLeashRegistry::WithinLeash(leashCenter->GetPositionX(),
+                                            leashCenter->GetPositionY(), leashRadius,
+                                            snap.x, snap.y))
             continue;
 
         if (!map->isInLineOfSight(snap.x, snap.y, snap.z + kEyeBump, cx, cy,

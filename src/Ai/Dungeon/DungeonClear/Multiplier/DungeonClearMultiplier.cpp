@@ -16,6 +16,7 @@
 #include "Ai/Dungeon/DungeonClear/DcPullContext.h"
 #include "Ai/Dungeon/DungeonClear/Settings/DcSettings.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcBossStandDown.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcEscapeLeap.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcFlightLeg.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcOculusPlan.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcSmartRest.h"
@@ -244,6 +245,12 @@ float DungeonClearMultiplier::GetValue(Action* action)
     // cross-bot gate as the rest cap above).
     if (name == "move out of collision" &&
         AI_VALUE(Player*, DcKey::PartyTank))
+        return 0.0f;
+
+    // Blink / Disengage leap a fixed distance straight away from the bot's target
+    // and land it in whatever pack is behind — see DcEscapeLeap. Every member of an
+    // active run, same cross-bot gate as above.
+    if (DcEscapeLeap::IsBanned(name) && AI_VALUE(Player*, DcKey::PartyTank))
         return 0.0f;
 
     // Wander-style autonomous navigation (grind / rpg / travel). This is what

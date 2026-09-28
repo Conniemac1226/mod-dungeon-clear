@@ -76,39 +76,41 @@ namespace DungeonClearMath
         return StandoffCandidates(target, bot, standoffRadius, ringPoints);
     }
 
-    // The heal-reposition FALLBACK point: where to stand when no ring candidate
-    // validated and the honest answer is "walk at them and let pathing round the
-    // corner". A point on the bot->target line, `minGap` short of the target, or
-    // the target itself when already inside that gap.
+    // The point `stopShort` yards before the END of a route polyline, measured
+    // ALONG the route — the close-on-a-unit fallback for the heal reposition and
+    // the combat regroup ("walk at them and let the corner give you sight").
     //
-    // ALL THREE COORDINATES INTERPOLATE. The z used to be left at the target's,
-    // which names a point that exists nowhere: the target's floor above the bot's
-    // own x/y. Within one storey that is slop the caller's ground-snap absorbs;
-    // across two it is a destination through a ceiling, which is the Blackwing
-    // Lair clip (tp-20260828-171530-1). Keeping the point ON the line is both the
-    // thing the fallback means and what holds the residual error inside the snap's
-    // correction window on ramps and stairs.
+    // It used to be a point on the straight bot->target line, and a straight line
+    // is not a walk. Across a wall that point is inside the wall or on its far
+    // side: Karazhan's Maiden hairpin, where the two legs of the corridor sit a few
+    // yards apart through a wall with no navmesh in it, had healers and DPS
+    // walking into that wall toward a groupmate on the other leg and dropping to
+    // the Servants' Quarters below (tr-20260927-184653-9, -190943-12). A point on
+    // the route is on the mesh by construction, and walking to it rounds the
+    // hairpin the way a player would.
     //
-    // Deliberately does NOT reject a cross-level target. That is not this
-    // function's call: it returns the honest point on the line, which for a
-    // target a storey up is itself a storey up, and the movement layer's retry
-    // gate (MayRetryExactWaypoint plus the reachability probe behind it) is what
-    // declines to force it.
-    inline Position HealCloseFallbackPoint(Position const& bot, Position const& target,
-                                           float minGap)
+    // A route no longer than `stopShort` returns its first point (already close
+    // enough — nothing to walk); an empty route returns the origin.
+    inline G3D::Vector3 PointShortOfPathEnd(std::vector<G3D::Vector3> const& path,
+                                            float stopShort)
     {
-        float const dx = target.GetPositionX() - bot.GetPositionX();
-        float const dy = target.GetPositionY() - bot.GetPositionY();
-        float const dist2d = std::sqrt(dx * dx + dy * dy);
-        if (!(dist2d > minGap))
-            return target;
-
-        float const frac = (dist2d - minGap) / dist2d;
-        return Position(bot.GetPositionX() + dx * frac,
-                        bot.GetPositionY() + dy * frac,
-                        bot.GetPositionZ() +
-                            (target.GetPositionZ() - bot.GetPositionZ()) * frac,
-                        target.GetOrientation());
+        if (path.empty())
+            return G3D::Vector3(0.0f, 0.0f, 0.0f);
+        float remaining = std::max(0.0f, stopShort);
+        for (std::size_t i = path.size() - 1; i > 0; --i)
+        {
+            G3D::Vector3 const& a = path[i - 1];
+            G3D::Vector3 const& b = path[i];
+            float const seg = (b - a).length();
+            if (seg >= remaining)
+            {
+                if (seg <= 0.0f)
+                    return b;
+                return b + (a - b) * (remaining / seg);
+            }
+            remaining -= seg;
+        }
+        return path.front();
     }
 
     // May DcMoveTo override a refused move by re-issuing it as an exact waypoint?
@@ -132,8 +134,7 @@ namespace DungeonClearMath
     // lines at the call site: leaving it at the anchor's height describes a point
     // that exists nowhere — the anchor's floor over the hold point's x/y. That is
     // flat-leg-only reasoning, and the legs this is used on are not all flat (the
-    // Suppression Rooms ramp climbs 5yd over one 20yd leg). Same defect, same fix,
-    // as HealCloseFallbackPoint above.
+    // Suppression Rooms ramp climbs 5yd over one 20yd leg).
     //
     // Clamped to `toward` when it is nearer than `distFromAnchor`, and returns
     // `anchor` unchanged when the two are stacked within `bearingFloor` (no
@@ -1276,6 +1277,80 @@ namespace DungeonClearMath
         v.haltStaleMove  = deviation > best + slack;
         v.bestDeviation  = v.haltStaleMove ? deviation : best;
         return v;
+    }
+
+    // The rejoin rung's progress yardstick: plan-view deviation plus any height
+    // gap to the hop beyond the one-storey tolerance. Route deviation alone is 2D,
+    // so on a spiral staircase a re-entry that walks the bot DOWN the helix under
+    // its route point reads as converging — 3.2 -> 0.0yd while the tank sank 33yd
+    // into Karazhan's Servants' Quarters stairwell below the Maiden route
+    // (tr-20260927-101342-8). Counting the excess height makes that descent a
+    // growing gap, which DecideRejoinRefusal halts. Within the tolerance (a ramp,
+    // a stair flight) it is exactly the 2D deviation, as before.
+    inline float RejoinGap(float deviation2d, float dz, float levelTolerance)
+    {
+        float const excess = std::max(0.0f, std::fabs(dz) - levelTolerance);
+        return std::sqrt(deviation2d * deviation2d + excess * excess);
+    }
+
+    // Whether a stalled rejoin should rebuild the route from where the bot stands.
+    // A bot that fell a storey off its route (Karazhan's Opera balcony onto the
+    // audience floor, chasing a floor mob mid-fight, tr-20260927-190943-12) sits
+    // under a hop 14yd overhead: 2.3yd in plan view, so the chunked re-entry's
+    // distance gate never opens, and every MoveTo to the hop is refused because no
+    // route arrives on its floor. A route built from the bot's position reaches the
+    // objective by the level it is actually on. Once per spell without progress, so
+    // a re-path that lands the bot off-level again falls through to the strike ladder.
+    inline bool ShouldRepathOffLevel(float dz, float levelTolerance, bool alreadySpent)
+    {
+        return !alreadySpent && std::fabs(dz) > levelTolerance;
+    }
+
+    struct RejoinProgressVerdict
+    {
+        bool  progressed = false;  // the gap set a new best: re-entry is working
+        bool  idle       = false;  // no new best this tick: counts toward the ladder
+        float best       = 0.0f;   // baseline to carry into the next tick
+    };
+
+    // The rejoin rung's LIVENESS test: is the gap back to the route actually
+    // closing? It used to count ticks whose MoveTo was refused, but on its own
+    // re-issued point stock refuses as a duplicate for a flat MaxWaitForMove (5s)
+    // — while the first move walks the bot in, and after loot or a drift halt
+    // stopped it short. Both read as "issued nothing", so the ladder struck out
+    // in ~10s on a flat floor with the route 6yd away (tp-20260927-114025-1, all
+    // 10 "Stuck off the route" stalls). Progress is the question the ladder asks.
+    //
+    // `best` only moves on progress, so slow steady closing accumulates until it
+    // clears `eps`. FLT_MAX (a fresh episode) makes this tick the baseline and
+    // neither progress nor idle — an off-path rebuild that restarts the episode
+    // every few ticks cannot reset the ladder with a free "progress" tick.
+    inline RejoinProgressVerdict TrackRejoinProgress(float gap, float best, float eps)
+    {
+        RejoinProgressVerdict v;
+        if (best == std::numeric_limits<float>::max())
+        {
+            v.best = gap;
+            return v;
+        }
+        v.progressed = gap < best - eps;
+        v.idle       = !v.progressed;
+        v.best       = v.progressed ? gap : best;
+        return v;
+    }
+
+    // May a follower's combat regroup anchor on this combat holder? Only one it can
+    // actually fight: inside the engagement radius every other combat read already
+    // bounds by, and reachable on its level. A holder that tagged the party and was
+    // then stranded on another floor keeps the tank combat-flagged indefinitely
+    // (instanced creatures never leash); anchoring on it walked Karazhan's whole
+    // raid 140yd back from the Opera balcony to the stage corridor, eight times, for
+    // nine minutes (tr-20260927-103044-10). Nothing qualifying -> the regroup falls
+    // back to the tank.
+    inline bool IsRegroupAnchorCandidate(float dist, float engagementRadius,
+                                         bool levelReachable)
+    {
+        return dist <= engagementRadius && levelReachable;
     }
     // --- Room-clear straight pull ---------------------------------------------
     //

@@ -1000,7 +1000,8 @@ void DcTargeting::CollectCombatHolders(Unit* member, std::vector<Unit*>& out)
     collect(member->GetVictim());
 }
 
-Unit* DcTargeting::LeaderFightAnchor(Player* bot, Player* leader, Position& anchorPos)
+Unit* DcTargeting::LeaderFightAnchor(Player* bot, AiObjectContext* ctx, Player* leader,
+                                     Position& anchorPos)
 {
     if (!bot || !leader)
         return nullptr;
@@ -1022,11 +1023,16 @@ Unit* DcTargeting::LeaderFightAnchor(Player* bot, Player* leader, Position& anch
         if (!bot->IsValidAttackTarget(a))
             continue;
         float const d = bot->GetExactDist2d(a);
-        if (!target || d < bestDist)
-        {
-            target = a;
-            bestDist = d;
-        }
+        if (target && d >= bestDist)
+            continue;
+        // Cheapest last: only a candidate that would win the rank pays for the
+        // level probe (same-level answers without touching Detour).
+        if (!DungeonClearMath::IsRegroupAnchorCandidate(
+                bot->GetExactDist(a), DC_ENGAGEMENT_RADIUS,
+                DcTickMemoAccess::LevelReachable(bot, ctx, a)))
+            continue;
+        target = a;
+        bestDist = d;
     }
 
     anchorPos = target ? target->GetPosition() : leader->GetPosition();

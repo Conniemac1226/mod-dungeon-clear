@@ -52,8 +52,11 @@ protected:
     // validate. Shared by the healer LOS reposition (ring around the hurt target)
     // and the contribution-gated combat regroup (ring around the fight anchor), so
     // both park a bot in the same validated band by one implementation.
+    // `leashCenter`/`leashRadius` (optional): also reject any point farther than
+    // leashRadius (2D) from leashCenter — see HealLeashRegistry.
     bool FindStandoffPoint(Map* map, Position const& center, float ringRadius,
-                           float maxRadius, float& x, float& y, float& z);
+                           float maxRadius, float& x, float& y, float& z,
+                           Position const* leashCenter = nullptr, float leashRadius = 0.0f);
 
     // What one glide tick did, so the caller can layer its own stall/park
     // bookkeeping without the driver needing the context.

@@ -242,6 +242,12 @@ constexpr uint32 DC_NO_REZZER_HOLD_MAX_MS    = 60000;
 // where it will never lift and every second of holding is spent under fire.
 constexpr uint32 DC_REZ_BLOCKED_HOLD_MAX_MS = 20000;
 
+// How close an idle hostile has to stand to a corpse for the body to count as
+// unsafe to walk a rezzer to (DcRezDecision::Member::corpseUnsafe). 3D, so a pack
+// one floor below a corpse on the route does not count. Aggro reach for an elite
+// at party level is ~20yd, and the rezzer's walk ends at the body's side.
+constexpr float DC_REZ_CORPSE_HOSTILE_RADIUS = 20.0f;
+
 // Raid recovery budget scaling: extra out-of-combat clock granted per corpse
 // beyond the first (capped at twice the configured budget in the glue). Even
 // with parallel rezzers, a 15-corpse pile is raised in waves — each wave's

@@ -1491,6 +1491,36 @@ bool DcEngageGeometry::IsPointLevelReachable(Player* bot, float x, float y, floa
     return std::fabs(path.back().z - z) <= DC_Z_LEVEL_TOLERANCE;
 }
 
+bool DcEngageGeometry::PathedCloseOn(Player* bot, Position const& target, float stopShort,
+                                     Position& out)
+{
+    if (!bot)
+        return false;
+
+    PathGenerator gen(bot);
+    gen.CalculatePath(target.GetPositionX(), target.GetPositionY(), target.GetPositionZ(),
+                      /*forceDest*/ false);
+    if (gen.GetPathType() != PATHFIND_NORMAL)
+        return false;
+
+    Movement::PointsArray const& path = gen.GetPath();
+    if (path.size() < 2)
+        return false;
+
+    // PATHFIND_NORMAL is free for a Player, and an off-mesh end is clamped to the
+    // nearest poly — which across a wall or a floor is on OUR side of it. Only a
+    // route that actually ends at the target counts.
+    G3D::Vector3 const& end = path.back();
+    if (std::fabs(end.z - target.GetPositionZ()) > DC_Z_LEVEL_TOLERANCE ||
+        std::hypot(end.x - target.GetPositionX(), end.y - target.GetPositionY()) >
+            DC_Z_LEVEL_TOLERANCE)
+        return false;
+
+    G3D::Vector3 const p = DungeonClearMath::PointShortOfPathEnd(path, stopShort);
+    out = Position(p.x, p.y, p.z, target.GetOrientation());
+    return true;
+}
+
 bool DcEngageGeometry::IsEngageReachable(Player* bot, Unit* u, bool requireDirect)
 {
     if (!bot || !u)

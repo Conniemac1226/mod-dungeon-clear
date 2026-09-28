@@ -138,6 +138,24 @@ struct DcPullContext
                                                  // no-op, so only distance can tell
                                                  // us another generator has the
                                                  // bot. 0 = parked / no recall.
+    float       campHoldClosest = 0.0f;          // FOLLOWER-owned: the closest this
+                                                 // bot has EVER been to its slot on
+                                                 // the current recall. campHoldBest
+                                                 // re-bases outward on every loss so
+                                                 // the leg can be re-issued; this
+                                                 // never does, so a recall whose own
+                                                 // path keeps carrying the bot away
+                                                 // is visible (CampRecallRanAway).
+                                                 // 0 = parked / no recall.
+    bool        campHoldRunaway = false;         // FOLLOWER-owned: the recall ran
+                                                 // away and was stood down — hold
+                                                 // where we are, do not re-issue.
+    float       campHoldKeyX = 0.0f;             // FOLLOWER-owned: the camp the
+    float       campHoldKeyY = 0.0f;             // three campHold* fields above
+                                                 // were measured against. A camp
+                                                 // that moves is a fresh recall, and
+                                                 // all three reset — or the jump
+                                                 // itself reads as a runaway.
     bool        scriptedRecall = false;          // the scripted camp LEASH is
                                                  // currently walking the tank back
                                                  // (see DC_SCRIPTED_PULL_LEASH).

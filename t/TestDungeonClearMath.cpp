@@ -2576,7 +2576,7 @@ TEST(DungeonClearMathTest, NearestPointOnPolylineToleratesDegenerateLegs)
 
 // --- PointTowardFrom: the transit pack's hold point --------------------------
 //
-// Same defect as HealCloseFallbackPoint (see TestHealReposition.cpp): the hold
+// Same defect the heal-reposition fallback once had: the hold
 // point is walked back along the bearing from the route anchor, but z used to
 // stay at the ANCHOR's height — the anchor's floor over a point up to a leash
 // away. Flat legs hid it; the Suppression Rooms ramps do not.
@@ -2762,6 +2762,110 @@ TEST(DungeonClearMathTest, RejoinRefusalGivesTheFirstTickGrace)
         6.2f, std::numeric_limits<float>::max(), 3.0f);
     EXPECT_FALSE(v.haltStaleMove);
     EXPECT_FLOAT_EQ(v.bestDeviation, 6.2f);
+}
+
+TEST(DungeonClearMathTest, RejoinGapIsPlanViewWithinOneStorey)
+{
+    // A ramp or stair flight inside the level tolerance measures exactly as before.
+    EXPECT_FLOAT_EQ(DungeonClearMath::RejoinGap(6.2f, 0.0f, 5.0f), 6.2f);
+    EXPECT_FLOAT_EQ(DungeonClearMath::RejoinGap(6.2f, -4.9f, 5.0f), 6.2f);
+    EXPECT_FLOAT_EQ(DungeonClearMath::RejoinGap(6.2f, 5.0f, 5.0f), 6.2f);
+}
+
+// tr-20260927-190943-12: tank on the Opera audience floor, hop on the balcony
+// 14.2yd overhead, 2.3yd in plan view.
+TEST(DungeonClearMathTest, RepathOffLevelFiresUnderTheBalcony)
+{
+    EXPECT_TRUE(DungeonClearMath::ShouldRepathOffLevel(-14.2f, 5.0f, false));
+    EXPECT_TRUE(DungeonClearMath::ShouldRepathOffLevel(14.2f, 5.0f, false));
+}
+
+TEST(DungeonClearMathTest, RepathOffLevelIgnoresARampOrStairFlight)
+{
+    EXPECT_FALSE(DungeonClearMath::ShouldRepathOffLevel(4.9f, 5.0f, false));
+    EXPECT_FALSE(DungeonClearMath::ShouldRepathOffLevel(-5.0f, 5.0f, false));
+}
+
+TEST(DungeonClearMathTest, RepathOffLevelIsSpentOnce)
+{
+    EXPECT_FALSE(DungeonClearMath::ShouldRepathOffLevel(-14.2f, 5.0f, true));
+}
+
+TEST(DungeonClearMathTest, RejoinGapGrowsWhileSinkingUnderTheRoutePoint)
+{
+    // tr-20260927-101342-8: 2D deviation 3.2 -> 0.0yd while the tank walked the
+    // Servants' Quarters helix from 12.9 to 33.3yd under the route point. The gap
+    // must read that as drifting away, so DecideRejoinRefusal halts the move.
+    float const before = DungeonClearMath::RejoinGap(3.2f, -12.9f, 5.0f);
+    float const after  = DungeonClearMath::RejoinGap(0.0f, -33.3f, 5.0f);
+    EXPECT_NEAR(before, std::hypot(3.2f, 7.9f), 1e-4f);
+    EXPECT_FLOAT_EQ(after, 28.3f);
+    EXPECT_TRUE(DungeonClearMath::DecideRejoinRefusal(after, before, 3.0f).haltStaleMove);
+    // The same numbers read in plan view alone looked like convergence.
+    EXPECT_FALSE(DungeonClearMath::DecideRejoinRefusal(0.0f, 3.2f, 3.0f).haltStaleMove);
+}
+
+namespace
+{
+    // Replays gaps through TrackRejoinProgress from a fresh episode; returns the
+    // ticks counted idle, i.e. what the refusal ladder would have accumulated.
+    uint32_t CountRejoinIdle(std::vector<float> const& gaps, float eps = 0.25f)
+    {
+        float best = std::numeric_limits<float>::max();
+        uint32_t idle = 0;
+        for (float g : gaps)
+        {
+            DungeonClearMath::RejoinProgressVerdict const v =
+                DungeonClearMath::TrackRejoinProgress(g, best, eps);
+            best = v.best;
+            if (v.progressed)
+                idle = 0;
+            else if (v.idle)
+                ++idle;
+        }
+        return idle;
+    }
+}
+
+TEST(DungeonClearMathTest, RejoinProgressNeverCountsAConvergingBot)
+{
+    // tr-20260927-132444-20: one rejoin issued, then 8 duplicate refusals while
+    // the tank closed 15.2 -> 9.6yd — the old ladder struck at 9.6. Closing is
+    // progress on every tick, however many re-issues stock refused.
+    EXPECT_EQ(CountRejoinIdle({15.2f, 14.5f, 13.8f, 13.1f, 12.4f, 11.7f, 11.0f, 10.3f, 9.6f}), 0u);
+}
+
+TEST(DungeonClearMathTest, RejoinProgressCountsAFrozenBotEvenIfItIssues)
+{
+    // tr-20260901-223655-10 (HoL): a constant 267.2yd. Whether the ticks were
+    // refused or issued a move that bought nothing, every one after the baseline
+    // must reach the ladder.
+    EXPECT_EQ(CountRejoinIdle(std::vector<float>(20, 267.2f)), 19u);
+}
+
+TEST(DungeonClearMathTest, RejoinProgressFirstTickIsOnlyTheBaseline)
+{
+    // An off-path rebuild restarts the episode every few ticks; its first tick
+    // must not read as progress (free ladder reset) nor as idle.
+    DungeonClearMath::RejoinProgressVerdict const v = DungeonClearMath::TrackRejoinProgress(
+        11.3f, std::numeric_limits<float>::max(), 0.25f);
+    EXPECT_FALSE(v.progressed);
+    EXPECT_FALSE(v.idle);
+    EXPECT_FLOAT_EQ(v.best, 11.3f);
+}
+
+TEST(DungeonClearMathTest, RejoinProgressSlowClosingAccumulates)
+{
+    // 0.1yd a tick is under eps, but best holds still until the gap clears it.
+    EXPECT_EQ(CountRejoinIdle({10.0f, 9.9f, 9.8f}), 2u);
+    EXPECT_EQ(CountRejoinIdle({10.0f, 9.9f, 9.8f, 9.7f}), 0u);
+}
+
+TEST(DungeonClearMathTest, RejoinProgressCountsAStopShortOfTheLine)
+{
+    // tr-20260927-114033-3: closed to 5.8yd, then loot stopped the tank. The
+    // standing ticks count (the rung then re-issues with the lock released).
+    EXPECT_EQ(CountRejoinIdle({26.9f, 20.0f, 12.0f, 5.8f, 5.8f, 5.8f, 5.8f}), 3u);
 }
 
 TEST(DungeonClearMathTest, RejoinRefusalRidesAWorkingReEntry)
@@ -3093,4 +3197,19 @@ TEST(DungeonClearStraightPullTest, OpenRoomTiesBreakTowardTheTank)
     ASSERT_EQ(lanes.size(), 24u);
     EXPECT_NEAR(lanes.front().standX, 0.0f, 1e-3f);
     EXPECT_NEAR(lanes.front().standY, -20.0f, 1e-3f);
+}
+
+TEST(DungeonClearMathTest, RegroupAnchorRejectsTheStrandedFarHolder)
+{
+    // tr-20260927-103044-10: a Ghostly Philanthropist stranded at the Opera stage
+    // corridor held the raid in combat from 141-145yd. It must not anchor the regroup.
+    EXPECT_FALSE(DungeonClearMath::IsRegroupAnchorCandidate(141.8f, 100.0f, true));
+    // Inside the radius but on a floor the bot cannot path to is no anchor either.
+    EXPECT_FALSE(DungeonClearMath::IsRegroupAnchorCandidate(40.0f, 100.0f, false));
+}
+
+TEST(DungeonClearMathTest, RegroupAnchorKeepsAFightablePack)
+{
+    EXPECT_TRUE(DungeonClearMath::IsRegroupAnchorCandidate(25.0f, 100.0f, true));
+    EXPECT_TRUE(DungeonClearMath::IsRegroupAnchorCandidate(100.0f, 100.0f, true));
 }

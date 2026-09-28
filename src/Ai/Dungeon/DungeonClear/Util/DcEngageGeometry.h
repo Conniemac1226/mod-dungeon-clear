@@ -616,6 +616,15 @@ public:
     // per-candidate ranking.
     static bool IsPointLevelReachable(Player* bot, float x, float y, float z);
 
+    // Where to walk to close on `target` until it is in sight: the point
+    // `stopShort` yards before it ALONG the real mmap route (see
+    // DungeonClearMath::PointShortOfPathEnd). False — and the caller holds — when
+    // no complete route arrives on the target's floor, which is exactly the case
+    // where the old straight-line point walked the bot through a wall or a floor.
+    // One Detour query.
+    static bool PathedCloseOn(Player* bot, Position const& target, float stopShort,
+                              Position& out);
+
     // STRICT variant of IsLevelReachable with NO same-level fast path — always
     // runs the PathGenerator probe. Requires a complete PATHFIND_NORMAL route
     // that ends on the candidate's level; for callers that pick targets from a

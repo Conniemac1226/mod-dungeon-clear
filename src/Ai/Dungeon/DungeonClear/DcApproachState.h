@@ -145,7 +145,14 @@ struct DcApproachState
     // healthy case into a stop/re-issue loop) from one that is not (halt it).
     float rejoinBestDev = std::numeric_limits<float>::max();
 
-    // Consecutive off-line rejoin ticks that issued NO movement. rejoinBestDev
+    // Best rejoin gap that counted as PROGRESS this off-line episode (FLT_MAX =
+    // none yet). Separate from rejoinBestDev, which is rebaselined on every issued
+    // move for the drift test; this one moves only when the gap truly closes and
+    // drives rejoinRefusals (DungeonClearMath::TrackRejoinProgress).
+    float rejoinProgressBest = std::numeric_limits<float>::max();
+
+    // Consecutive off-line rejoin ticks that made NO progress (issued nothing, or
+    // issued a move that bought no ground). rejoinBestDev
     // above only measures DRIFT, and drift is the wrong question when the answer
     // is zero: a bot whose DcMoveTo is refused every tick never moves at all, so
     // its deviation is CONSTANT, `deviation > best + slack` is false forever, and
@@ -155,6 +162,12 @@ struct DcApproachState
     // only on the 600s no-progress timer. Counting the refusals themselves is the
     // liveness signal the deviation cannot carry.
     uint32 rejoinRefusals = 0;
+
+    // The off-level re-path (DungeonClearMath::ShouldRepathOffLevel) has been spent.
+    // Cleared only by real progress toward the objective or a boss change, NOT on
+    // the off-line episode boundary: the re-path itself ends the episode (fresh
+    // cursor, deviation ~0), so an episode-scoped latch would re-path forever.
+    bool offLevelRepathSpent = false;
 
     // Deadline (getMSTime) while a LONG re-entry glide owns the bot; 0 = none.
     // A deliberate re-entry from far off the route reads, to every rung that
@@ -321,6 +334,7 @@ struct DcApproachState
         resnapAttempts  = 0;
         nudgeAttempts   = 0;   // a nudge that bought ground costs nothing
         rejoinRefusals  = 0;
+        offLevelRepathSpent = false;
         return true;
     }
 
@@ -353,7 +367,9 @@ struct DcApproachState
         skirtOrbitDir       = 0;
         offLineLatched      = false;
         rejoinBestDev       = std::numeric_limits<float>::max();
+        rejoinProgressBest  = std::numeric_limits<float>::max();
         rejoinRefusals      = 0;
+        offLevelRepathSpent = false;
         rejoinGlideUntilMs  = 0;
         skirtOrbitTarget.Clear();
         avoidOrbitDir       = 0;

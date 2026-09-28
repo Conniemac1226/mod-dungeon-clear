@@ -304,3 +304,35 @@ TEST(KarazhanRouteProbe, DetourTakesTheServantsQuartersToMoroes)
     EXPECT_TRUE(viaServants);
     EXPECT_LT(direct.routeLength2d, rowLen);
 }
+
+// tr-20260927-190943-12: the tank dropped off the Opera balcony onto the audience
+// floor mid-fight, under a route cursor 14yd overhead. A fresh route built from
+// the floor must still reach the urn (it climbs back via the balcony stair);
+// that is what the off-level re-path in the rejoin ladder relies on.
+TEST(KarazhanRouteProbe, OperaFloorRepathsToTheUrn)
+{
+    std::shared_ptr<dtNavMesh> mesh = LoadOrSkip();
+    if (!mesh)
+        GTEST_SKIP() << "set DC_PROBE_MMAPS to a dir containing mmaps/ for map 532";
+
+    float const floors[2][3] = {
+        { -10935.6f, -1835.7f, 95.3f },   // where the fight left the tank
+        { -10925.3f, -1858.7f, 96.1f },   // where it stood at teardown
+    };
+    float const urn[3] = { URN_X, URN_Y, URN_Z };
+    for (auto const& f : floors)
+    {
+        DcNavHarness::RouteResult const r = Leg(mesh.get(), f, urn);
+        float topZ = f[2];
+        for (G3D::Vector3 const& p : r.points)
+            topZ = std::max(topZ, p.z);
+        std::printf("  [floor->urn] from (%.1f,%.1f,%.1f): reachable=%d complete=%d %.1fyd, %u pts, "
+                    "max z %.1f, end (%.1f,%.1f,%.1f) %s\n",
+                    f[0], f[1], f[2], r.reachable, r.corridorComplete, r.routeLength2d,
+                    r.pointCount, topZ,
+                    r.points.empty() ? 0.0f : r.points.back().x,
+                    r.points.empty() ? 0.0f : r.points.back().y,
+                    r.points.empty() ? 0.0f : r.points.back().z, r.failureReason.c_str());
+        EXPECT_TRUE(r.reachable && r.corridorComplete);
+    }
+}
