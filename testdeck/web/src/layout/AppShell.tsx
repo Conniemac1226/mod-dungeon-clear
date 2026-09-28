@@ -165,7 +165,7 @@ export default function AppShell() {
         </aside>
 
         {/* Main column */}
-        <div className="flex min-h-dvh flex-1 flex-col">
+        <div className="flex min-h-dvh min-w-0 flex-1 flex-col">
           {/* Top bar (mobile) */}
           <header className="flex items-center justify-between border-b border-ink-800/70 bg-ink-900/40 px-4 py-3 lg:hidden">
             <div className="flex items-center gap-2 font-semibold">

@@ -782,6 +782,11 @@ function RunningView({
   const [dungeonFilter, setDungeonFilter] = useState("");
   const [clusterFilter, setClusterFilter] = useState("");
   const [editing, setEditing] = useState(false);
+  const { data: catalogue } = usePoll(() => api.get<Catalogue>("/api/testdungeons"), 60000);
+  const names = useMemo(
+    () => new Map((catalogue?.dungeons ?? []).map((d) => [d.token, d.name])),
+    [catalogue],
+  );
 
   /* This browser has now seen every failure so far. */
   useEffect(() => {
@@ -925,6 +930,7 @@ function RunningView({
       <div className="grid gap-4 xl:grid-cols-[3fr_2fr]">
         <PerDungeonTable
           rows={stats?.perDungeon ?? []}
+          names={names}
           active={dungeonFilter}
           onPick={(k) => {
             setDungeonFilter(k === dungeonFilter ? "" : k);
@@ -972,18 +978,18 @@ function Stat({ label, value, tone = "" }: { label: string; value: string; tone?
 
 function LiveStrip({ runs }: { runs: SoakView["liveRuns"] }) {
   return (
-    <div className="mb-4 flex gap-2 overflow-x-auto pb-1">
+    <div className="mb-4 grid grid-cols-[repeat(auto-fill,minmax(13rem,1fr))] gap-2">
       {runs.map((r) => (
         <Link
           key={r.runId}
           to="/live"
-          className="min-w-[13rem] shrink-0 rounded-xl border border-ink-800 bg-ink-900/60 px-3 py-2 text-xs hover:border-iris-500/40"
+          className="min-w-0 rounded-xl border border-ink-800 bg-ink-900/60 px-3 py-2 text-xs hover:border-iris-500/40"
         >
           <div className="flex items-center gap-1.5">
             <span className={`h-2 w-2 rounded-full ${r.wiped ? "bg-red-400" : r.inCombat ? "bg-amber-400" : "bg-emerald-400"}`} />
             <span className="truncate font-medium text-ink-100">{r.dungeonName || r.dungeon}</span>
             {r.heroic && <span className="text-fuchsia-300">H</span>}
-            <span className="ml-auto text-ink-500">{fmtDuration(r.elapsedS)}</span>
+            <span className="ml-auto shrink-0 whitespace-nowrap text-ink-500">{fmtDuration(r.elapsedS)}</span>
           </div>
           <div className="mt-1 truncate text-ink-400">
             {r.bossesKilled ?? 0}/{r.bossesTotal ?? "?"} · {r.stall || r.bossName || r.stage || r.state}
@@ -1010,75 +1016,208 @@ function DotStrip({ results }: { results: string[] }) {
   );
 }
 
+type PerView = "tiles" | "table";
+const PER_VIEW_KEY = "testdeck.soak.perView";
+
+/* Worst first: dungeons that have run sort by success rate, then by failure
+   count; dungeons still waiting for their first run go last. */
+function sortPerDungeon(rows: SoakPerDungeon[], name: (r: SoakPerDungeon) => string) {
+  return [...rows].sort(
+    (a, b) =>
+      (a.runs ? 0 : 1) - (b.runs ? 0 : 1) ||
+      (a.runs && b.runs ? a.ok / a.runs - b.ok / b.runs : 0) ||
+      b.fail - a.fail ||
+      b.runs - a.runs ||
+      name(a).localeCompare(name(b)),
+  );
+}
+
 function PerDungeonTable({
   rows,
+  names,
   active,
   onPick,
 }: {
   rows: SoakPerDungeon[];
+  /* The stats only carry a name once a dungeon has run; the catalogue fills
+     in the rest so waiting tiles don't show bare tokens. */
+  names: Map<string, string>;
   active: string;
   onPick: (key: string) => void;
 }) {
+  const [view, setViewState] = useState<PerView>(() => {
+    try {
+      return localStorage.getItem(PER_VIEW_KEY) === "table" ? "table" : "tiles";
+    } catch {
+      return "tiles";
+    }
+  });
+  function setView(v: PerView) {
+    setViewState(v);
+    try {
+      localStorage.setItem(PER_VIEW_KEY, v);
+    } catch {
+      /* per-viewer convenience only */
+    }
+  }
+  const nameOf = useCallback(
+    (r: SoakPerDungeon) => r.dungeonName || names.get(r.dungeon) || r.dungeon,
+    [names],
+  );
+  const sorted = useMemo(() => sortPerDungeon(rows, nameOf), [rows, nameOf]);
+  const ran = rows.filter((r) => r.runs).length;
+  const failing = rows.filter((r) => r.fail).length;
+
   return (
     <Card className="min-w-0 !p-0">
       <div className="px-5 pt-4">
-        <CardTitle>Per dungeon</CardTitle>
+        <CardTitle
+          right={
+            <div className="flex items-center gap-3">
+              {rows.length > 0 && (
+                <span className="text-xs text-ink-500">
+                  {ran}/{rows.length} run
+                  {failing > 0 && <span className="text-red-300/90"> · {failing} failing</span>}
+                </span>
+              )}
+              <div className="flex gap-0.5 rounded-lg border border-ink-800 bg-ink-950/70 p-0.5">
+                {(["tiles", "table"] as PerView[]).map((v) => (
+                  <button
+                    key={v}
+                    type="button"
+                    onClick={() => setView(v)}
+                    className={`rounded-md px-2 py-0.5 text-xs transition ${
+                      view === v ? "bg-iris-500/20 text-iris-100" : "text-ink-500 hover:text-ink-200"
+                    }`}
+                  >
+                    {v}
+                  </button>
+                ))}
+              </div>
+            </div>
+          }
+        >
+          Per dungeon
+        </CardTitle>
       </div>
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead className="text-left text-[10px] uppercase tracking-wider text-ink-600">
-            <tr>
-              <th className="px-5 py-1.5 font-medium">dungeon</th>
-              <th className="px-2 font-medium">runs</th>
-              <th className="px-2 font-medium">ok</th>
-              <th className="px-2 font-medium">fail</th>
-              <th className="px-2 font-medium">rate</th>
-              <th className="px-2 font-medium">median</th>
-              <th className="px-2 pr-5 font-medium">last 20</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => {
-              const rate = pct(r.ok, r.runs);
-              return (
-                <tr
-                  key={r.key}
-                  onClick={() => onPick(r.key)}
-                  className={`cursor-pointer border-t border-ink-800/60 ${active === r.key ? "bg-iris-500/10" : "hover:bg-ink-800/30"}`}
-                >
-                  <td className="px-5 py-1.5">
-                    <span className="text-ink-100">{r.dungeonName || r.dungeon}</span>
-                    {r.heroic && <span className="ml-1.5 text-xs text-fuchsia-300">H</span>}
-                  </td>
-                  <td className="px-2 tabular-nums text-ink-300">{r.runs}</td>
-                  <td className="px-2 tabular-nums text-emerald-300">{r.ok}</td>
-                  <td className={`px-2 tabular-nums ${r.fail ? "text-red-300" : "text-ink-600"}`}>{r.fail}</td>
-                  <td className="px-2">
-                    {r.runs ? (
-                      <div className="flex items-center gap-1.5">
-                        <div className="h-1.5 w-14 overflow-hidden rounded-full bg-red-500/40">
-                          <div className="h-full bg-emerald-400" style={{ width: `${rate}%` }} />
+      {!rows.length ? (
+        <p className="px-5 pb-4 text-sm text-ink-500">No runs yet.</p>
+      ) : view === "tiles" ? (
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(7.5rem,1fr))] gap-1 px-5 pb-5">
+          {sorted.map((r) => (
+            <PerDungeonTile key={r.key} r={r} name={nameOf(r)} active={active === r.key} onPick={onPick} />
+          ))}
+        </div>
+      ) : (
+        <div className="max-h-[28rem] overflow-auto">
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 bg-ink-900 text-left text-[10px] uppercase tracking-wider text-ink-600">
+              <tr>
+                <th className="px-5 py-1.5 font-medium">dungeon</th>
+                <th className="px-2 font-medium">runs</th>
+                <th className="px-2 font-medium">ok</th>
+                <th className="px-2 font-medium">fail</th>
+                <th className="px-2 font-medium">rate</th>
+                <th className="px-2 font-medium">median</th>
+                <th className="px-2 pr-5 font-medium">last 20</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((r) => {
+                const rate = pct(r.ok, r.runs);
+                return (
+                  <tr
+                    key={r.key}
+                    onClick={() => onPick(r.key)}
+                    className={`cursor-pointer border-t border-ink-800/60 ${active === r.key ? "bg-iris-500/10" : "hover:bg-ink-800/30"}`}
+                  >
+                    <td className="px-5 py-1.5">
+                      <span className="text-ink-100">{nameOf(r)}</span>
+                      {r.heroic && <span className="ml-1.5 text-xs text-fuchsia-300">H</span>}
+                    </td>
+                    <td className="px-2 tabular-nums text-ink-300">{r.runs}</td>
+                    <td className="px-2 tabular-nums text-emerald-300">{r.ok}</td>
+                    <td className={`px-2 tabular-nums ${r.fail ? "text-red-300" : "text-ink-600"}`}>{r.fail}</td>
+                    <td className="px-2">
+                      {r.runs ? (
+                        <div className="flex items-center gap-1.5">
+                          <div className="h-1.5 w-14 overflow-hidden rounded-full bg-red-500/40">
+                            <div className="h-full bg-emerald-400" style={{ width: `${rate}%` }} />
+                          </div>
+                          <span className="text-xs tabular-nums text-ink-400">{rate}%</span>
                         </div>
-                        <span className="text-xs tabular-nums text-ink-400">{rate}%</span>
-                      </div>
-                    ) : (
-                      <span className="text-xs text-ink-600">–</span>
-                    )}
-                  </td>
-                  <td className="px-2 text-xs tabular-nums text-ink-400">
-                    {r.medianS ? fmtDuration(r.medianS) : "–"}
-                  </td>
-                  <td className="px-2 pr-5"><DotStrip results={r.last} /></td>
-                </tr>
-              );
-            })}
-            {!rows.length && (
-              <tr><td colSpan={7} className="px-5 py-4 text-sm text-ink-500">No runs yet.</td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+                      ) : (
+                        <span className="text-xs text-ink-600">–</span>
+                      )}
+                    </td>
+                    <td className="px-2 text-xs tabular-nums text-ink-400">
+                      {r.medianS ? fmtDuration(r.medianS) : "–"}
+                    </td>
+                    <td className="px-2 pr-5"><DotStrip results={r.last} /></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </Card>
+  );
+}
+
+/* Tiles are narrow: "Scarlet Monastery: Library" -> "SM: Library",
+   "Ahn'kahet: The Old Kingdom" -> "Ahn'kahet", "The Nexus" -> "Nexus". */
+function tileLabel(name: string) {
+  const [head, wing] = name.split(": ");
+  if (wing) {
+    const words = head.split(" ");
+    return words.length > 1 ? `${words.map((w) => w[0]).join("")}: ${wing}` : head;
+  }
+  return name.replace(/^The /, "");
+}
+
+function PerDungeonTile({
+  r,
+  name,
+  active,
+  onPick,
+}: {
+  r: SoakPerDungeon;
+  name: string;
+  active: boolean;
+  onPick: (key: string) => void;
+}) {
+  const rate = pct(r.ok, r.runs);
+  const tone = !r.runs
+    ? "border-ink-800/70 bg-ink-950/30 text-ink-500"
+    : !r.fail
+      ? "border-emerald-500/25 bg-emerald-500/[0.07] text-ink-100"
+      : rate >= 50
+        ? "border-amber-500/30 bg-amber-500/[0.08] text-ink-100"
+        : "border-red-500/35 bg-red-500/10 text-ink-100";
+  const tip = [
+    `${name}${r.heroic ? " (heroic)" : ""}`,
+    r.runs ? `${r.ok}/${r.runs} ok (${rate}%)` : "not run yet",
+    r.medianS ? `median ${fmtDuration(r.medianS)}` : "",
+    r.last.length ? `last: ${r.last.join(" ")}` : "",
+  ].filter(Boolean).join("\n");
+  return (
+    <button
+      type="button"
+      onClick={() => onPick(r.key)}
+      title={tip}
+      className={`flex min-w-0 items-center gap-1 rounded-md border px-2 py-1 text-left text-xs transition hover:border-iris-500/50 ${tone} ${
+        active ? "ring-1 ring-iris-400" : ""
+      }`}
+    >
+      <span className="min-w-0 flex-1 truncate">{tileLabel(name)}</span>
+      {r.heroic && <span className="shrink-0 text-fuchsia-300">H</span>}
+      {r.runs > 0 && (
+        <span className={`shrink-0 tabular-nums ${r.fail ? "text-red-300" : "text-emerald-300"}`}>
+          {r.ok}/{r.runs}
+        </span>
+      )}
+    </button>
   );
 }
 
