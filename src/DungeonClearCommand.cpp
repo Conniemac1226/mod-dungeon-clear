@@ -307,6 +307,9 @@ public:
             { "start",  HandleTestPlanStart,  SEC_GAMEMASTER, Console::Yes },
             { "status", HandleTestPlanStatus, SEC_GAMEMASTER, Console::Yes },
             { "stop",   HandleTestPlanStop,   SEC_GAMEMASTER, Console::Yes },
+            { "edit",   HandleTestPlanEdit,   SEC_GAMEMASTER, Console::Yes },
+            { "pause",  HandleTestPlanPause,  SEC_GAMEMASTER, Console::Yes },
+            { "resume", HandleTestPlanResume, SEC_GAMEMASTER, Console::Yes },
         };
         static ChatCommandTable dcTestTable =
         {
@@ -888,6 +891,49 @@ public:
 
         std::string msg;
         DcTestPlanManager::Instance().Stop(std::string(selector), &msg);
+        handler->SendSysMessage(msg);
+        return true;
+    }
+
+    // `.dc test plan edit <planId> [pool=…] [concurrent=N]` — retune a live
+    // plan without restarting it (live runs are never aborted).
+    static bool HandleTestPlanEdit(ChatHandler* handler, Tail args)
+    {
+        if (DcDisabledNotice(handler))
+            return true;
+
+        DcTestPlan::EditParse const parsed = DcTestPlan::ParseEditArgs(std::string(args));
+        if (!parsed.ok)
+        {
+            handler->SendSysMessage(parsed.err);
+            return true;
+        }
+        std::string msg;
+        DcTestPlanManager::Instance().Edit(parsed.edit, &msg);
+        handler->SendSysMessage(msg);
+        return true;
+    }
+
+    // `.dc test plan pause|resume [planId|all]` — stop / restart launching;
+    // runs already in flight play out.
+    static bool HandleTestPlanPause(ChatHandler* handler, Tail selector)
+    {
+        if (DcDisabledNotice(handler))
+            return true;
+
+        std::string msg;
+        DcTestPlanManager::Instance().SetPaused(std::string(selector), true, &msg);
+        handler->SendSysMessage(msg);
+        return true;
+    }
+
+    static bool HandleTestPlanResume(ChatHandler* handler, Tail selector)
+    {
+        if (DcDisabledNotice(handler))
+            return true;
+
+        std::string msg;
+        DcTestPlanManager::Instance().SetPaused(std::string(selector), false, &msg);
         handler->SendSysMessage(msg);
         return true;
     }

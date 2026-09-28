@@ -178,6 +178,11 @@ namespace DcTestDungeonRegistry
         return cap == 0 || size <= cap;
     }
 
+    // Size a raid row launches at when nobody asked for one (the launch form's
+    // defaultSize, and every raid entry of a `pool=` plan) — 10 for iteration
+    // speed; RaidSizeMax still caps it by the map.
+    inline constexpr std::uint32_t kRaidDefaultSize = 10;
+
     // The launch form's raid-size presets (10/25) that fit `cap`, and the
     // form's upper bound: min(kMaxPartySize, cap) — kept pure so the sidecar
     // shape is testable without DBC stores.

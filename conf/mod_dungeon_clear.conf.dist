@@ -1685,6 +1685,34 @@ DungeonClear.TestRun.Plan.BackoffMs = 5000
 DungeonClear.TestRun.Plan.DriverWaitMs = 120000
 
 #
+#    DungeonClear.TestRun.Plan.CheckpointMin
+#        An endless plan (`.dc test plan start pool=... total=0`, the Test
+#        Deck's Continuous mode) only writes its summary when stopped, so it
+#        also appends a checkpoint line ("checkpoint": true) to
+#        dc_testplans.jsonl every this many minutes. A worldserver crash then
+#        loses at most one interval of the plan's aggregate stats.
+#        0 = no checkpoints.
+#
+#        Default: 15
+#
+
+DungeonClear.TestRun.Plan.CheckpointMin = 15
+
+#
+#    DungeonClear.TestRun.Plan.ResetGuardMin
+#        The daily global instance reset (Instance.ResetTimeHour, UTC) repops
+#        every heroic and raid party mid-run. Within this many minutes before
+#        it, a pool plan stops launching its heroic and raid entries (normal
+#        dungeons keep running); with nothing else in the pool the plan holds
+#        until two minutes after the reset. Single-dungeon plans are not
+#        guarded. 0 = no guard.
+#
+#        Default: 45
+#
+
+DungeonClear.TestRun.Plan.ResetGuardMin = 45
+
+#
 #    DungeonClear.TestRun.DriverCharacter
 #        Character name the harness logs in headlessly as the issuing "GM"
 #        when `.dc test ...` comes from the console or the dashboard (no

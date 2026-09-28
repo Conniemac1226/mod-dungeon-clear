@@ -349,7 +349,9 @@ namespace DcTestDungeonRegistry
           << DcSettings::GetUInt(ObjectGuid::Empty, "TestRun.MaxPlans")
           << ",\"planMaxTotal\":"
           << DcSettings::GetUInt(ObjectGuid::Empty, "TestRun.Plan.MaxTotal")
-          << "}";
+          // Feature flag: this server takes `.dc test plan start pool=…`,
+          // edit, pause and resume (the Test Deck's Continuous page).
+          << ",\"planPool\":true}";
 
         // What a run gets when it asks for nothing. Read once at startup like
         // the rest of this file, so it is a label for the form's "server
@@ -400,7 +402,7 @@ namespace DcTestDungeonRegistry
                     s << (firstPreset ? "" : ",") << preset;
                     firstPreset = false;
                 }
-                s << "],\"defaultSize\":10";
+                s << "],\"defaultSize\":" << std::min(kRaidDefaultSize, RaidSizeMax(cap));
             }
             s << ",\"gear\":";
             appendLadder(s, row.mapId, row.recommendedLevel);

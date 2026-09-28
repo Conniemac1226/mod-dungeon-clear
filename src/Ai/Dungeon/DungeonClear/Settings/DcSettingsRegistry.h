@@ -817,6 +817,11 @@ inline constexpr DcSettingDef kDcSettings[] =
     { "TestRun.Plan.MaxTotal",   DcType::UInt,      0,  0, 100000, false },
     { "TestRun.Plan.BackoffMs",  DcType::UInt,   5000,  0, 600000, false },
     { "TestRun.Plan.DriverWaitMs", DcType::UInt, 120000, 0, 600000, false },
+    // Endless (pool=, total=0) plans: minutes between checkpoint summary lines
+    // (0 = none), and how long before the global instance reset heroic / raid
+    // pool entries stop launching (0 = no guard).
+    { "TestRun.Plan.CheckpointMin", DcType::UInt,  15,  0,   1440, false },
+    { "TestRun.Plan.ResetGuardMin", DcType::UInt,  45,  0,    720, false },
 
     // RDF instant queue fill (DungeonClear.DungeonQueueFill.*). Server policy,
     // not a per-run tunable: a player cannot ask for it from the addon, so
