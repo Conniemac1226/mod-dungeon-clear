@@ -389,7 +389,15 @@ class SoakSupervisor:
         self._evidence_task = None
         self._scanned_active = False
         self.nice = True             # tests turn this off
-        self.lock = asyncio.Lock()
+        self._lock = None
+
+    @property
+    def lock(self):
+        # Built on first use, inside the running loop: on Python <= 3.9 an
+        # asyncio.Lock binds to get_event_loop() at construction.
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
 
     # -- lookup -------------------------------------------------------------
 
