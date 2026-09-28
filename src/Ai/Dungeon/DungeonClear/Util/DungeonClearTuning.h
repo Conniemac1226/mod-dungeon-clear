@@ -58,6 +58,18 @@ constexpr float DC_ENGAGE_RANGE = 22.0f;
 // improves the straight-line gap several times a second) never reaches it.
 constexpr uint32 DC_LONGROUTE_DEFER_LIMIT = 20;
 
+// How long Advance keeps its hands off the tank after engage-trash last drove a
+// walk-in (DungeonClearMath::ShouldYieldToEngageWalk). Several AI ticks (~150ms
+// apart) so an every-other-tick trigger cannot hand the move back, short enough
+// that a genuine stand-down returns the tick to Advance almost at once.
+constexpr uint32 DC_ENGAGE_WALK_YIELD_MS = 1000;
+
+// How much closer the fresh blocking-trash pick must be than a quiet engage-trash
+// sticky before the sticky is dropped for it (DungeonClearMath::ShouldDropTrashSticky).
+// Wide enough that two roughly equidistant corridor mobs keep the sticky and never
+// flip-flop; a sticky left ~90yd behind by an earlier scan is released.
+constexpr float DC_TRASH_STICKY_RETARGET_MARGIN = 15.0f;
+
 // Extra standoff added OUTSIDE a room-aggro boss's skirt sphere when computing
 // its (uncapped) boss-engage range — see DcEngageGeometry::BossEngageRange. The
 // engage hand-off for a room-aggro boss must trip while the tank is still clear

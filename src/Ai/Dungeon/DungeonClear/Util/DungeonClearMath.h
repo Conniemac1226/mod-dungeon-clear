@@ -355,6 +355,35 @@ namespace DungeonClearMath
     // the trigger; this carries only the decision so it is unit-testable.
     bool ShouldStandDownForPull(bool packIsPullsOwn, bool pullPhaseIdle);
 
+    // Advance's yield to a live engage-trash walk-in (pure). Engage-trash (rel 25)
+    // and Advance (rel 15) share the tank's movement: when the blocking-trash
+    // trigger only holds on alternate ticks, each tick the winner replaces the
+    // other's move — engage's DcMoveTo cancels the escort glide, Advance reads the
+    // resulting POINT generator as "no glide running" and re-issues its spline —
+    // and every replacement starts with a stop, so the tank stands still
+    // (tr-20260924-081931-3, Karazhan Opera balcony stair). Returns true while a
+    // walk-in engage-trash stamped at `stampMs` is at most `holdMs` old, its
+    // target is still alive and the bot is still moving on it. Bounded both
+    // ways: engage going quiet for `holdMs`, or the walk no longer moving (a
+    // real wedge for Advance's stuck ladder), hands the tick back.
+    bool ShouldYieldToEngageWalk(bool walkStamped, bool targetAlive, bool botMoving,
+                                 std::uint32_t stampMs, std::uint32_t now,
+                                 std::uint32_t holdMs);
+
+    // Engage-trash sticky staleness (pure). The sticky pins a walk-in target so the
+    // pick does not bounce between two equidistant corridor mobs, and it never
+    // releases on distance. But the trigger fires on its OWN fresh pick: once the
+    // sticky is a pack an earlier scan found far down the route, the trigger keeps
+    // firing for the mob in front of the tank while the action walks back to the
+    // sticky, the walk carries that mob out of the band, the trigger drops, Advance
+    // climbs back, and it repeats (tr-20260927-201144-5, Karazhan ramp to
+    // Terestian: a Mana Feeder 90yd back vs an Arcane Protector patrolling ahead).
+    // Returns true to drop the sticky for the fresh pick: a different fresh pick
+    // exists, the sticky is out of combat, and the sticky is more than `margin`
+    // farther away than the fresh pick.
+    bool ShouldDropTrashSticky(bool haveFresh, bool freshIsSticky, bool stickyInCombat,
+                               float stickyDist, float freshDist, float margin);
+
     // Orphaned-pull release gate (pure). The effective pull mode can be forced
     // OFF while a pull is still standing — a PERSISTENT anchored event takes the
     // tank (DungeonClearPullModeCurrentValue), or a Dynamic verdict drops. The

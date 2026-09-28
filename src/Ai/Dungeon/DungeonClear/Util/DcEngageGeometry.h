@@ -71,6 +71,25 @@ public:
     // back to `staticRange` when the boss isn't loaded yet or the dynamic-aggro
     // config is off. The trigger ladder and the advance action MUST both read
     // this so they agree on "are we at the boss".
+    // Is an anchored hop still ahead of the route cursor and out of reach? The
+    // last segment is the boss anchor itself and never counts. Three rungs must
+    // agree on this: the at-boss trigger and TryEngageHold (both gate the engage
+    // on it) and direct pursuit, which must not bee-line past an anchored route —
+    // it did at Attumen, parking the tank on Midnight's spawn with segments 7-9
+    // (the west mouth) pending, so neither the engage nor the route could run
+    // (tr-20260923-235223-3).
+    template <typename DistFn>
+    static bool AnchoredHopsPendingWith(std::vector<PathSegment> const& segments,
+                                        size_t cursor, DistFn distTo)
+    {
+        for (size_t i = cursor; i + 1 < segments.size(); ++i)
+            if (segments[i].anchored && distTo(segments[i]) > segments[i].arriveRadius)
+                return true;
+        return false;
+    }
+    static bool AnchoredHopsPending(WorldObject const* bot,
+                                    ChunkedPathfinder::Result const& path, size_t cursor);
+
     static float BossEngageRange(Player* bot, AiObjectContext* ctx,
                                  DungeonBossInfo const& boss, float staticRange);
 

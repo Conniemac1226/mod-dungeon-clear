@@ -336,3 +336,44 @@ TEST(KarazhanRouteProbe, OperaFloorRepathsToTheUrn)
         EXPECT_TRUE(r.reachable && r.corridorComplete);
     }
 }
+
+// tr-20260927-201144-3: from the ramp above the Homunculus room the pull tag leg
+// aimed at a point on the straight line to the pack, at the pack's height. That
+// point is in the gap between ramp and room: no floor under it until ~53yd down.
+// Resolved on its own level (what the snap in the Advancing branch does) it is a
+// short walk toward the pack; resolved to the floor below (what stock
+// SearchForBestPath's GetMapHeight picked) it is a ~580yd route whose first legs
+// climb the ramp away from the pack — the loop the run showed.
+TEST(KarazhanRouteProbe, HomunculusTagAimPointRoutesOnlyOnItsOwnLevel)
+{
+    std::shared_ptr<dtNavMesh> mesh = LoadOrSkip();
+    if (!mesh)
+        GTEST_SKIP() << "set DC_PROBE_MMAPS to a dir containing mmaps/ for map 532";
+
+    float const commit[3] = { -11187.1f, -1693.9f, 183.3f };   // route pt 182
+    float const pack[2] = { -11212.8f, -1688.3f };
+    float const aimOwnLevel[3] = { -11195.2f, -1692.1f, 179.3f };
+    float const aimFloorBelow[3] = { -11195.2f, -1692.1f, 125.9f };
+
+    auto farthestFromPack = [&](DcNavHarness::RouteResult const& r)
+    {
+        float d = 0.0f;
+        for (G3D::Vector3 const& p : r.points)
+            d = std::max(d, std::hypot(p.x - pack[0], p.y - pack[1]));
+        return d;
+    };
+    float const start = std::hypot(commit[0] - pack[0], commit[1] - pack[1]);
+
+    DcNavHarness::RouteResult const own = Leg(mesh.get(), commit, aimOwnLevel);
+    DcNavHarness::RouteResult const below = Leg(mesh.get(), commit, aimFloorBelow);
+    std::printf("  [own level] %.1fyd, farthest from pack %.1f (start %.1f)\n",
+                own.routeLength2d, farthestFromPack(own), start);
+    std::printf("  [floor below] %.1fyd, farthest from pack %.1f\n",
+                below.routeLength2d, farthestFromPack(below));
+
+    ASSERT_TRUE(own.reachable);
+    EXPECT_LT(own.routeLength2d, 15.0f);
+    EXPECT_LE(farthestFromPack(own), start + 0.5f);
+    EXPECT_GT(below.routeLength2d, 200.0f);
+    EXPECT_GT(farthestFromPack(below), 45.0f);
+}

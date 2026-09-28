@@ -1100,6 +1100,10 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
             if (!trash)
             {
                 // Pack died / despawned before we tagged it — nothing to pull.
+                // Kill the tag leg too: its MoveTo otherwise carries the tank on
+                // toward a pack nobody is pulling any more.
+                DcMovement::StopBot(bot, DcMovement::Stop::HardPin);
+                DcMovement::ClearMovementWait(bot);
                 DcSetPullPhase(context, DcPullPhase::Idle);
                 DC_PULL_DEBUG("[DC:{}] pull advancing: target gone -> idle",
                               bot->GetName());
@@ -1639,6 +1643,38 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
                 float const f = tagStop / toTag;
                 tagX = trash->GetPositionX() + (bot->GetPositionX() - trash->GetPositionX()) * f;
                 tagY = trash->GetPositionY() + (bot->GetPositionY() - trash->GetPositionY()) * f;
+
+                // PUT THE AIM POINT ON THE FLOOR. It is invented on the straight
+                // line at the PACK's height, and round a corner that is thin air.
+                // DcMoveTo only adopts a snap within a yard of the requested x/y,
+                // so an aim point 3yd off the nearest walkable poly keeps its
+                // floating z, and stock SearchForBestPath then takes GetMapHeight
+                // under it — the next floor down — and walks there. Live
+                // (tr-20260927-201144-3, Karazhan ramp below the Homunculus room):
+                // an aim point 7yd away resolved to a floor 53yd down, reachable
+                // only by a ~580yd route that starts UP the ramp; the tank walked
+                // away from the pack until the look-ahead dropped it, twelve times.
+                // Snap to the walkable poly near the aim point on its own level; if
+                // there is none, aim at the pack itself, which is always on the
+                // mesh — the aggro-edge hold above still stops the walk in time.
+                constexpr float kTagSnapRadius = 5.0f;
+                constexpr float kTagSnapMaxDz = 3.0f;
+                NavmeshSnap::Result const snap =
+                    NavmeshSnap::Snap(bot, tagX, tagY, tagZ, kTagSnapRadius);
+                if (snap.ok && std::fabs(snap.z - tagZ) <= kTagSnapMaxDz)
+                {
+                    tagX = snap.x;
+                    tagY = snap.y;
+                    tagZ = snap.z;
+                }
+                else
+                {
+                    DC_PULL_TRACE("[DC:{}] pull advancing: aggro-edge aim point "
+                                  "({:.1f},{:.1f},{:.1f}) is off the mesh -> aiming at "
+                                  "the pack", bot->GetName(), tagX, tagY, tagZ);
+                    tagX = trash->GetPositionX();
+                    tagY = trash->GetPositionY();
+                }
             }
 
             // SCRIPTED PULL: the walk-in may not leave the stand spot.

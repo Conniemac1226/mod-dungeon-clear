@@ -256,6 +256,7 @@ private:
 
     // Pre-route phases (boss snapshot only).
     Step TryEngageHold(AdvanceState const& st);
+    Step TryEngageWalkYield(AdvanceState const& st);
     Step TryLootYield(AdvanceState const& st);
     Step TryBetweenPullsRest(AdvanceState const& st);
     Step TryBossNotPresentStall(AdvanceState const& st);

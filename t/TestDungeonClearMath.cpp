@@ -514,6 +514,76 @@ TEST(DungeonClearPullStandDownTest, PullModeStandDownHoldsForABystanderMidManeuv
 }
 
 // ---------------------------------------------------------------------------
+// ShouldYieldToEngageWalk — Advance keeps off a live engage-trash walk-in.
+// ---------------------------------------------------------------------------
+using DungeonClearMath::ShouldYieldToEngageWalk;
+
+// tr-20260924-081931-3: engage-trash won every other tick; a fresh, moving
+// walk-in on a live target must keep the tick from Advance.
+TEST(DungeonClearEngageWalkYieldTest, YieldsToAFreshMovingWalkIn)
+{
+    EXPECT_TRUE(ShouldYieldToEngageWalk(true, true, true, 10000u, 10150u, 1000u));
+    EXPECT_TRUE(ShouldYieldToEngageWalk(true, true, true, 10000u, 11000u, 1000u));
+}
+
+// Engage-trash gone quiet past the hold: a real stand-down, Advance resumes.
+TEST(DungeonClearEngageWalkYieldTest, ReleasesOnceTheHoldLapses)
+{
+    EXPECT_FALSE(ShouldYieldToEngageWalk(true, true, true, 10000u, 11001u, 1000u));
+}
+
+// A walk that is not moving is a wedge — Advance's stuck ladder must see it.
+TEST(DungeonClearEngageWalkYieldTest, ReleasesWhenTheWalkStopsMoving)
+{
+    EXPECT_FALSE(ShouldYieldToEngageWalk(true, true, false, 10000u, 10100u, 1000u));
+}
+
+TEST(DungeonClearEngageWalkYieldTest, ReleasesForADeadOrMissingTarget)
+{
+    EXPECT_FALSE(ShouldYieldToEngageWalk(true, false, true, 10000u, 10100u, 1000u));
+    EXPECT_FALSE(ShouldYieldToEngageWalk(false, true, true, 10000u, 10100u, 1000u));
+    EXPECT_FALSE(ShouldYieldToEngageWalk(true, true, true, 0u, 100u, 1000u));
+}
+
+// getMSTime() wraps; the unsigned difference still reads the true elapsed time.
+TEST(DungeonClearEngageWalkYieldTest, SurvivesMsTimeWrap)
+{
+    EXPECT_TRUE(ShouldYieldToEngageWalk(true, true, true, 0xFFFFFF00u, 0x00000064u, 1000u));
+    EXPECT_FALSE(ShouldYieldToEngageWalk(true, true, true, 0xFFFFFF00u, 0x00000500u, 1000u));
+}
+
+// ---------------------------------------------------------------------------
+// ShouldDropTrashSticky — a stale engage-trash sticky yields to the fresh pick.
+// ---------------------------------------------------------------------------
+using DungeonClearMath::ShouldDropTrashSticky;
+
+// tr-20260927-201144-5: sticky ~90yd back down the ramp, the trigger's pick
+// patrolling 22-38yd ahead. The walk-back loop ends by retargeting.
+TEST(DungeonClearTrashStickyTest, DropsAStickyFarBehindTheFreshPick)
+{
+    EXPECT_TRUE(ShouldDropTrashSticky(true, false, false, 90.0f, 30.0f, 15.0f));
+}
+
+// Two roughly equidistant corridor mobs: keep the sticky, no flip-flop.
+TEST(DungeonClearTrashStickyTest, KeepsTheStickyAgainstAComparablePick)
+{
+    EXPECT_FALSE(ShouldDropTrashSticky(true, false, false, 30.0f, 22.0f, 15.0f));
+    EXPECT_FALSE(ShouldDropTrashSticky(true, false, false, 45.0f, 30.0f, 15.0f));
+}
+
+// A sticky already fighting the party is never abandoned.
+TEST(DungeonClearTrashStickyTest, KeepsAStickyInCombat)
+{
+    EXPECT_FALSE(ShouldDropTrashSticky(true, false, true, 90.0f, 30.0f, 15.0f));
+}
+
+TEST(DungeonClearTrashStickyTest, KeepsTheStickyWithNoOtherPick)
+{
+    EXPECT_FALSE(ShouldDropTrashSticky(false, false, false, 90.0f, 0.0f, 15.0f));
+    EXPECT_FALSE(ShouldDropTrashSticky(true, true, false, 90.0f, 90.0f, 15.0f));
+}
+
+// ---------------------------------------------------------------------------
 // ShouldReleaseStandingPull — the orphaned-pull release gate.
 // ---------------------------------------------------------------------------
 using DungeonClearMath::ShouldReleaseStandingPull;

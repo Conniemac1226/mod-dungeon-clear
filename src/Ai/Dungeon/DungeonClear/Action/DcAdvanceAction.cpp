@@ -625,28 +625,12 @@ DungeonClearAdvanceAction::Step DungeonClearAdvanceAction::TryEngageHold(Advance
             AI_VALUE(ChunkedPathfinder::Result&, DcKey::LongPath);
         DungeonFollowerState const& followerNow =
             AI_VALUE(DungeonFollowerState&, DcKey::FollowerState);
-        bool anchoredHopsPending = false;
-        if (currentPath.reachable && !currentPath.segments.empty())
-        {
-            // Only inspect segments still ahead of the follower's cursor.
-            // Anchored segments already walked past don't need to gate
-            // the engage handoff.
-            //
-            // DungeonClearAtBossTrigger::IsActive runs the SAME test — it is the
-            // rung this hold is waiting for, so the two must agree or the tank
-            // parks at the boss forever (it did: the trigger's copy started at
-            // segment 0, see the note there). Keep them in step.
-            for (size_t i = followerNow.segmentIdx; i + 1 < currentPath.segments.size(); ++i)
-            {
-                PathSegment const& seg = currentPath.segments[i];
-                if (seg.anchored && bot->GetDistance(seg.ex, seg.ey, seg.ez) > seg.arriveRadius)
-                {
-                    anchoredHopsPending = true;
-                    break;
-                }
-            }
-        }
-        if (!anchoredHopsPending)
+        // Only segments still ahead of the follower's cursor gate the handoff.
+        // DungeonClearAtBossTrigger::IsActive runs the SAME test — it is the rung
+        // this hold is waiting for, so the two must agree or the tank parks at
+        // the boss forever (it did: the trigger's copy started at segment 0, see
+        // the note there). Both call the one helper.
+        if (!DcEngageGeometry::AnchoredHopsPending(bot, currentPath, followerNow.segmentIdx))
         {
             // Surface WHY we're holding: the at-boss trigger only pulls once the
             // party is ready and no loot is pending. When it doesn't fire, this
@@ -667,6 +651,40 @@ DungeonClearAdvanceAction::Step DungeonClearAdvanceAction::TryEngageHold(Advance
         }
     }
     return Step::Continue;
+}
+
+// Engage-trash walk-in yield. Engage-trash outranks Advance, but its trigger can
+// hold on only alternate ticks; Advance then won every other tick, read the walk's
+// POINT generator as "no glide running" and re-issued its spline over it, and the
+// next engage tick cancelled that spline again. Each swap starts with a stop, so
+// the tank froze in place until the stuck ladder stalled the run
+// (tr-20260924-081931-3: Karazhan Opera balcony stair, Spectral Patron walk-in vs
+// the Blackened Urn route). While engage-trash's walk-in is fresh and still moving,
+// consume the tick without touching movement. See
+// DungeonClearMath::ShouldYieldToEngageWalk for the bounds.
+DungeonClearAdvanceAction::Step DungeonClearAdvanceAction::TryEngageWalkYield(AdvanceState const& st)
+{
+    DcApproachState& appr = *st.appr;
+    if (appr.engageWalkMs == 0)
+        return Step::Continue;
+
+    Unit* const target = appr.engageWalkTarget.IsEmpty()
+                             ? nullptr
+                             : ObjectAccessor::GetUnit(*bot, appr.engageWalkTarget);
+    uint32 const nowMs = getMSTime();
+    if (!DungeonClearMath::ShouldYieldToEngageWalk(
+            !appr.engageWalkTarget.IsEmpty(), target && target->IsAlive(), bot->isMoving(),
+            appr.engageWalkMs, nowMs, DC_ENGAGE_WALK_YIELD_MS))
+    {
+        appr.engageWalkTarget.Clear();
+        appr.engageWalkMs = 0;
+        return Step::Continue;
+    }
+
+    LOG_DEBUG("playerbots.dungeonclear",
+              "[DC:{}] advance yielding to engage-trash walk-in on {} ({}ms old)",
+              bot->GetName(), appr.engageWalkTarget.ToString(), nowMs - appr.engageWalkMs);
+    return Step::ReturnTrue;
 }
 
 // Loot yield (with commit-timeout). Step aside through the WHOLE loot lifecycle
@@ -1065,8 +1083,17 @@ void DungeonClearAdvanceAction::FillPursuitObs(AdvanceState& st, DungeonClearApp
     float const engageDist = st.engageDist;
     DcApproachState& appr = *st.appr;
 
+    // Not while an anchored hop is still pending: a bee-line past an anchored
+    // route parks the tank where the engage handoff (same test) never fires, and
+    // pursuit's give-up latch resets every tick inside engage range, so the long
+    // path that would walk the route never gets the tick (tr-20260923-235223-3).
+    // Reads last tick's cached path — EnsureLongPath runs after this — which is
+    // fine for an anchored route.
     bool const canPursue =
-        liveBoss && engageDist <= DC_DIRECT_PURSUIT_RANGE && bot->IsWithinLOSInMap(liveBoss);
+        liveBoss && engageDist <= DC_DIRECT_PURSUIT_RANGE && bot->IsWithinLOSInMap(liveBoss) &&
+        !DcEngageGeometry::AnchoredHopsPending(
+            bot, AI_VALUE(ChunkedPathfinder::Result&, DcKey::LongPath),
+            AI_VALUE(DungeonFollowerState&, DcKey::FollowerState).segmentIdx);
     if (!canPursue)
         appr.pursuitWatch.Reset();  // fresh closing baseline for a later pursuit
 
@@ -2213,6 +2240,7 @@ bool DungeonClearAdvanceAction::Execute(Event /*event*/)
     st.engageDist = engageDist;
     st.engageRange = engageRange;
     st.atBoss = atBoss;
+    st.appr = &appr;
 
     // An active submerged swim leg owns the tick outright: it drives a raw 3D
     // escort spline through a tunnel the navmesh can't model (the floor under
@@ -2243,6 +2271,8 @@ bool DungeonClearAdvanceAction::Execute(Event /*event*/)
     if (Step s = TryLootYield(st); s != Step::Continue)
         return s == Step::ReturnTrue;
     if (Step s = TryEngageHold(st); s != Step::Continue)
+        return s == Step::ReturnTrue;
+    if (Step s = TryEngageWalkYield(st); s != Step::Continue)
         return s == Step::ReturnTrue;
     if (Step s = TryBetweenPullsRest(st); s != Step::Continue)
         return s == Step::ReturnTrue;

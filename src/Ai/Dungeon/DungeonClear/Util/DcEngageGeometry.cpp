@@ -115,6 +115,15 @@ float DcEngageGeometry::AggroRangeOf(Player* bot, Unit* u, float fallback,
         range = capYd;
     return range;
 }
+bool DcEngageGeometry::AnchoredHopsPending(WorldObject const* bot,
+                                           ChunkedPathfinder::Result const& path, size_t cursor)
+{
+    if (!bot || !path.reachable || path.segments.empty())
+        return false;
+    return AnchoredHopsPendingWith(path.segments, cursor, [bot](PathSegment const& seg)
+                                   { return bot->GetDistance(seg.ex, seg.ey, seg.ez); });
+}
+
 float DcEngageGeometry::BossEngageRange(Player* bot, AiObjectContext* ctx,
                                         DungeonBossInfo const& boss, float staticRange)
 {

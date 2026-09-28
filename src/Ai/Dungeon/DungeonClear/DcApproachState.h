@@ -71,6 +71,11 @@ struct DcApproachState
     // DC_LONGROUTE_DEFER_LIMIT and the tank is dragged away in between — a stutter
     // rather than an engagement. Cleared when the target changes or comes in range.
     bool longRouteDeferBlown = false;
+    // The walk-in engage-trash last drove, and when (getMSTime, 0 = none). Advance
+    // yields while it is fresh instead of overwriting it — see
+    // DungeonClearMath::ShouldYieldToEngageWalk.
+    ObjectGuid engageWalkTarget;
+    uint32 engageWalkMs = 0;
     uint32 stuckCount          = 0;  // MoveTo-returned-false backup (was "stuck count")
     uint32 rebuildAttempts     = 0;  // consecutive rebuilds w/o progress ("stride rebuild attempts")
     uint32 resnapAttempts      = 0;  // consecutive Resnap recoveries w/o progress (rung-1 give-up)
@@ -359,6 +364,8 @@ struct DcApproachState
         longRouteDeferWatch.Reset();
         longRouteDeferTarget.Clear();
         longRouteDeferBlown = false;
+        engageWalkTarget.Clear();
+        engageWalkMs        = 0;
         rebuildAttempts     = 0;
         resnapAttempts      = 0;
         nudgeAttempts       = 0;

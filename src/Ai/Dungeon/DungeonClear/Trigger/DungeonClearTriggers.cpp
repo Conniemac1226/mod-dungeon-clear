@@ -338,23 +338,12 @@ bool DungeonClearAtBossTrigger::IsActive()
     // navigating while the trigger never fired. Same cursor, same answer.
     ChunkedPathfinder::Result const& path =
         AI_VALUE(ChunkedPathfinder::Result&, DcKey::LongPath);
-    if (path.reachable && !path.segments.empty())
-    {
-        DungeonFollowerState const& follower =
-            AI_VALUE(DungeonFollowerState&, DcKey::FollowerState);
-        // Last segment is the boss anchor; the anchored ones between the cursor
-        // and it must be within their arriveRadius. Anchors already walked past
-        // don't gate the engage.
-        for (size_t i = follower.segmentIdx; i + 1 < path.segments.size(); ++i)
-        {
-            PathSegment const& seg = path.segments[i];
-            if (!seg.anchored)
-                continue;
-            float const d = bot->GetDistance(seg.ex, seg.ey, seg.ez);
-            if (d > seg.arriveRadius)
-                return false;
-        }
-    }
+    // Last segment is the boss anchor; the anchored ones between the cursor and
+    // it must be within their arriveRadius. Anchors already walked past don't
+    // gate the engage.
+    if (DcEngageGeometry::AnchoredHopsPending(
+            bot, path, AI_VALUE(DungeonFollowerState&, DcKey::FollowerState).segmentIdx))
+        return false;
 
     // SEALED ENCOUNTER MUSTER. This boss's room locks the instant the encounter
     // starts — an InstanceScript DOOR_TYPE_ROOM door, held `open &= (state !=

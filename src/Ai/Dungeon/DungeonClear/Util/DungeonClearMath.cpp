@@ -208,6 +208,26 @@ bool DungeonClearMath::ShouldStandDownForPull(bool packIsPullsOwn, bool pullPhas
     return !pullPhaseIdle;    // in flight: never thrash the maneuver
 }
 
+bool DungeonClearMath::ShouldYieldToEngageWalk(bool walkStamped, bool targetAlive,
+                                               bool botMoving, std::uint32_t stampMs,
+                                               std::uint32_t now, std::uint32_t holdMs)
+{
+    if (!walkStamped || stampMs == 0 || !targetAlive || !botMoving)
+        return false;
+    // Unsigned difference, so a getMSTime() wrap between stamp and read still
+    // measures the true elapsed time.
+    return now - stampMs <= holdMs;
+}
+
+bool DungeonClearMath::ShouldDropTrashSticky(bool haveFresh, bool freshIsSticky,
+                                             bool stickyInCombat, float stickyDist,
+                                             float freshDist, float margin)
+{
+    if (!haveFresh || freshIsSticky || stickyInCombat)
+        return false;
+    return stickyDist > freshDist + margin;
+}
+
 bool DungeonClearMath::ShouldReleaseStandingPull(bool effectiveOn, bool standing,
                                                  bool partyInCombat, bool holdingPhase,
                                                  bool bossPullback)

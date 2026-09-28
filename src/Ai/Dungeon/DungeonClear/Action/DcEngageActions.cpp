@@ -742,6 +742,23 @@ bool DungeonClearEngageTrashAction::Execute(Event /*event*/)
 
     if (!target)
     {
+        // A quiet sticky the scan has left far behind is stale: the trigger is
+        // firing for `fresh`, so walking to the sticky instead drags the tank away
+        // from the very pack that keeps the trigger live (DungeonClearMath::
+        // ShouldDropTrashSticky, tr-20260927-201144-5).
+        if (sticky && fresh &&
+            DungeonClearMath::ShouldDropTrashSticky(
+                true, fresh == sticky, sticky->IsInCombat(), bot->GetDistance(sticky),
+                bot->GetDistance(fresh), DC_TRASH_STICKY_RETARGET_MARGIN))
+        {
+            LOG_DEBUG("playerbots.dungeonclear",
+                      "[DC:{}] engage trash: dropping stale sticky {} ({:.1f}yd) for the "
+                      "fresh pick {} ({:.1f}yd)",
+                      bot->GetName(), sticky->GetGUID().ToString(), bot->GetDistance(sticky),
+                      fresh->GetGUID().ToString(), bot->GetDistance(fresh));
+            sticky = nullptr;
+        }
+
         target = sticky;
         if (!target)
             target = fresh;
@@ -860,7 +877,17 @@ bool DungeonClearEngageTrashAction::Execute(Event /*event*/)
             break;
     }
 
-    return EngageDirect(target);
+    // Stamp a live walk-in so Advance leaves it alone on the ticks this action
+    // does not win (DungeonClearMath::ShouldYieldToEngageWalk). Only while out of
+    // combat — once the fight is on the combat engine owns the tank anyway.
+    bool const engaged = EngageDirect(target);
+    if (engaged && !bot->IsInCombat())
+    {
+        appr.engageWalkTarget = target->GetGUID();
+        uint32 const nowMs = getMSTime();
+        appr.engageWalkMs = nowMs ? nowMs : 1;
+    }
+    return engaged;
 }
 
 bool DungeonClearEngageBossAction::Execute(Event event)
