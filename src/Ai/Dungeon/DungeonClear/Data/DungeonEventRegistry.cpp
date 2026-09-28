@@ -179,6 +179,26 @@ EventBuilder& EventBuilder::MoveToHoldUntilSpawn(float x, float y, float z, floa
     return *this;
 }
 
+EventBuilder& EventBuilder::MoveToHoldUntilBossState(float x, float y, float z, float radius,
+                                                     uint32 bossStateId, uint32 clearMask)
+{
+    EventStep& s = Add(EventStepKind::MoveTo);
+    s.x = x;
+    s.y = y;
+    s.z = z;
+    s.radius = radius;
+    s.bossStateId = static_cast<int32>(bossStateId);
+    s.bossStateClearMask = clearMask;
+    return *this;
+}
+
+EventBuilder& EventBuilder::RestartOnBossState(uint32 mask)
+{
+    if (!_ev.steps.empty())
+        _ev.steps.back().restartOnBossStateMask = mask;
+    return *this;
+}
+
 EventBuilder& EventBuilder::MoveToHoldUntilInstanceData(float x, float y, float z, float radius,
                                                         uint32 dataId, uint32 minValue)
 {
@@ -311,6 +331,13 @@ EventBuilder& EventBuilder::OnlyEntries(std::vector<uint32> entries)
 {
     if (!_ev.steps.empty())
         _ev.steps.back().entryFilter = std::move(entries);
+    return *this;
+}
+
+EventBuilder& EventBuilder::OrSpawnOf(std::vector<uint32> entries)
+{
+    if (!_ev.steps.empty())
+        _ev.steps.back().orEntries = std::move(entries);
     return *this;
 }
 

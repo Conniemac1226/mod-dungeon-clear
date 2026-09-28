@@ -333,6 +333,27 @@ struct EventStep
     int32  persistentDataId{-1};
     uint32 persistentDataMin{0};
 
+    // MoveTo garrison gate, instance BOSS-STATE variant. When bossStateId >= 0 the
+    // step holds until InstanceScript::GetBossState(bossStateId) is one of the
+    // states in bossStateClearMask (a DcBossStateBit mask). Unlike the two data
+    // gates above, a boss state is NOT monotonic — an evade puts it back to
+    // NOT_STARTED, a wipe to FAIL — so the gate takes a SET of states, and
+    // restartOnBossStateMask names the states that mean "the encounter reset
+    // under us": on one of those the event REWINDS to step 0 and runs again.
+    //
+    // For an encounter the event itself starts and whose retry is the event's
+    // job. Karazhan's Opera (a wipe FAILs it and respawns Barnes for another
+    // gossip) and Nightbane (an evade flies him home and re-arms the urn) are
+    // why it exists. Their GetData overrides do not expose the boss state
+    // (Opera's returns the play picked), so the data gates cannot express it.
+    //
+    // The slot is authored from the instance header's DATA_* enum, which is NOT
+    // the DungeonEncounter bit index (Karazhan's Opera is slot 4, bit 3) — the
+    // same rule as DungeonBossInfo::doneBossStateIndex. -1 => no boss-state gate.
+    int32  bossStateId{-1};
+    uint32 bossStateClearMask{0};
+    uint32 restartOnBossStateMask{0};
+
     // ClearRadius only. When non-empty, the volume clears ONLY creatures whose
     // entry is in this allow-list — both the RunStep completion gate and the
     // EngageDirect the driving action issues. Empty (the default) keeps the
@@ -346,7 +367,54 @@ struct EventStep
     // Ambient fauna is still fought when it aggros the party — that is the
     // normal combat engine's job, not the clear's.
     std::vector<uint32> entryFilter;
+
+    // WaitForSpawn / garrison MoveTo (MoveToHoldUntilSpawn) only: ALTERNATIVE
+    // gate entries, OR'd with creatureEntry. wantAlive: the gate clears once ANY
+    // of them is alive. !wantAlive: once NONE of them is. Empty (the default)
+    // gates on creatureEntry alone.
+    //
+    // For a spawn whose entry is rolled by the script. Karazhan's Opera plays one
+    // of three shows per instance (OperaEvent = urand(1,3)), and the only way to
+    // tell which is running is which cast member the curtain summons: Dorothee,
+    // Grandmother or Julianne. See EventStepGateEntries.
+    std::vector<uint32> orEntries;
 };
+
+// One bit per EncounterState value (InstanceScript.h: NOT_STARTED 0,
+// IN_PROGRESS 1, FAIL 2, DONE 3, SPECIAL 4), for the boss-state gate's masks.
+inline constexpr uint32 DcBossStateBit(uint32 state) { return 1u << state; }
+
+// What a boss-state garrison gate does this tick (pure). Clear wins over Restart
+// if a state is in both masks.
+enum class BossStateGateVerdict : uint8
+{
+    Hold,     // keep holding
+    Clear,    // the gate is satisfied — the step is Done
+    Restart,  // the encounter reset — rewind the event to step 0
+};
+
+inline BossStateGateVerdict DecideBossStateGate(uint32 state, uint32 clearMask,
+                                                uint32 restartMask)
+{
+    if (state < 32 && (clearMask & DcBossStateBit(state)))
+        return BossStateGateVerdict::Clear;
+    if (state < 32 && (restartMask & DcBossStateBit(state)))
+        return BossStateGateVerdict::Restart;
+    return BossStateGateVerdict::Hold;
+}
+
+// Every creature entry an EventStep's spawn gate accepts: creatureEntry followed
+// by orEntries, zeros dropped. Pure, so the any-of contract is unit-testable.
+inline std::vector<uint32> EventStepGateEntries(EventStep const& step)
+{
+    std::vector<uint32> out;
+    if (step.creatureEntry)
+        out.push_back(step.creatureEntry);
+    for (uint32 e : step.orEntries)
+        if (e)
+            out.push_back(e);
+    return out;
+}
 
 // How an event enters the clear. Milestone 1 only uses Anchored; Conditional is
 // reserved for off-path levers / pre-boss gates (milestone 2).
@@ -631,6 +699,17 @@ public:
     // exists for. See EventStep::persistentDataId.
     EventBuilder& MoveToHoldUntilPersistentData(float x, float y, float z, float radius,
                                                 uint32 dataId, uint32 minValue);
+    // Garrison variant gated on the instance BOSS STATE: hold at (x,y,z) until
+    // GetBossState(bossStateId) is in `clearMask` (DcBossStateBit values OR'd).
+    // Chain .RestartOnBossState(mask) to rewind the whole event when the state
+    // shows the encounter reset. See EventStep::bossStateId.
+    EventBuilder& MoveToHoldUntilBossState(float x, float y, float z, float radius,
+                                           uint32 bossStateId, uint32 clearMask);
+    // Rewind the event to step 0 when the PRECEDING boss-state garrison reads a
+    // state in `mask`. Chain it right after the step:
+    //   .MoveToHoldUntilBossState(x, y, z, r, SLOT, DcBossStateBit(DONE))
+    //       .RestartOnBossState(DcBossStateBit(FAIL))
+    EventBuilder& RestartOnBossState(uint32 mask);
     // Run ObjectiveHookRegistry `hookId` every tick while the PRECEDING garrison
     // step holds, in addition to its gate. The hook's result is ignored — the gate
     // alone still ends the step. Chain it right after the step it arms:
@@ -695,6 +774,10 @@ public:
     // EventStep::entryFilter). Chain it right after the step it narrows:
     //   .ClearRadius(x, y, z, r).OnlyEntries({ENTRY_A, ENTRY_B})
     EventBuilder& OnlyEntries(std::vector<uint32> entries);
+    // Widen the PRECEDING WaitForSpawn / MoveToHoldUntilSpawn gate to also accept
+    // any of `entries` (see EventStep::orEntries). Chain right after the step:
+    //   .MoveToHoldUntilSpawn(x, y, z, r, NPC_A).OrSpawnOf({NPC_B, NPC_C})
+    EventBuilder& OrSpawnOf(std::vector<uint32> entries);
     EventBuilder& Wait(uint32 durationMs);
     EventBuilder& Custom(uint32 hookId);
     // Protect a moving escortee (see EventStepKind::EscortCreature). `escortee` is

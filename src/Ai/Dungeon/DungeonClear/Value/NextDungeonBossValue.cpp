@@ -16,6 +16,7 @@
 #include "InstanceScript.h"
 #include "Log.h"
 #include "Map.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcAnchorDone.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcBossOrdering.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearUtil.h"
 #include "Ai/Dungeon/DungeonClear/Value/DungeonClearStateValues.h"
@@ -138,8 +139,7 @@ std::optional<DungeonBossInfo> NextDungeonBossValue::Calculate()
                 else if (info.kind == DungeonAnchorKind::Boss &&
                          info.encounterIndex < 32 && (completedMask & (1u << info.encounterIndex)))
                     invalid = true;
-                else if (info.kind == DungeonAnchorKind::Boss && info.doneBossStateIndex >= 0 &&
-                         inst && inst->GetBossState(static_cast<uint32>(info.doneBossStateIndex)) == DONE)
+                else if (DcAnchorDoneByInstanceScript(info, inst))
                     invalid = true;
 
                 if (!invalid)
@@ -217,8 +217,13 @@ std::optional<DungeonBossInfo> NextDungeonBossValue::Calculate()
         // read from the instance script's own boss-state slot instead. Persistent
         // for the instance's life, so a re-enable after the kill won't re-target
         // a boss whose corpse has long despawned. See doneBossStateIndex.
-        if (info.kind == DungeonAnchorKind::Boss && info.doneBossStateIndex >= 0 &&
-            inst && inst->GetBossState(static_cast<uint32>(info.doneBossStateIndex)) == DONE)
+        // Objectives honour it too: an objective whose event runs a whole
+        // encounter (Karazhan's Opera, the Nightbane urn) is finished when that
+        // encounter's slot is DONE, including in a re-entered instance. The same
+        // rung reads doneInstanceData, for an encounter the script tracks only in
+        // a GetData value (Karazhan's chess) — live, so an unsaved one that reads
+        // NOT_STARTED again after a reload is a candidate again.
+        if (DcAnchorDoneByInstanceScript(info, inst))
             continue;
 
         BossLiveState const state = LookupLive(liveness, info.entry);
