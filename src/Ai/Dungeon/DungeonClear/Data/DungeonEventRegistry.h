@@ -197,7 +197,7 @@ struct EventStep
     uint32 goEntry{0};       // UseGameObject / WaitForGameObjectState
     uint32 creatureEntry{0}; // Gossip target / WaitForSpawn / KillCreature
     uint32 spellId{0};       // CastSpell
-    uint32 itemId{0};        // UseItem
+    uint32 itemId{0};        // UseItem; UseGameObject: carried item (CarryItem)
 
     int32  gossipOption{-1}; // Gossip: option index to select (-1 = none)
     uint32 count{1};         // KillCreature: alive-count that still blocks
@@ -733,6 +733,12 @@ public:
     // GameObject::Use() (see EventStep::reportUse). Chain after the step:
     //   .UseGO(GO_LEVER, 80).ReportUse()
     EventBuilder& ReportUse();
+    // Put `itemId` in the clicker's bags (if missing) before the LAST-added UseGO
+    // step's click: for a GO whose script checks that the clicker carries a key
+    // item. Karazhan's Blackened Urn needs item 24140 once mod-individual-progression
+    // rebinds go_blackened_urn; without it the click is silently refused.
+    //   .UseGO(GO_URN, 30).CarryItem(ITEM_URN)
+    EventBuilder& CarryItem(uint32 itemId);
     // Leader casts `spellId` on itself (triggered: no cost/cooldown/reagent/cast
     // time). For a scripted "use a quest item" spell whose effect a bot cannot
     // otherwise reach — e.g. Sunken Temple's "Awaken the Soulflayer" (12346),

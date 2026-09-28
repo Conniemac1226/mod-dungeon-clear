@@ -65,6 +65,17 @@ public:
     static bool Has(uint32 hookId);
 };
 
+// Generic hook 40: the RAID MUSTER, at an objective. DcRaidMuster (stage the
+// raid on the tank, top everyone off, run the rebuff round, bounded by its own
+// ceiling) normally gates only the engage of a BOSS anchor. An event that starts
+// a raid encounter itself — Karazhan's Blackened Urn summons Nightbane — needs
+// the same muster before its trigger step, and its anchor is an objective. The
+// hook runs the muster against the current objective as if it were the boss:
+// Running while it holds, Done once it releases. Raid maps only (Done
+// elsewhere, like the muster itself). The objective action yields rest ticks to
+// this step, so the tank can drink under the muster's 100/100 rest override.
+inline constexpr uint32 DC_HOOK_RAID_MUSTER = 40;
+
 // --- per-dungeon hook appenders ------------------------------------------
 // A dungeon gets its own hook TU only when its on-arrival behaviour is a
 // CONTROLLER rather than a one-shot action — i.e. when it re-decides from live

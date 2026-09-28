@@ -1936,12 +1936,17 @@ bool DcObjectiveArriveAction::Execute(Event /*event*/)
             // Excluded when the garrison carries a WhileHolding hook (the Ring of
             // Law): there the hold's per-tick hook is the only thing that notices
             // the encounter resetting behind the party, so it must not be yielded.
+            //
+            // The raid-muster step (DC_HOOK_RAID_MUSTER) is a camp too, with no
+            // position of its own: the muster raises the rest floors to 100/100
+            // and waits for everyone to reach them, the tank included.
             bool const garrisoned =
-                step.kind == EventStepKind::MoveTo && step.hookId == 0 &&
-                (step.creatureEntry != 0 || step.instanceDataId >= 0 ||
-                 step.persistentDataId >= 0) &&
-                bot->GetExactDist(step.x, step.y, step.z) <=
-                    (step.radius > 0.0f ? step.radius : 4.0f);
+                (step.kind == EventStepKind::MoveTo && step.hookId == 0 &&
+                 (step.creatureEntry != 0 || step.instanceDataId >= 0 ||
+                  step.persistentDataId >= 0 || step.bossStateId >= 0) &&
+                 bot->GetExactDist(step.x, step.y, step.z) <=
+                     (step.radius > 0.0f ? step.radius : 4.0f)) ||
+                (step.kind == EventStepKind::Custom && step.hookId == DC_HOOK_RAID_MUSTER);
             if (garrisoned)
             {
                 switch (EventRestDecision())

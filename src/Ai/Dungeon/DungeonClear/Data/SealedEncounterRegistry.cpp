@@ -161,6 +161,47 @@ namespace
     // musterSpread 10, the same number and the same reasoning as the rows above:
     // follow-tank trails at min(followDistance, 6yd), so the party sits inside it
     // by construction while moving and it only bites on a genuine straggler.
+    // --- Karazhan (532) — Shade of Aran --------------------------------------
+    //
+    // The Private Library Door (184517, at (-11189.5, -1880.9)) is the only way
+    // into the Guardian's Library. Aran's Reset() opens it; 15s after he is
+    // engaged it shuts and goes NOT_SELECTABLE for the fight. So the real budget
+    // is fifteen seconds, not the whole fight, and anyone still in the corridor
+    // then is out.
+    //
+    // The volume is the library floor, flood-filled on the live 532 navmesh with
+    // the door cut: 42 polys, x -11194.1..-11136.0, y -1941.1..-1882.9,
+    // z 232.2..234.6, none shared with the corridor (x -11217.9..-11185.9,
+    // y -1878.4..-1851.7, north-west of the door). maxY -1886 keeps the door and
+    // its sill (-11187.7, -1883.3) outside; it drops 2 of the 42 polys.
+    //
+    // Z BAND 225-245. Curator's floor (~166) and the terrace (~92) are stacked
+    // under this footprint, and two polys at z 287 above it; the band holds
+    // only the library.
+    //
+    // approachRadius 50. The door is 39.1yd from Aran and the points 8/10yd out
+    // along the corridor are 46.8/48.8yd, so 50 arms the clump just before the
+    // party reaches the door.
+    //
+    // musterSpread 10, the same number and reasoning as the rows below.
+    // --- Karazhan (532) — Netherspite ------------------------------------------
+    //
+    // The Massive Door (185521, at (-11186.2, -1665.1)) stands open, shuts when
+    // Netherspite is engaged and reopens when he dies, and he does
+    // DoZoneInCombat on engage: a member left in the corridor is in combat and
+    // locked out for the whole fight.
+    //
+    // The Celestial Watch lies north-east of the door: 181 polys, x
+    // -11217.7..-11062.8, y -1704.8..-1555.2, z 278.3..281.8. No single box both
+    // fits the room and excludes the approach corridor (9 corridor polys fall
+    // inside the room's full extent, x -11219.9..-11193.2), so minX -11182 drops
+    // the room's far west strip (x < -11182, y -1662..-1590) and keeps the
+    // doorway out. About 131 of the 181 room polys are in; no corridor poly is.
+    //
+    // Z BAND 276-284: levels below (z 115-187) and above (287-364).
+    //
+    // approachRadius 107. The door is 97.5yd from Netherspite; 8/10yd out along
+    // the corridor are 105.1/107.0yd.
     SealedEncounterRow const kRows[] =
     {
         // mapId  boss   minX    maxX    minY    maxY   approach  muster
@@ -168,6 +209,9 @@ namespace
         {   601, 29120, 526.0f, 574.0f, 234.0f, 278.0f,   45.0f,  10.0f },
         {   604, 29306, 1855.0f, 1982.0f, 648.0f, 848.0f,  75.0f,  10.0f },
         {   599, 27978, 1210.0f, 1342.0f, 580.0f, 754.0f, 100.0f,  10.0f },
+        //                                                           minZ    maxZ
+        {   532, 16524, -11195.0f, -11135.0f, -1942.0f, -1886.0f, 50.0f, 10.0f, 225.0f, 245.0f },
+        {   532, 15689, -11182.0f, -11058.0f, -1706.0f, -1550.0f, 107.0f, 10.0f, 276.0f, 284.0f },
     };
 }
 
@@ -182,6 +226,16 @@ SealedEncounterRow const* SealedEncounterRegistry::Find(uint32 mapId, uint32 bos
 bool SealedEncounterRegistry::InSealedRoom(SealedEncounterRow const& row, float x, float y)
 {
     return x >= row.minX && x <= row.maxX && y >= row.minY && y <= row.maxY;
+}
+
+bool SealedEncounterRegistry::InSealedRoom(SealedEncounterRow const& row,
+                                           float x, float y, float z)
+{
+    if (!InSealedRoom(row, x, y))
+        return false;
+    if (row.minZ == 0.0f && row.maxZ == 0.0f)
+        return true;
+    return z >= row.minZ && z <= row.maxZ;
 }
 
 bool SealedEncounterRegistry::InApproachRange(SealedEncounterRow const& row,

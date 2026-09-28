@@ -146,6 +146,13 @@ EventBuilder& EventBuilder::ReportUse()
     return *this;
 }
 
+EventBuilder& EventBuilder::CarryItem(uint32 itemId)
+{
+    if (!_ev.steps.empty())
+        _ev.steps.back().itemId = itemId;
+    return *this;
+}
+
 EventBuilder& EventBuilder::MoveTo(float x, float y, float z, float radius)
 {
     EventStep& s = Add(EventStepKind::MoveTo);
@@ -495,6 +502,7 @@ namespace
             RegisterCullingOfStratholmeEvents(t);
             RegisterTrialOfTheChampionEvents(t);
             RegisterOculusEvents(t);
+            RegisterKarazhanEvents(t);
             return t;
         }();
         return kEvents;

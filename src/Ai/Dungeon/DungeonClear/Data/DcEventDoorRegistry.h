@@ -317,6 +317,15 @@ namespace DcEventDoorRegistry
             case 195648:  // ToC — East Portcullis
             case 195649:  // ToC — South Portcullis
             case 195650:  // ToC — North Portcullis (the entrance; shuts at progress 1)
+            // Karazhan (map 532) — Gamesman's Hall Exit Door (184277, guid at
+            // the Chess room's far side). Lock 0, faction 1375, flags 32
+            // (NODESPAWN), and the only thing that ever opens it is
+            // instance_karazhan's SetData(DATA_CHESS_EVENT, DONE) handler. It is
+            // the only way to Prince Malchezaar, which is why the roster skips
+            // Prince while Chess is skipped. Lock-free already refuses it; this
+            // row keeps it refused if a future edit lists lock-free doors more
+            // loosely, so nobody walks past Chess to Prince.
+            case 184277:  // Karazhan — Gamesman's Hall Exit Door (opens on Chess DONE)
                 return true;
             default:
                 return false;
@@ -893,6 +902,17 @@ namespace DcEventDoorRegistry
             case 175351:  // Doodad_SmallPortcullis03 — gate trap 1, Scarlet side
             case 175354:  // Doodad_SmallPortcullis09 — gate trap 2, undead side
             case 175355:  // Doodad_SmallPortcullis08 — gate trap 2, undead side
+            // --- Karazhan (map 532) — Shade of Aran's Private Library Door ---
+            // 184517 at (-11189.5, -1880.9, 233.3), lock 0, spawned SHUT. Aran's
+            // Reset() opens it and clears NOT_SELECTABLE, so it opens by itself
+            // as soon as his grid loads under the approaching tank; his JustDied
+            // opens it too. 15s after he is engaged it shuts again and goes
+            // NOT_SELECTABLE for the fight. Nobody ever clicks it. Holding is
+            // right in every one of those states: before his grid loads, the
+            // wait is a second or two; during a fight, a member left outside is
+            // locked out whatever it does (the sealed-encounter muster is what
+            // prevents that); after a wipe, his Reset reopens it.
+            case 184517:  // Karazhan — Private Library Door (Aran's Reset opens it)
                 return true;
             default:
                 return false;
@@ -1122,6 +1142,25 @@ namespace DcEventDoorRegistry
             case 175618:  // Iron Gate
             case 175619:  // Door
             case 175620:  // Iron Gate
+            // Karazhan (map 532) — Gatehouse Door (183450, guid 27565, at
+            // (-11100.6,-1992.9,49.8)), the front portcullis 11yd from the Main
+            // Entrance zone-in (areatrigger 4131) and the first thing on EVERY
+            // route into the raid. Lock 0, startOpen 0, autoClose 3000ms, template
+            // addon flags 0, no ScriptName/AIName, no smart_scripts or conditions
+            // row, and instance_karazhan never registers it (its door table covers
+            // the stage, library, Netherspite, Gamesman's Hall and terrace doors
+            // only) — nothing but a click ever opens it. Refused as lock-free, it
+            // auto-paused tr-20260923-165858-1 14s in, parked 7.8yd short of it,
+            // 0/10 bosses.
+            case 183450:  // Karazhan — Gatehouse Door
+            // Karazhan — Strange Bookcase (184453, guid 26721, at
+            // (-11151.0,-1753.6,202.5)), the secret door into Terestian
+            // Illhoof's room. Lock 0, no flags, no ScriptName/AIName, no
+            // smart_scripts row, and instance_karazhan never mentions it. It is
+            // the ONLY way in: with the navmesh around it cut, both
+            // Curator->Terestian and Midnight->Terestian become unroutable, and
+            // the room behind it is a dead end. A player opens it by clicking.
+            case 184453:  // Karazhan — Strange Bookcase (Terestian's room)
                 return true;
             default:
                 return false;

@@ -5015,6 +5015,104 @@ namespace DcOculus
 // conditional flight driver. See OculusEvents.cpp.
 void RegisterOculusEvents(std::vector<DungeonEvent>& out);
 
+// Karazhan (map 532) — the numbers the roster, the event rows, the hooks and the
+// gtests share. The reasoning is in KarazhanEvents.cpp.
+//
+// TWO INDEX SPACES, and they disagree. `BIT_*` are DungeonEncounter.dbc bits (the
+// completion mask). `STATE_*` are karazhan.h DATA_* boss-state slots, which only
+// GetBossState reads. Opera is bit 3 but slot 4; Nightbane is bit 10 but slot 11.
+namespace DcKarazhan
+{
+    constexpr uint32 MAP = 532;
+
+    // Creature entries.
+    constexpr uint32 NPC_MIDNIGHT    = 16151;
+    constexpr uint32 NPC_MOROES      = 15687;
+    constexpr uint32 NPC_MAIDEN      = 16457;
+    constexpr uint32 NPC_BARNES      = 16812;
+    constexpr uint32 NPC_CURATOR     = 15691;
+    constexpr uint32 NPC_TERESTIAN   = 15688;
+    constexpr uint32 NPC_ARAN        = 16524;
+    constexpr uint32 NPC_NETHERSPITE = 15689;
+    constexpr uint32 NPC_CHESS       = 22520;
+    constexpr uint32 NPC_PRINCE      = 15690;
+    constexpr uint32 NPC_NIGHTBANE   = 17225;
+
+    // DungeonEncounter.dbc bits.
+    constexpr uint32 BIT_ATTUMEN   = 0;
+    constexpr uint32 BIT_OPERA     = 3;
+    constexpr uint32 BIT_NIGHTBANE = 10;
+
+    // karazhan.h boss-state slots.
+    constexpr int32 STATE_MOROES    = 1;
+    constexpr int32 STATE_OPERA     = 4;
+    constexpr int32 STATE_NIGHTBANE = 11;
+
+    // Clear order. Nightbane sits after Opera: the stage-to-terrace leg is the
+    // cheapest place to fit the urn (+249yd of navmesh walking against +693 for
+    // the next best slot).
+    constexpr int32 ORDER_ATTUMEN       = 0;
+    constexpr int32 ORDER_MOROES        = 1;
+    constexpr int32 ORDER_MAIDEN        = 2;
+    constexpr int32 ORDER_OPERA         = 3;
+    constexpr int32 ORDER_NIGHTBANE_URN = 4;
+    constexpr int32 ORDER_NIGHTBANE     = 5;
+    constexpr int32 ORDER_CURATOR       = 6;
+    constexpr int32 ORDER_TERESTIAN     = 7;
+    constexpr int32 ORDER_ARAN          = 8;
+    constexpr int32 ORDER_NETHERSPITE   = 9;
+    constexpr int32 ORDER_CHESS         = 10;
+    constexpr int32 ORDER_PRINCE        = 11;
+
+    // Midnight's spawn: the stables, and the Attumen anchor.
+    constexpr float MIDNIGHT_X = -11126.3f, MIDNIGHT_Y = -1929.1f, MIDNIGHT_Z = 49.3f;
+    // Where the Attumen route ends and the engage starts: 18yd due west of
+    // Midnight, in the mouth of his pen, the only side with a straight line in.
+    constexpr float WEST_STANDOFF_X = -11126.30f, WEST_STANDOFF_Y = -1911.10f, WEST_STANDOFF_Z = 49.76f;
+    // Moroes' spawn, at the north end of the Banquet Hall.
+    constexpr float MOROES_X = -10982.7f, MOROES_Y = -1877.93f, MOROES_Z = 81.81f;
+
+    // --- Opera ------------------------------------------------------------
+    constexpr uint32 EV_OPERA = 1;
+    // The first cast member the curtain summons, one per play (urand(1,3) per
+    // instance): Oz, Red Riding Hood, Romulo and Julianne.
+    constexpr uint32 NPC_DOROTHEE    = 17535;
+    constexpr uint32 NPC_GRANDMOTHER = 17603;
+    constexpr uint32 NPC_JULIANNE    = 17534;
+
+    // Barnes' spawn, backstage beside Stage Door Left: the Opera objective.
+    constexpr float BARNES_X = -10866.7f, BARNES_Y = -1781.0f, BARNES_Z = 90.6f;
+    // The party's spot on the front stage: 8.5yd clear disc, in front of the
+    // curtain (y -1772.1), 18yd from the cast line and 21.5yd from Stage Door
+    // Left. The stage has no way up from the audience; it is reached only
+    // through the stage doors, and Barnes shuts Stage Door Left behind the party
+    // at his waypoint 8, so the party must be here by then.
+    constexpr float STAGE_X = -10893.0f, STAGE_Y = -1776.0f, STAGE_Z = 90.6f;
+
+    // --- Nightbane --------------------------------------------------------
+    constexpr uint32 EV_NIGHTBANE = 2;
+    constexpr uint32 GO_BLACKENED_URN = 194092;
+    // mod-individual-progression's go_blackened_urn refuses a clicker without it.
+    constexpr uint32 ITEM_BLACKENED_URN = 24140;
+
+    // Where the intro path puts him down on the Master's Terrace.
+    constexpr float LANDING_X = -11142.7f, LANDING_Y = -1891.2f, LANDING_Z = 92.3f;
+    // The Blackened Urn (terrace floor, 1yd clear around it).
+    constexpr float URN_X = -11107.8f, URN_Y = -1879.4f, URN_Z = 91.8f;
+    // The urn objective is anchored ON the urn, inside the executor's 5yd use
+    // range, so the click step never walks the tank out of its own arrive ring.
+    // Anchored at the muster point (18.1yd off) the click step pulled the tank
+    // out, the at-objective trigger dropped and Advance hauled it back
+    // (tr-20260923-230203-1).
+    constexpr float URN_ARRIVE_RADIUS = 4.0f;
+    // The muster point: terrace floor with a 6yd clear disc, 18.8yd from the
+    // landing and 18.1yd from the urn. He evades 8s after landing unless a
+    // player is within 45yd of him, so the party holds here through the intro.
+    constexpr float NB_MUSTER_X = -11125.0f, NB_MUSTER_Y = -1885.0f, NB_MUSTER_Z = 91.9f;
+}
+
+void RegisterKarazhanEvents(std::vector<DungeonEvent>& out);
+
 // Is the Oculus flight driver due for `bot`'s map right now? Exposed for the rider
 // trigger, which runs on every member and must agree with the driver.
 bool OculusDriverDue(Player* bot);
@@ -5159,6 +5257,10 @@ void RegisterTrialOfTheChampionRoster(std::vector<BossRosterPatch>& t);
 // re-anchored onto the ground they are fought on; and the portal, the construct
 // islands and Urom's platforms are objectives the driver flies the party to.
 void RegisterOculusRoster(std::vector<BossRosterPatch>& t);
+// Karazhan (532) — adds Attumen (Midnight carries bit 0; the credit entry has no
+// spawn), skips Chess and Prince, and replaces Barnes and the Nightbane perch
+// with the event anchors that summon them. See KarazhanEvents.cpp.
+void RegisterKarazhanRoster(std::vector<BossRosterPatch>& t);
 
 // --- wing layouts (one appender per split map) ---------------------------
 // Records which boss credit-entries belong to which wing of a multi-wing map;
@@ -5237,5 +5339,11 @@ void RegisterPitOfSaronRoute();
 // WILL BE STANDING when that leg begins
 // ([[dc-anchor-route-must-cover-where-the-party-stands]]).
 void RegisterHallsOfReflectionRoute();
+
+// Karazhan (532) — the entrance to Attumen (keyed on Midnight). The plain "walk
+// the leg" reason with a twist: the corridor routes fine, but it runs along the
+// back wall of Midnight's pen inside the at-boss handoff range, and the row is
+// what holds the engage until the party has come round to the pen's west mouth.
+void RegisterKarazhanRoute();
 
 #endif

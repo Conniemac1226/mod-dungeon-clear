@@ -1619,3 +1619,34 @@ TEST(EventBuilderBossStateTest, GateVerdicts)
     // Out-of-range states never match.
     EXPECT_EQ(DecideBossStateGate(40, ~0u, ~0u), BossStateGateVerdict::Hold);
 }
+
+// CarryItem tags the LAST UseGO step with a key item the clicker must hold; the
+// click step is otherwise an ordinary UseGameObject.
+TEST(DungeonEventBuilderTest, CarryItemTagsOnlyTheLastUseGO)
+{
+    DungeonEvent e = EventBuilder(1, 1, "e")
+                         .UseGO(100, 10.0f)
+                         .UseGO(200, 10.0f)
+                         .CarryItem(24140)
+                         .Build();
+    ASSERT_EQ(e.steps.size(), 2u);
+    EXPECT_EQ(e.steps[0].itemId, 0u);
+    EXPECT_EQ(e.steps[1].kind, EventStepKind::UseGameObject);
+    EXPECT_EQ(e.steps[1].goEntry, 200u);
+    EXPECT_EQ(e.steps[1].itemId, 24140u);
+    EXPECT_FALSE(e.steps[1].reportUse);
+}
+
+// Karazhan's urn: mod-individual-progression's go_blackened_urn refuses a clicker
+// without the Blackened Urn item (24140), silently, so the intro never started
+// and every run stalled at the urn (tp-20260924-004412-1, 5/5).
+TEST(DungeonEventBuilderTest, KarazhanUrnClickCarriesTheBlackenedUrn)
+{
+    DungeonEvent const* ev = DungeonEventRegistry::Find(532, 2);
+    ASSERT_NE(ev, nullptr) << "Karazhan (532) event 2 (Nightbane urn) is missing";
+    ASSERT_FALSE(ev->steps.empty());
+    EventStep const& click = ev->steps[0];
+    EXPECT_EQ(click.kind, EventStepKind::UseGameObject);
+    EXPECT_EQ(click.goEntry, 194092u);
+    EXPECT_EQ(click.itemId, 24140u);
+}

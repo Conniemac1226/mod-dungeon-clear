@@ -411,7 +411,8 @@ bool DungeonClearAtBossTrigger::IsActive()
                         continue;   // a real player is never gated on
                     ++living;
                     if (!SealedEncounterRegistry::InSealedRoom(
-                            *sealed, member->GetPositionX(), member->GetPositionY()))
+                            *sealed, member->GetPositionX(), member->GetPositionY(),
+                            member->GetPositionZ()))
                     {
                         ++outsideCount;
                         if (!outside)

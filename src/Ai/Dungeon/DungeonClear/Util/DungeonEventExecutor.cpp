@@ -646,6 +646,18 @@ StepResult DungeonEventExecutor::RunStep(Player* bot, AiObjectContext* context,
                           bot->GetName(), go->GetGUID().ToString(), go->GetName());
                 return StepResult::Running;
             }
+            // A GO script that gates on a carried key item refuses a click from an
+            // empty bag without a word the headless harness can see (Karazhan's
+            // Blackened Urn under mod-individual-progression). Grant it first.
+            if (step.itemId && !bot->HasItemCount(step.itemId, 1))
+            {
+                bot->AddItem(step.itemId, 1);
+                if (!bot->HasItemCount(step.itemId, 1))
+                    return StepResult::Running;  // bags full this tick — retry
+                LOG_INFO("playerbots.dungeonclear",
+                         "[DC:{}] event-step Use GO '{}': granted carried item {}",
+                         bot->GetName(), go->GetName(), step.itemId);
+            }
             // REPORT-USE variant: hand the click to the GO's script the way the
             // report-use opcode does, and do NOT also call Use(). GameObject::Use()
             // passes reportUse=false, which for a script that keys its work off the
