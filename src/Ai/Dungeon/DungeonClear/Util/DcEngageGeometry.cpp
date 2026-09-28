@@ -1272,10 +1272,38 @@ bool DcEngageGeometry::ClosedDoorBetween(WorldObject* from, float tx, float ty,
     // Rays run ~2yd above each endpoint so they cross the door PANEL instead of
     // grazing the floor seam. corridorWidth is kept for ABI but unused — an LOS
     // ray needs no width band.
-    return !map->isInLineOfSight(
-        from->GetPositionX(), from->GetPositionY(), from->GetPositionZ() + 2.0f,
-        tx, ty, tz + 2.0f, from->GetPhaseMask(),
-        LINEOFSIGHT_CHECK_GOBJECT_ALL, VMAP::ModelIgnoreFlags::Nothing);
+    float const ax = from->GetPositionX();
+    float const ay = from->GetPositionY();
+    float const az = from->GetPositionZ();
+    if (map->isInLineOfSight(ax, ay, az + 2.0f, tx, ty, tz + 2.0f, from->GetPhaseMask(),
+                             LINEOFSIGHT_CHECK_GOBJECT_ALL, VMAP::ModelIgnoreFlags::Nothing))
+        return false;
+
+    // The ray is ENTRY-BLIND: every collidable GameObject is in the dynamic tree,
+    // furniture included. Karazhan's Banquet Hall has 42 Chairs between the
+    // tables, and a ray through any of them vetoed in-hall packs as "behind a
+    // closed door" — a verdict that flickered with every step the tank took, left
+    // the room-clear with nothing to pull, and handed the tick to Advance, which
+    // walked the uncleared hall to Moroes (tr-20260926-174359-2). So a blocked ray
+    // counts only when a shut door is actually there to have blocked it: a closed
+    // DcDoorIndex door on the chord's floors, within the attribution band of the
+    // line (the same test OnlyEventGatesBetween uses to name the door it hit).
+    float const loZ = std::min(az, tz) - DC_DOOR_Z_BAND;
+    float const hiZ = std::max(az, tz) + DC_DOOR_Z_BAND;
+    float const bandSq = DC_EVENT_GATE_BAND * DC_EVENT_GATE_BAND;
+    for (ObjectGuid const guid : DcDoorIndex::Get(map))
+    {
+        GameObject* go = map->GetGameObject(guid);
+        if (!IsDoorClosed(go))
+            continue;
+        float const gz = go->GetPositionZ();
+        if (gz < loZ || gz > hiZ)
+            continue;
+        if (DungeonClearMath::DistSqToSegment2D(go->GetPositionX(), go->GetPositionY(),
+                                               ax, ay, tx, ty) <= bandSq)
+            return true;
+    }
+    return false;
 }
 bool DcEngageGeometry::OnlyEventGatesBetween(WorldObject* from, float tx, float ty,
                                             float tz)
@@ -1360,8 +1388,9 @@ float DcEngageGeometry::DistAlongPathToClosedDoor(
 
     // Walk the smoothed polyline accumulating distance FROM THE PATH START, and
     // track two cursors: where the path is closest to the bot (the tank's current
-    // progress along it) and where it first enters THIS door's band. Return the
-    // forward gap between them — the travel still REMAINING to the doorway.
+    // progress along it) and where it first enters THIS door's band. The forward
+    // gap between them, plus the bot's own joining leg onto that progress vertex,
+    // is the travel still REMAINING to the doorway.
     //
     // The accumulate-from-the-bot version was wrong: the long-path is anchored
     // where it was built, which falls behind as the tank advances, so walking
@@ -1371,92 +1400,36 @@ float DcEngageGeometry::DistAlongPathToClosedDoor(
     // progress cursor fixes that. Only this one door is tested: scanning every
     // nearby door returned whichever the winding route grazed first (an off-route
     // side door), masking the real blocker.
-    float const bandSq = DC_DOOR_BAND * DC_DOOR_BAND;
-    float const botX = bot->GetPositionX();
-    float const botY = bot->GetPositionY();
-    float const botZ = bot->GetPositionZ();
-
-    float const zBand = DC_DOOR_Z_BAND;
-    float prevX = 0.0f, prevY = 0.0f, prevZ = 0.0f;
-    bool havePrev = false;
-    float accumulated = 0.0f;     // distance from path start to current point
-    float cursorAccum = 0.0f;     // accumulated at the point closest to the bot
-    float bestBotDistSq = std::numeric_limits<float>::max();
-    float doorAccum = -1.0f;      // accumulated at the band entry
-
-    auto visit = [&](float px, float py, float pz) -> bool
-    {
-        if (havePrev)
-        {
-            // Only treat the door as on THIS leg if the leg shares its floor —
-            // otherwise the route passing over/under the door (a stacked deck or
-            // a ramp) registers a band entry far before the real doorway and
-            // parks the tank short.
-            bool const onFloor =
-                doorZ >= std::min(prevZ, pz) - zBand &&
-                doorZ <= std::max(prevZ, pz) + zBand;
-            if (onFloor &&
-                DungeonClearMath::DistSqToSegment2D(doorX, doorY, prevX, prevY, px, py) <= bandSq)
-            {
-                doorAccum = accumulated;   // at the START (prev) of the hitting segment
-                return true;
-            }
-            float const dx = px - prevX;
-            float const dy = py - prevY;
-            accumulated += std::sqrt(dx * dx + dy * dy);
-        }
-        // The bot's progress cursor, picked in 3D — same rule (and same reason)
-        // as DungeonClearMath::PathProgressCursor. A 2D pick took the vertex on
-        // whichever storey happened to lie closest from above: in Shadowfang
-        // Keep's tower the landing 10yd up the staircase beat the tank's own
-        // floor, cursorAccum jumped most of the way up the stairs, and this
-        // returned "8.0yd" for Arugal's Lair 27yd overhead — inside
-        // DC_DOOR_STOP_DISTANCE, so the tank parked at the foot of the stairs and
-        // the run auto-paused on a door it never approached.
-        float const bdx = px - botX;
-        float const bdy = py - botY;
-        float const bdz = pz - botZ;
-        float const bd2 = bdx * bdx + bdy * bdy + bdz * bdz;
-        if (bd2 < bestBotDistSq)
-        {
-            bestBotDistSq = bd2;
-            cursorAccum = accumulated;
-        }
-        prevX = px;
-        prevY = py;
-        prevZ = pz;
-        havePrev = true;
-        return false;
-    };
-
-    bool hit = false;
+    //
+    // The progress cursor is picked in 3D — same rule (and same reason) as
+    // DungeonClearMath::PathProgressCursor. A 2D pick took the vertex on
+    // whichever storey happened to lie closest from above: in Shadowfang Keep's
+    // tower the landing 10yd up the staircase beat the tank's own floor, and
+    // this returned "8.0yd" for Arugal's Lair 27yd overhead — inside
+    // DC_DOOR_STOP_DISTANCE, so the tank parked at the foot of the stairs and
+    // the run auto-paused on a door it never approached.
+    //
+    // A band entry well BEHIND the progress cursor is a door on the
+    // already-walked stretch (opened and passed, or a stale flag) — NOT a
+    // blocker ahead. Without that rule, max(0, behind) clamped it to "at door,
+    // 0yd", which instantly parked the run and even fired Use() at a door the
+    // bot was nowhere near. The slack covers parking inside the hitting segment
+    // itself (cursor legitimately runs a few yards past the entry while standing
+    // at the doorway).
+    std::vector<G3D::Vector3> pts;
     for (PathSegment const& seg : path.segments)
     {
         if (seg.polyline.empty())
-            hit = visit(seg.ex, seg.ey, seg.ez);
+            pts.emplace_back(seg.ex, seg.ey, seg.ez);
         else
-            for (G3D::Vector3 const& pt : seg.polyline)
-                if ((hit = visit(pt.x, pt.y, pt.z)))
-                    break;
-        if (hit || accumulated >= maxLookAhead)
-            break;
+            pts.insert(pts.end(), seg.polyline.begin(), seg.polyline.end());
     }
 
-    if (!hit)
-        return std::numeric_limits<float>::max();
-
-    // A band entry well BEHIND the bot's progress cursor is a door on the
-    // already-walked stretch (opened and passed, or a stale flag) — NOT a
-    // blocker ahead. Without this, max(0, behind) clamped it to "at door,
-    // 0yd", which instantly parked the run and even fired Use() at a door the
-    // bot was nowhere near. The slack covers parking inside the hitting
-    // segment itself (cursor legitimately runs a few yards past the entry
-    // while standing at the doorway).
     constexpr float BEHIND_SLACK = 15.0f;
-    if (doorAccum + BEHIND_SLACK < cursorAccum)
-        return std::numeric_limits<float>::max();
-
-    return std::max(0.0f, doorAccum - cursorAccum);
+    return DungeonClearMath::DoorTravelRemaining(
+        pts, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
+        doorX, doorY, doorZ, DC_DOOR_BAND, DC_DOOR_Z_BAND, maxLookAhead,
+        BEHIND_SLACK);
 }
 bool DcEngageGeometry::IsReachable(Player* bot, float x, float y, float z)
 {

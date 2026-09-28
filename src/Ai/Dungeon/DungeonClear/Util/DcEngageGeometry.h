@@ -510,6 +510,9 @@ public:
     // another deck or in a parallel corridor and vetoing a valid near-side pull.
     // `from` is any world object (usually the bot, but the dynamic-pull chain gate
     // passes the PACK so the door test is independent of where the tank stands).
+    // Implemented as a GameObject-LOS ray, corroborated by a closed DcDoorIndex
+    // door near the chord: a ray blocked by furniture (Karazhan's banquet chairs)
+    // is not a door.
     static bool ClosedDoorBetween(WorldObject* from, float tx, float ty, float tz,
                                   float corridorWidth = 8.0f);
 
@@ -549,9 +552,11 @@ public:
     static bool ClosedDoorNear(WorldObject* ref, float x, float y, float z,
                                float radius = 8.0f);
 
-    // Distance TRAVELLED ALONG the long-path (from the bot) to where the route
-    // first comes within the door band of the door at (doorX,doorY), or FLT_MAX
-    // if it never does within `maxLookAhead`. The door-blocked handler parks the
+    // Distance still to TRAVEL from the bot to where the long-path first comes
+    // within the door band of the door at (doorX,doorY) — the bot's joining leg
+    // onto its progress vertex plus the along-route gap from there — or FLT_MAX
+    // if it never does within `maxLookAhead` (see
+    // DungeonClearMath::DoorTravelRemaining). The door-blocked handler parks the
     // tank a short stand-off before this so it stops on the NEAR side of the
     // doorway. Measured along the path on purpose: GetExactDist to a door's GO
     // origin (hinge/jamb) is unreliable — the origin can sit past the doorway

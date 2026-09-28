@@ -352,6 +352,7 @@ namespace DcActionShared
     {
         AiObjectContext* ctx = botAI->GetAiObjectContext();
         ctx->GetValue<std::string&>(DcKey::StallReason)->Get() = reason;
+        ctx->GetValue<DcApproachState&>(DcKey::ApproachState)->Get().doorOwnsStallReason = false;
 
         std::string& lastSaid = ctx->GetValue<std::string&>(DcKey::LastSaidReason)->Get();
         if (lastSaid != reason)
@@ -363,10 +364,21 @@ namespace DcActionShared
     }
 
 
+    void StallDungeonClearForDoor(PlayerbotAI* botAI, std::string const& reason)
+    {
+        StallDungeonClear(botAI, reason);
+        botAI->GetAiObjectContext()
+            ->GetValue<DcApproachState&>(DcKey::ApproachState)
+            ->Get()
+            .doorOwnsStallReason = true;
+    }
+
+
     void ClearStall(AiObjectContext* ctx)
     {
         ctx->GetValue<std::string&>(DcKey::StallReason)->Get().clear();
         ctx->GetValue<std::string&>(DcKey::LastSaidReason)->Get().clear();
+        ctx->GetValue<DcApproachState&>(DcKey::ApproachState)->Get().doorOwnsStallReason = false;
     }
 
 

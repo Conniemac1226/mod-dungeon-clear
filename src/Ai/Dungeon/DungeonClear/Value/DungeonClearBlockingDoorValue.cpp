@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <string>
 
 #include "DBCStores.h"
 #include "DBCStructure.h"
@@ -114,6 +115,21 @@ namespace
                                                          minX, minY, maxX, maxY);
     }
 
+
+    // No blocker on the corridor: a stall reason the door-blocked action wrote
+    // is false now, and nothing downstream would clear it — release it here.
+    // See DcApproachState::doorOwnsStallReason.
+    void ReleaseDoorOwnedStall(AiObjectContext* context, Player* bot)
+    {
+        if (!context->GetValue<DcApproachState&>(DcKey::ApproachState)->Get().ReleaseDoorOwnedStall())
+            return;
+        std::string& reason = context->GetValue<std::string&>(DcKey::StallReason)->Get();
+        LOG_INFO("playerbots.dungeonclear",
+                 "[DC:{}] blocking-door: no blocker -> releasing the door's stall reason \"{}\"",
+                 bot->GetName(), reason);
+        reason.clear();
+        context->GetValue<std::string&>(DcKey::LastSaidReason)->Get().clear();
+    }
 }
 
 ObjectGuid DungeonClearBlockingDoorValue::Calculate()
@@ -234,6 +250,7 @@ ObjectGuid DungeonClearBlockingDoorValue::Calculate()
                 ->Get()
                 .ClearDoorStall();
         }
+        ReleaseDoorOwnedStall(context, bot);
         return ObjectGuid::Empty;
     }
 
@@ -418,5 +435,7 @@ ObjectGuid DungeonClearBlockingDoorValue::Calculate()
         LOG_DEBUG("playerbots.dungeonclear",
                   "[DC:{}] blocking-door: flagged {} as corridor-blocking",
                   bot->GetName(), best.ToString());
+    if (best.IsEmpty())
+        ReleaseDoorOwnedStall(context, bot);
     return best;
 }

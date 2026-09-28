@@ -247,6 +247,19 @@ struct DcApproachState
     uint32 doorStallSinceMs    = 0;  // when that stall began (getMSTime)
     uint32 doorStallLastMs     = 0;  // last tick the stall was observed
 
+    // True while the current StallReason was written by the door-blocked action
+    // ("A gate has closed on us", "Opening the door to X"). Such a reason is only
+    // true while the blocking-door value names a door; when it drops the door,
+    // the value releases the reason (ReleaseDoorOwnedStall). Nothing else would:
+    // the door-blocked trigger stops firing once the value is empty, and only a
+    // successful Advance clears a stall — which the stalled fallback, owning
+    // every between-pulls tick while a reason is set, never lets happen.
+    // tr-20260924-094111-3 (Karazhan) died exactly so: a phantom Gatehouse Door
+    // flag, an unplaced walk-in hold, "corridor clear" the same second, then 2m
+    // of the fallback chasing an off-level mob until the 120s stall watchdog.
+    // Any non-door StallDungeonClear / ClearStall drops the ownership.
+    bool doorOwnsStallReason = false;
+
     // --- long-path cache state --------------------------------------------
     // The cached long-range A* result lives in its own value ("dungeon clear
     // long path"); these are the bookkeeping fields that govern when it rebuilds
@@ -400,6 +413,15 @@ struct DcApproachState
         doorStallGuid.Clear();
         doorStallSinceMs = 0;
         doorStallLastMs  = 0;
+    }
+
+    // The blocking-door value found no blocker: returns true (and drops the
+    // ownership) when the stall reason is the door's own and must be cleared.
+    bool ReleaseDoorOwnedStall()
+    {
+        bool const owned = doorOwnsStallReason;
+        doorOwnsStallReason = false;
+        return owned;
     }
 };
 

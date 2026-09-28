@@ -2155,6 +2155,88 @@ TEST(DungeonClearPathCursorTest, FlatRouteIsUnaffectedByTheZTerm)
 }
 
 // ---------------------------------------------------------------------------
+// DoorTravelRemaining — how far the door-blocked walk-in still has to go.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+    // A straight corridor along +X, a vertex every 4yd, with a shut door at
+    // x=40. Door band 8yd / z-band 6yd as in DungeonClearTuning.h, so the route
+    // enters the band on the leg starting at x=28.
+    std::vector<G3D::Vector3> DoorCorridor(float length = 60.0f)
+    {
+        std::vector<G3D::Vector3> route;
+        for (float x = 0.0f; x <= length; x += 4.0f)
+            route.emplace_back(x, 0.0f, 0.0f);
+        return route;
+    }
+
+    float Remaining(std::vector<G3D::Vector3> const& route,
+                    float bx, float by, float bz,
+                    float doorX = 40.0f, float doorZ = 0.0f,
+                    float lookAhead = 100.0f)
+    {
+        return DungeonClearMath::DoorTravelRemaining(
+            route, bx, by, bz, doorX, 0.0f, doorZ,
+            /*band*/ 8.0f, /*zBand*/ 6.0f, lookAhead, /*behindSlack*/ 15.0f);
+    }
+
+    constexpr float kDoorStopDistance = 10.0f;  // DC_DOOR_STOP_DISTANCE
+}
+
+TEST(DungeonClearDoorTravelTest, OnTheRouteNearTheDoorReadsAtTheDoor)
+{
+    float const r = Remaining(DoorCorridor(), 24.0f, 0.5f, 0.0f);
+    EXPECT_NEAR(r, 4.5f, 0.01f);
+    EXPECT_LE(r, kDoorStopDistance);
+}
+
+TEST(DungeonClearDoorTravelTest, OffTheRouteBesideTheDoorStillHasToWalkBack)
+{
+    // tr-20260924-130027-4 (Karazhan, Strange Bookcase): engage-trash dragged the
+    // tank 28yd off its route. The route vertex nearest it still sat a few yards
+    // short of the doorway, and without the joining leg the walk-in read "at
+    // door", parked 34yd from the bookcase and let the watchdog auto-pause the
+    // run. The 28yd back onto the route is travel it still owes.
+    float const r = Remaining(DoorCorridor(), 24.0f, 28.0f, 0.0f);
+    EXPECT_NEAR(r, 32.0f, 0.01f);
+    EXPECT_GT(r, kDoorStopDistance);
+}
+
+TEST(DungeonClearDoorTravelTest, FarAlongTheRouteIsNotAtTheDoor)
+{
+    EXPECT_NEAR(Remaining(DoorCorridor(), 4.0f, 0.0f, 0.0f), 24.0f, 0.01f);
+}
+
+TEST(DungeonClearDoorTravelTest, DoorWellBehindTheBotIsNotABlocker)
+{
+    EXPECT_EQ(Remaining(DoorCorridor(), 56.0f, 0.0f, 0.0f),
+              std::numeric_limits<float>::max());
+}
+
+TEST(DungeonClearDoorTravelTest, DoorOnAnotherFloorIsNeverEntered)
+{
+    EXPECT_EQ(Remaining(DoorCorridor(), 24.0f, 0.0f, 0.0f, 40.0f, /*doorZ*/ 20.0f),
+              std::numeric_limits<float>::max());
+}
+
+TEST(DungeonClearDoorTravelTest, LookAheadCountsFromTheBotNotTheRouteStart)
+{
+    // A single long polyline built far behind the tank: the door's band is 16yd
+    // ahead of the bot but 168yd from the route's start.
+    std::vector<G3D::Vector3> const route = DoorCorridor(200.0f);
+    EXPECT_NEAR(Remaining(route, 152.0f, 0.0f, 0.0f, /*doorX*/ 180.0f), 16.0f, 0.01f);
+    // And a door past the look-ahead from the bot is not placed at all.
+    EXPECT_EQ(Remaining(route, 20.0f, 0.0f, 0.0f, /*doorX*/ 180.0f),
+              std::numeric_limits<float>::max());
+}
+
+TEST(DungeonClearDoorTravelTest, EmptyRouteIsUnplaced)
+{
+    EXPECT_EQ(Remaining({}, 0.0f, 0.0f, 0.0f), std::numeric_limits<float>::max());
+}
+
+// ---------------------------------------------------------------------------
 // PathCursorIsJoinable — may the bot -> cursor leg be read as corridor?
 //
 // The cursor answers "which vertex is nearest"; it cannot answer "and is the

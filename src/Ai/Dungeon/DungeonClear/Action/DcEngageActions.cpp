@@ -2541,7 +2541,7 @@ bool DungeonClearDoorBlockedAction::Execute(Event event)
         // blocked-state watchdog ever sees one.
         if (door && DcEventDoorRegistry::IsSelfClearing(door->GetEntry()))
         {
-            StallDungeonClear(botAI, waitReason);
+            StallDungeonClearForDoor(botAI, waitReason);
             return true;
         }
 
@@ -2620,7 +2620,7 @@ bool DungeonClearDoorBlockedAction::Execute(Event event)
                          "{:.1f}yd away (> {:.0f}yd) -> holding, not clicking",
                          bot->GetName(), door->GetGUID().ToString(),
                          door->GetName(), bot->GetExactDist(door), DC_DOOR_USE_RANGE);
-                StallDungeonClear(botAI, openingReason);
+                StallDungeonClearForDoor(botAI, openingReason);
                 return true;
             }
 
@@ -2642,7 +2642,7 @@ bool DungeonClearDoorBlockedAction::Execute(Event event)
                     doorAppr.lastDoorUseGuid = door->GetGUID();
                     doorAppr.lastDoorUseMs = now;
                 }
-                StallDungeonClear(botAI, openingReason);
+                StallDungeonClearForDoor(botAI, openingReason);
                 return true;
             }
         }
@@ -2861,7 +2861,7 @@ bool DungeonClearDoorBlockedAction::Execute(Event event)
     if (unplaced && !atDoor)
     {
         DcMovement::StopBot(bot, DcMovement::Stop::Soft);
-        StallDungeonClear(botAI, waitReason);
+        StallDungeonClearForDoor(botAI, waitReason);
         return true;
     }
 

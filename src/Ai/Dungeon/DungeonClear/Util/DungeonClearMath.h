@@ -1029,6 +1029,31 @@ namespace DungeonClearMath
                               std::size_t cursor,
                               float px, float py, float pz, float maxGap);
 
+    // Travel still REMAINING from the bot to where `route` first enters the
+    // door band of (doorX,doorY,doorZ), or FLT_MAX when the route never does
+    // within `maxLookAhead` of the bot's progress cursor, or does so only well
+    // behind that cursor (more than `behindSlack` — a door already walked
+    // past). The pure body of
+    // DcEngageGeometry::DistAlongPathToClosedDoor; the door-blocked walk-in parks
+    // when this drops to DC_DOOR_STOP_DISTANCE.
+    //
+    // Remaining travel = the JOINING LEG (bot -> its progress-cursor vertex, 3D)
+    // + the along-route gap from that vertex to the band entry. The joining leg
+    // used to be left out, which measured from the route vertex nearest the bot
+    // as if the bot stood on it. Karazhan, tr-20260924-130027-4: engage-trash
+    // pulled the tank 28yd off its route beside the Strange Bookcase; the vertex
+    // nearest it still sat 7.4yd short of the doorway, so the walk-in read "at
+    // door" and parked 34yd from the door, outside click range. The blocked-door
+    // watchdog (which trusts the "at door" read) then auto-paused the run five
+    // seconds later without a single click. The blocking-door value, which
+    // flags the door in the first place, already chains the same bot -> cursor
+    // leg into its own look-ahead; this keeps the two measures consistent.
+    float DoorTravelRemaining(std::vector<G3D::Vector3> const& route,
+                              float botX, float botY, float botZ,
+                              float doorX, float doorY, float doorZ,
+                              float band, float zBand,
+                              float maxLookAhead, float behindSlack);
+
     // Index of the LATEST crumb within `rejoinRadius` (3D) of `cur`, or
     // TrailRejoinNone if none qualifies. Used by the breadcrumb recorder: on a
     // >kJump discontinuity (a drag-back / drop-down), rather than wiping the
