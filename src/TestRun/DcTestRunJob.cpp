@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <ctime>
+#include <limits>
 #include <optional>
 #include <set>
 
@@ -375,7 +376,19 @@ std::unique_ptr<DcTestRunJob> DcTestRunJob::Create(Player* gm, DcTestDungeonRegi
         }
         slot.guid = guid;
         usedClasses.insert(slot.classId);
+        // Harness adds are exempt from AiPlayerbot.MaxAddedBots. That cap is
+        // playerbots' per-account limit on hand-added bots, and every run's
+        // party is added under the one issuing GM (usually the test driver),
+        // so it capped the whole harness — all concurrent runs together — at
+        // MaxAddedBots bots. AddPlayerBot reads the cap synchronously, so
+        // lifting it for this one call on the world thread leaves a player's
+        // own `.playerbot add` limit exactly as configured. What bounds the
+        // harness is the addclass pool (a launch without free characters
+        // backs off) and the machine.
+        int32 const addedCap = sPlayerbotAIConfig.maxAddedBots;
+        sPlayerbotAIConfig.maxAddedBots = std::numeric_limits<int32>::max();
         mgr->AddPlayerBot(slot.guid, gm->GetSession()->GetAccountId());
+        sPlayerbotAIConfig.maxAddedBots = addedCap;
     }
 
     LOG_INFO("playerbots.dungeonclear",

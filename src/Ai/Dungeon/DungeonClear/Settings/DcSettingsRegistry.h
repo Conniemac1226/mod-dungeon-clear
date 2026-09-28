@@ -805,8 +805,8 @@ inline constexpr DcSettingDef kDcSettings[] =
     // MaxConcurrent / MaxPlans / Plan.MaxTotal all take 0 = unlimited, hence the
     // 0 floor — and all three DEFAULT to 0. The harness deliberately imposes no
     // ceiling of its own: how many runs the box can field is a property of the
-    // box (AiPlayerbot.MaxAddedBots, the addclass pool, CPU), and those limits
-    // already refuse an over-budget start with a named message. A second,
+    // box (the addclass pool, CPU), and the pool already refuses an
+    // over-budget start with a named message. A second,
     // harness-local cap only ever refused starts the machine could have served.
     { "TestRun.MaxConcurrent",   DcType::UInt,      0,  0, 100000, false },
     { "TestRun.MaxPlans",        DcType::UInt,      0,  0, 100000, false },

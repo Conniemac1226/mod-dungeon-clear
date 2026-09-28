@@ -565,7 +565,7 @@ export interface SoakIndex {
   evidenceTool: boolean;
   me: string;
   admin: boolean;
-  botBudget: number;         // AiPlayerbot.MaxAddedBots; 0 = unknown
+  addclassPool: number | null;  // characters in the playerbots addclass pool; null = unknown
 }
 
 export interface SoakRunRow extends RunRecord {

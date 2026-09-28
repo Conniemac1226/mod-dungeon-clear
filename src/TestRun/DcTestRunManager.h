@@ -25,8 +25,9 @@ class Player;
 // arbitrates the shared bot pool, and writes the one multi-run live-status file
 // the dashboard polls. Any number of runs execute at once — uncapped by default
 // (DungeonClear.TestRun.MaxConcurrent, 0 = unlimited), so the real ceiling is
-// AiPlayerbot.MaxAddedBots and the addclass pool, both of which refuse an
-// over-budget start by name.
+// the addclass pool (a start with no free character for a comp slot is refused
+// by name) and the machine. AiPlayerbot.MaxAddedBots does not apply: the
+// harness's own adds are exempt from it (DcTestRunJob::Create).
 //
 // Threading rules:
 //   * _runs is mutated ONLY on the world thread (Start push_back, Tick erase)
@@ -53,7 +54,6 @@ public:
         UnknownDungeon,  // permanent
         NoMgr,           // permanent
         CapHit,          // transient — a run will finish
-        BotBudget,       // transient — MaxAddedBots pre-check
         PoolExhausted,   // transient — other runs hold the pool chars
         BadRoster,       // permanent — malformed party=, unknown/duplicate name
         FactionMismatch, // permanent — a roster cannot span factions
@@ -64,8 +64,8 @@ public:
     // Validate + launch a run. On success sets *msg to the start confirmation
     // and returns true; on failure sets *msg to the reason and returns false.
     // Rejections: unknown dungeon, heroic on a row without a heroic mode, no
-    // playerbot manager, concurrency cap hit, MaxAddedBots pre-check, or no
-    // free pool character for a comp class.
+    // playerbot manager, concurrency cap hit, or no free pool character for a
+    // comp class.
     // seed 0 rolls a random comp; a nonzero seed reproduces a specific comp.
     // heroic runs the instance at DUNGEON_DIFFICULTY_HEROIC with the row's
     // heroicLevel as the default bot level (level override still wins).

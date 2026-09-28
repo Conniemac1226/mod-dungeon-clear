@@ -1621,11 +1621,12 @@ DungeonClear.TestRun.OverallTimeoutS = 7200
 #
 #    DungeonClear.TestRun.MaxConcurrent
 #        How many `.dc test` runs may be active at once. Each run fields its own
-#        5-bot party (its own instance, watchdog and dashboard card), so N runs
-#        add up to N*5 bots against AiPlayerbot.MaxAddedBots — a start that would
-#        cross that cap is refused up front with an explicit message. Starting
-#        past this cap is refused with "max concurrent test runs reached".
-#        0 = unlimited (bounded only by MaxAddedBots and the addclass pool),
+#        5-bot party (its own instance, watchdog and dashboard card), drawn from
+#        the playerbots addclass pool. Harness bots do NOT count against
+#        AiPlayerbot.MaxAddedBots — that stays a limit on players' own
+#        `.playerbot add`. Starting past this cap is refused with "max
+#        concurrent test runs reached".
+#        0 = unlimited (bounded only by the addclass pool and the machine),
 #        which is the default: the machine's real limits already refuse an
 #        over-budget start by name, so a second harness-local ceiling only ever
 #        refused runs the box could have served. Set a positive number to put
@@ -1642,7 +1643,7 @@ DungeonClear.TestRun.MaxConcurrent = 0
 #        keeps up to its own `concurrent=` test runs in flight until `total=`
 #        runs have completed, then writes one summary line to
 #        dc_testplans.jsonl. 0 = unlimited (the default); the runs a plan
-#        launches are still gated by MaxConcurrent and the bot budget.
+#        launches are still gated by MaxConcurrent and the addclass pool.
 #
 #        Default: 0 (unlimited)
 #
@@ -1663,8 +1664,8 @@ DungeonClear.TestRun.Plan.MaxTotal = 0
 #
 #    DungeonClear.TestRun.Plan.BackoffMs
 #        How long a plan waits before retrying after a transient launch
-#        rejection (global run cap hit, MaxAddedBots budget, addclass pool
-#        exhausted, issuing GM briefly offline).
+#        rejection (global run cap hit, addclass pool exhausted, issuing GM
+#        briefly offline).
 #
 #        Default: 5000
 #

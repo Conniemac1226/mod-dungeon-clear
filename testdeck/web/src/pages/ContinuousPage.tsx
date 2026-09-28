@@ -221,7 +221,7 @@ function SetupView({ index, onStarted }: { index: SoakIndex; onStarted: () => vo
                 <Stepper value={concurrent} onChange={setConcurrent} />
               </Field>
               <BotEstimate pool={pool} byToken={byToken} concurrent={n}
-                           budget={index.botBudget}
+                           pool_size={index.addclassPool}
                            maxConcurrent={catalogue.limits?.maxConcurrent ?? 0} />
               <Field label="Order">
                 <Segmented
@@ -320,20 +320,21 @@ function Stepper({ value, onChange }: { value: string; onChange: (v: string) => 
   );
 }
 
-/* Bots in flight: Σ party size over what might be running at once. A raid
-   entry fields its default size, so a raid-heavy pool at a high concurrency
-   is where this turns amber. */
+/* Bots in flight: Σ party size over what might be running at once, against
+   the addclass pool every party is drawn from (harness bots are exempt from
+   AiPlayerbot.MaxAddedBots). A raid entry fields its default size, so a
+   raid-heavy pool at a high concurrency is where this turns amber. */
 function BotEstimate({
   pool,
   byToken,
   concurrent,
-  budget,
+  pool_size,
   maxConcurrent,
 }: {
   pool: SoakPoolEntry[];
   byToken: Map<string, Dungeon>;
   concurrent: number;
-  budget: number;
+  pool_size: number | null;
   maxConcurrent: number;
 }) {
   if (!pool.length || !concurrent) return null;
@@ -346,17 +347,18 @@ function BotEstimate({
   const peak = worst.reduce((a, b) => a + b, 0) +
     Math.max(0, concurrent - worst.length) * (worst[worst.length - 1] ?? 5);
   const typical = Math.round(avg * concurrent);
-  const over = (budget > 0 && peak > budget) || (maxConcurrent > 0 && concurrent > maxConcurrent);
+  const over = (pool_size !== null && peak > pool_size) || (maxConcurrent > 0 && concurrent > maxConcurrent);
   return (
     <div className={`rounded-lg px-3 py-2 text-xs ${over
       ? "border border-amber-800/60 bg-amber-950/30 text-amber-200/90"
       : "bg-ink-950/50 text-ink-400"}`}>
       ~{typical} bots in flight, up to {peak} when the biggest entries overlap
-      {budget > 0 && <> · budget {budget} (AiPlayerbot.MaxAddedBots)</>}
+      {pool_size !== null && <> · addclass pool {pool_size} characters</>}
       {maxConcurrent > 0 && <> · server cap {maxConcurrent} runs</>}
       {over && (
         <div className="mt-1">
-          Over budget: launches will back off and wait for a run to finish.
+          More than the pool can field at once: launches will back off and
+          wait for a run to finish (grow it with <code>.playerbots addclass</code>).
         </div>
       )}
     </div>

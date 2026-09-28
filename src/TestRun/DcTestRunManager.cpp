@@ -16,7 +16,6 @@
 #include "Player.h"
 
 #include "Playerbots.h"
-#include "PlayerbotAIConfig.h"
 #include "PlayerbotMgr.h"
 
 #include "Ai/Dungeon/DungeonClear/Settings/DcSettings.h"
@@ -92,17 +91,9 @@ bool DcTestRunManager::Start(Player* gm, std::string const& dungeonToken,
                     "max concurrent test runs reached (" + std::to_string(maxConcurrent) +
                     ") — .dc test stop <run> first");
 
-    // MaxAddedBots pre-check: the core enforces this silently inside
-    // AddPlayerBot, so without the pre-check a party over the cap surfaces only
-    // as a 60s spawn timeout. Name the knob instead.
-    uint32 const currentBots = GET_PLAYERBOT_MGR(gm)->GetPlayerbotsCount();
-    if (sPlayerbotAIConfig.maxAddedBots > 0 &&
-        currentBots + runSize > static_cast<uint32>(sPlayerbotAIConfig.maxAddedBots))
-        return fail(StartErr::BotBudget,
-                    "would exceed AiPlayerbot.MaxAddedBots (" +
-                    std::to_string(sPlayerbotAIConfig.maxAddedBots) + "; " +
-                    std::to_string(currentBots) + " bots already added, this run needs " +
-                    std::to_string(runSize) + ") — raise it or stop a run");
+    // No AiPlayerbot.MaxAddedBots check: the harness's own adds are exempt
+    // from it (see DcTestRunJob::Create), so it no longer bounds how many runs
+    // can be in flight.
 
     // Create picks slot guids skipping _reservedGuids (all synchronous on the
     // world thread — no TOCTOU with other runs).
@@ -166,9 +157,8 @@ bool DcTestRunManager::StartRoster(Player* gm, std::string const& dungeonToken,
                     "max concurrent test runs reached (" + std::to_string(maxConcurrent) +
                     ") — .dc test stop <run> first");
 
-    // No MaxAddedBots pre-check here: roster members log in masterless
-    // (AddPlayerBot with masterAccountId 0), and that cap is only applied to bots
-    // added against a master's account.
+    // Roster members log in masterless (AddPlayerBot with masterAccountId 0),
+    // which AiPlayerbot.MaxAddedBots never applied to in the first place.
 
     DcTestRoster::Result const parsed = DcTestRoster::Parse(partySpec);
     if (parsed.kind != DcTestRoster::Kind::Ok)

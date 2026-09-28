@@ -656,3 +656,37 @@ def test_testplans_hides_checkpoint_lines(cfg, client):
         + json.dumps({"planId": "tp-1", "checkpoint": True}) + "\n")
     assert [p["planId"] for p in client.get("/api/testplans").json()["plans"]] == ["tp-2"]
     assert len(client.get("/api/testplans", params={"checkpoints": True}).json()["plans"]) == 3
+
+
+# ---------------------------------------------------------------------------
+# addclass pool size (the bound on harness bots now that MaxAddedBots is not)
+# ---------------------------------------------------------------------------
+
+
+def test_addclass_pool_counts_type_2_accounts_on_the_characters_server(cfg, monkeypatch):
+    from testdeck import mysql as M
+    cfg.playerbots_conf.write_text(
+        'PlayerbotsDatabaseInfo = "127.0.0.1;3306;acore;pw;acore_playerbots"\n')
+    seen = []
+
+    async def fake_query(which, sql, cfg=None):
+        seen.append((which, sql))
+        return [["37"]]
+
+    monkeypatch.setattr(M, "mysql_query", fake_query)
+    assert run(M.addclass_pool_size(cfg)) == 37
+    which, sql = seen[0]
+    assert which == "characters"
+    assert "`acore_playerbots`.playerbots_account_type" in sql and "account_type = 2" in sql
+
+
+def test_addclass_pool_is_unknown_when_the_playerbots_db_is_elsewhere(cfg, monkeypatch):
+    from testdeck import mysql as M
+    cfg.playerbots_conf.write_text(
+        'PlayerbotsDatabaseInfo = "10.0.0.9;3306;acore;pw;acore_playerbots"\n')
+
+    async def boom(*a, **k):
+        raise AssertionError("must not query")
+
+    monkeypatch.setattr(M, "mysql_query", boom)
+    assert run(M.addclass_pool_size(cfg)) is None

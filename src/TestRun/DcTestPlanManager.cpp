@@ -643,13 +643,12 @@ void DcTestPlanManager::TickPlan(Plan& plan, uint32 diff)
     switch (err)
     {
         case DcTestRunManager::StartErr::CapHit:
-        case DcTestRunManager::StartErr::BotBudget:
         case DcTestRunManager::StartErr::PoolExhausted:
             giveBack();
             plan.backoffMs = backoffCfg;
             // With anything in flight a rejection resolves itself when a run
             // finishes; only a rejection with the whole harness idle can be a
-            // permanent misconfiguration (empty pool, MaxAddedBots at 0) —
+            // permanent misconfiguration (an empty addclass pool) —
             // count those. The harness-wide check (not just this plan's own
             // children) is what lets plans queue: with MaxPlans unlimited, a
             // plan launched while another is eating the bot budget has nothing

@@ -6,6 +6,7 @@ people") may pause, edit, stop and delete it — the same rule as rosters.
 """
 
 import json
+import time
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
@@ -14,7 +15,7 @@ from pydantic import BaseModel
 
 from ..auth import request_session
 from ..context import ctx
-from ..util import conf_int
+from ..mysql import addclass_pool_size
 from ..soak import (PLAN_ID_RE, RUN_ID_RE, TOKEN_RE, cluster_reason, entry_key,
                     row_key)
 from .plans import api_testdungeons, catalogue_rows, check_dungeon
@@ -120,6 +121,18 @@ async def require_pool_support():
     return cat
 
 
+_pool_cache = {"t": 0.0, "n": None}
+
+
+async def cached_pool_size():
+    """The addclass pool size, re-counted at most once a minute."""
+    now = time.time()
+    if now - _pool_cache["t"] > 60:
+        _pool_cache["t"] = now
+        _pool_cache["n"] = await addclass_pool_size()
+    return _pool_cache["n"]
+
+
 def view(s, with_stats=False):
     out = s.summary()
     if with_stats:
@@ -144,8 +157,7 @@ async def api_soak(request: Request):
         "supported": bool((cat.get("limits") or {}).get("planPool")),
         "evidenceTool": sv.tool_path() is not None,
         "me": me(request), "admin": is_admin(request),
-        "botBudget": conf_int(ctx.cfg.playerbots_conf, "AiPlayerbot.MaxAddedBots", 0)
-                     if ctx.cfg.playerbots_conf else 0,
+        "addclassPool": await cached_pool_size(),
     }
 
 

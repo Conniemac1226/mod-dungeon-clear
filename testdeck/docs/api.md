@@ -122,7 +122,7 @@ in `<data_dir>/soaks/<sk-id>/`. Mutations need the session's owner or
 
 | Route | Notes |
 |---|---|
-| `GET /api/soak` | `{active (with stats), recent[], supported, evidenceTool, me, admin, botBudget}`; `supported` mirrors the catalogue's `limits.planPool` |
+| `GET /api/soak` | `{active (with stats), recent[], supported, evidenceTool, me, admin, addclassPool}` — `addclassPool` = characters in the playerbots addclass pool (null if uncountable); `supported` mirrors the catalogue's `limits.planPool` |
 | `POST /api/soak/start` | `{pool:[{token,heroic}], concurrent, pick: bag\|random, level, seed, ilvl, quality, autoResume, breaker}`; 409 while another session runs or on a server without pool plans |
 | `GET /api/soak/{id}` | One session with stats (past sessions too) |
 | `POST /api/soak/{id}/edit` | `{pool?, concurrent?}` → `.dc test plan edit`; 409 until the plan is registered |
