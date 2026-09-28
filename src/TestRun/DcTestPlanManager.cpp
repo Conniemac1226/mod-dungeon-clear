@@ -189,6 +189,7 @@ bool DcTestPlanManager::Start(DcTestPlan::Spec spec, Player* gm, std::string* ms
         plan.gmGuid = gm->GetGUID();
     plan.startedAtMs = NowUnixMs();
     plan.lastCheckpointMs = plan.startedAtMs;
+    plan.paused = spec.startPaused;
     if (spec.endless)
         plan.acc = DcTestPlanSummary::Accumulator(kEndlessRunIdCap);
     DcTestPlan::SeedPicker(plan.picker, spec.seedBase, std::random_device{}());
@@ -225,9 +226,11 @@ bool DcTestPlanManager::Start(DcTestPlan::Spec spec, Player* gm, std::string* ms
                                                : std::string(),
                                    spec.seedBase ? Acore::StringFormat(" seedBase={}", spec.seedBase)
                                                  : std::string(),
-                                   gm ? std::string()
-                                      : std::string(" — first run launches once the test "
-                                                    "driver finishes logging in"));
+                                   spec.startPaused
+                                       ? std::string(" — paused: .dc test plan resume to launch")
+                                       : gm ? std::string()
+                                            : std::string(" — first run launches once the test "
+                                                          "driver finishes logging in"));
     return true;
 }
 
@@ -355,14 +358,28 @@ bool DcTestPlanManager::Edit(DcTestPlan::EditSpec const& edit, std::string* msg)
     if (plan->stopping)
         return fail(edit.planId + " is stopping");
 
-    if (edit.hasPool)
+    if (edit.hasPool || edit.hasAdd)
     {
         if (!plan->spec.isPool)
-            return fail("pool= only applies to a plan started with pool=");
-        std::vector<DcTestPlan::PoolEntry> pool = edit.pool;
+            return fail("pool= / add= only apply to a plan started with pool=");
+        std::vector<DcTestPlan::PoolEntry> incoming = edit.hasPool ? edit.pool : edit.add;
         std::string err;
-        if (!ResolvePool(pool, true, &err))
+        if (!ResolvePool(incoming, true, &err))
             return fail(err);
+        std::vector<DcTestPlan::PoolEntry> pool;
+        if (edit.hasAdd)
+        {
+            pool = plan->spec.pool;
+            for (DcTestPlan::PoolEntry const& e : incoming)
+            {
+                for (DcTestPlan::PoolEntry const& have : pool)
+                    if (have.Key() == e.Key())
+                        return fail("'" + e.Key() + "' is already in the pool");
+                pool.push_back(e);
+            }
+        }
+        else
+            pool = std::move(incoming);
         plan->spec.pool = std::move(pool);
         for (DcTestPlan::PoolEntry const& e : plan->spec.pool)
         {
@@ -384,8 +401,10 @@ bool DcTestPlanManager::Edit(DcTestPlan::EditSpec const& edit, std::string* msg)
     LOG_INFO("playerbots.dungeonclear", "TESTPLAN {} edited: pool={} concurrent={}",
              plan->spec.planId, PoolText(plan->spec.pool), plan->spec.concurrent);
     if (msg)
-        *msg = "edited " + plan->spec.planId + ": " + PlanLabel(*plan) +
-               " concurrent=" + std::to_string(plan->spec.concurrent);
+        *msg = Acore::StringFormat("edited {}: {} entr{}, concurrent={}", plan->spec.planId,
+                                   plan->spec.pool.size(),
+                                   plan->spec.pool.size() == 1 ? "y" : "ies",
+                                   plan->spec.concurrent);
     return true;
 }
 

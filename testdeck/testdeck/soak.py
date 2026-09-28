@@ -32,6 +32,7 @@ import time
 from collections import Counter, OrderedDict
 from pathlib import Path
 
+from .bridge import MAX_CMD_LEN
 from .util import parse_jsonl_line as _parse, tail_rows
 
 SOAK_ID_RE = re.compile(r"sk-\d{8}-\d{6}(?:-\d{1,3})?")
@@ -49,6 +50,11 @@ START_TIMEOUT_S = 45
 START_RETRY_S = 60
 MAX_START_ATTEMPTS = 3
 BREAKER_DEFAULT = 5
+# A pool that does not fit one console line is loaded with `edit add=` chunks.
+# Re-send what is still missing after this long (the heartbeat that would show
+# the last chunk landing is ~2 s behind), and give up after this many rounds.
+ADD_RESEND_MS = 6000
+MAX_ADD_ROUNDS = 5
 EVIDENCE_TIMEOUT_S = 300
 REPORT_CAP_BYTES = 512 << 10
 
@@ -99,26 +105,56 @@ def cluster_reason(reason):
     return s[:120] or "(no reason)"
 
 
-def pool_arg(pool):
-    return ",".join(entry_key(e["token"], e.get("heroic")) for e in pool)
+def chunk_keys(prefix, suffix, keys, limit=MAX_CMD_LEN):
+    """Split pool keys into runs that each fit `prefix + "a,b,c" + suffix`
+    within `limit` characters — the bridge refuses anything longer, and a
+    screen console silently drops a line past ~750 characters anyway."""
+    chunks, cur = [], []
+    for k in keys:
+        if cur and len(prefix) + len(",".join(cur + [k])) + len(suffix) > limit:
+            chunks.append(cur)
+            cur = []
+        cur.append(k)
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+def plan_options(cfg):
+    opts = " total=0"
+    if cfg.get("concurrent"):
+        opts += f" concurrent={int(cfg['concurrent'])}"
+    if cfg.get("pick") == "random":
+        opts += " pick=random"
+    if cfg.get("level"):
+        opts += f" level={int(cfg['level'])}"
+    if cfg.get("seed"):
+        opts += f" seed={int(cfg['seed'])}"
+    ilvl = int(cfg.get("ilvl") or 0)
+    if ilvl:
+        opts += " ilvl=none" if ilvl == -1 else f" ilvl={ilvl}"
+    if cfg.get("quality"):
+        opts += f" quality={int(cfg['quality'])}"
+    return opts
 
 
 def plan_start_cmd(cfg):
-    cmd = f".dc test plan start pool={pool_arg(cfg['pool'])} total=0"
-    if cfg.get("concurrent"):
-        cmd += f" concurrent={int(cfg['concurrent'])}"
-    if cfg.get("pick") == "random":
-        cmd += " pick=random"
-    if cfg.get("level"):
-        cmd += f" level={int(cfg['level'])}"
-    if cfg.get("seed"):
-        cmd += f" seed={int(cfg['seed'])}"
-    ilvl = int(cfg.get("ilvl") or 0)
-    if ilvl:
-        cmd += " ilvl=none" if ilvl == -1 else f" ilvl={ilvl}"
-    if cfg.get("quality"):
-        cmd += f" quality={int(cfg['quality'])}"
-    return cmd
+    """(start command, pool keys it leaves out). A pool too long for one line
+    starts PAUSED with the first chunk; the supervisor adds the rest with
+    `edit add=` and resumes once the plan's pool is complete."""
+    prefix = ".dc test plan start pool="
+    opts = plan_options(cfg)
+    keys = [entry_key(e["token"], e.get("heroic")) for e in cfg["pool"]]
+    if len(prefix) + len(",".join(keys)) + len(opts) <= MAX_CMD_LEN:
+        return prefix + ",".join(keys) + opts, []
+    chunks = chunk_keys(prefix, opts + " paused", keys)
+    rest = [k for c in chunks[1:] for k in c]
+    return prefix + ",".join(chunks[0]) + opts + " paused", rest
+
+
+def add_cmds(plan_id, keys):
+    prefix = f".dc test plan edit {plan_id} add="
+    return [prefix + ",".join(c) for c in chunk_keys(prefix, "", keys)]
 
 
 def read_heartbeat(path):
@@ -432,7 +468,10 @@ class SoakSupervisor:
         return s
 
     async def _issue_start(self, s):
-        cmd = plan_start_cmd(s.state["config"])
+        cmd, rest = plan_start_cmd(s.state["config"])
+        s.state["awaitingResume"] = bool(rest)
+        s.state["addRounds"] = 0
+        s.state["addSentAtMs"] = 0
         s.state["startAttempts"] = s.state.get("startAttempts", 0) + 1
         s.state["startIssuedAtMs"] = now_ms()
         s.state["knownPlanIds"] = self._visible_plan_ids()
@@ -482,13 +521,22 @@ class SoakSupervisor:
         s.save()
 
     async def edit(self, s, pool=None, concurrent=None):
+        """A pool edit sends the first chunk as `pool=` (replacing the old
+        pool); the tick's reconcile `add=`s whatever is still missing."""
         extra = ""
-        if pool is not None:
-            extra += f" pool={pool_arg(pool)}"
-            s.state["config"]["pool"] = pool
         if concurrent is not None:
             extra += f" concurrent={int(concurrent)}"
             s.state["config"]["concurrent"] = int(concurrent)
+        if pool is not None:
+            prefix = f".dc test plan edit {s.state.get('currentPlanId')} pool="
+            keys = [entry_key(e["token"], e.get("heroic")) for e in pool]
+            first = chunk_keys(prefix, extra, keys)[0]
+            extra = " pool=" + ",".join(first) + extra
+            s.state["config"]["pool"] = pool
+            s.state["addRounds"] = 0
+            # Give the heartbeat time to show the replaced pool before the
+            # reconcile diffs against it.
+            s.state["addSentAtMs"] = now_ms()
         reply = await self.plan_cmd(s, "edit", extra)
         s.save()
         return reply
@@ -541,11 +589,13 @@ class SoakSupervisor:
         # 1. Adopt the plan we asked for: a pool plan that was not visible when
         #    we issued the start and that no other soak owns.
         if not st.get("currentPlanId") and st.get("status") in ("starting", "resuming"):
-            want = sorted(entry_key(e["token"], e.get("heroic")) for e in st["config"]["pool"])
+            want = {entry_key(e["token"], e.get("heroic")) for e in st["config"]["pool"]}
             known = set(st.get("knownPlanIds") or [])
             for p in plans:
-                have = sorted(entry_key(e.get("token", ""), e.get("heroic")) for e in p.get("pool") or [])
-                if p.get("endless") and p.get("planId") not in known and have == want:
+                have = {entry_key(e.get("token", ""), e.get("heroic")) for e in p.get("pool") or []}
+                # A long pool arrives in chunks, so the plan may hold only
+                # part of it yet: adopt on a non-empty subset.
+                if p.get("endless") and p.get("planId") not in known and have and have <= want:
                     st["currentPlanId"] = p["planId"]
                     st["planIds"].append(p["planId"])
                     st["planLastSeenMs"] = now
@@ -602,6 +652,7 @@ class SoakSupervisor:
                 st["status"] = "running"
                 if st.get("statusDetail", "").startswith("paused"):
                     st["statusDetail"] = ""
+            await self._reconcile_pool(s, mine, now)
             self._breaker(s)
             if st.get("breakerPending"):
                 st["breakerPending"] = False
@@ -649,6 +700,39 @@ class SoakSupervisor:
             st["statusDetail"] = "the plan vanished with the worldserver"
             st["plan"] = None
         s.save()
+
+    async def _reconcile_pool(self, s, plan, now):
+        """Bring the plan's pool up to the session's: `add=` what is missing
+        (chunked), then resume a plan that was started paused to be loaded."""
+        st = s.state
+        pid = st["currentPlanId"]
+        want = [entry_key(e["token"], e.get("heroic")) for e in st["config"]["pool"]]
+        have = {entry_key(e.get("token", ""), e.get("heroic")) for e in plan.get("pool") or []}
+        missing = [k for k in want if k not in have]
+        loading = bool(missing) and st.get("addRounds", 0) < MAX_ADD_ROUNDS
+        if loading:
+            if now - (st.get("addSentAtMs") or 0) > ADD_RESEND_MS:
+                st["addSentAtMs"] = now
+                st["addRounds"] = st.get("addRounds", 0) + 1
+                for cmd in add_cmds(pid, missing):
+                    await self._exec(cmd)
+            if st.get("awaitingResume") and st["status"] not in ("draining", "stopping"):
+                st["status"] = "resuming" if st.get("restarts") else "starting"
+                st["statusDetail"] = (f"loading the pool into the plan "
+                                      f"({len(want) - len(missing)}/{len(want)})")
+            return
+        if missing:
+            st["statusDetail"] = (f"the worldserver would not take {len(missing)} pool "
+                                  f"entr{'y' if len(missing) == 1 else 'ies'}: "
+                                  + ", ".join(missing[:8]))
+        if st.get("awaitingResume"):
+            st["awaitingResume"] = False
+            if not missing and st.get("statusDetail", "").startswith("loading the pool"):
+                st["statusDetail"] = ""
+            if st["status"] not in ("draining", "stopping") and not st.get("userPaused") \
+                    and not st.get("breakerTripped"):
+                await self._exec(f".dc test plan resume {pid}")
+                st["status"] = "running"
 
     def _live_row(self, r):
         return {k: r.get(k) for k in ("runId", "dungeon", "dungeonName", "heroic", "stage",

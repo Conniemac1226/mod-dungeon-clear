@@ -35,7 +35,7 @@ namespace DcTestPlan
                 " — usage: .dc test plan start <dungeon> [heroic] total=N [concurrent=N] [level=N]"
                 " [seed=N] [size=N] [ilvl=N|none] [quality=rare|epic|…]"
                 "  |  .dc test plan start pool=<dungeon[:heroic]>,… [total=0|N] [pick=bag|random]"
-                " [concurrent=N] [level=N] [seed=N] [ilvl=…] [quality=…]";
+                " [concurrent=N] [level=N] [seed=N] [ilvl=…] [quality=…] [paused]";
             return out;
         };
         bool sawTotal = false;
@@ -51,6 +51,11 @@ namespace DcTestPlan
                 if (word == "heroic")
                 {
                     out.spec.heroic = true;
+                    continue;
+                }
+                if (word == "paused")
+                {
+                    out.spec.startPaused = true;
                     continue;
                 }
                 if (!out.spec.dungeonToken.empty())
@@ -220,7 +225,8 @@ namespace DcTestPlan
         auto usage = [&](std::string const& why) -> EditParse&
         {
             out.ok = false;
-            out.err = why + " — usage: .dc test plan edit <planId> [pool=<dungeon[:heroic]>,…] [concurrent=N]";
+            out.err = why + " — usage: .dc test plan edit <planId> [pool=<dungeon[:heroic]>,…"
+                            " | add=<dungeon[:heroic]>,…] [concurrent=N]";
             return out;
         };
 
@@ -246,6 +252,14 @@ namespace DcTestPlan
                 out.edit.pool = pool.entries;
                 out.edit.hasPool = true;
             }
+            else if (key == "add")
+            {
+                PoolParse const add = ParsePool(val);
+                if (!add.ok)
+                    return usage(add.err);
+                out.edit.add = add.entries;
+                out.edit.hasAdd = true;
+            }
             else if (key == "concurrent")
             {
                 char* end = nullptr;
@@ -261,7 +275,9 @@ namespace DcTestPlan
 
         if (out.edit.planId.empty())
             return usage("missing planId");
-        if (!out.edit.hasPool && !out.edit.hasConcurrent)
+        if (out.edit.hasPool && out.edit.hasAdd)
+            return usage("pool= and add= cannot be combined");
+        if (!out.edit.hasPool && !out.edit.hasAdd && !out.edit.hasConcurrent)
             return usage("nothing to change");
         out.ok = true;
         return out;

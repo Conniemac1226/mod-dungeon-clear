@@ -690,3 +690,108 @@ def test_addclass_pool_is_unknown_when_the_playerbots_db_is_elsewhere(cfg, monke
 
     monkeypatch.setattr(M, "mysql_query", boom)
     assert run(M.addclass_pool_size(cfg)) is None
+
+
+# ---------------------------------------------------------------------------
+# long pools: a console line is capped (bridge MAX_CMD_LEN; screen drops lines
+# past ~750 chars), so a big pool starts paused and is loaded in chunks
+# ---------------------------------------------------------------------------
+
+BIG = [{"token": f"dungeon-{i:02d}", "heroic": bool(i % 3 == 0)} for i in range(60)]
+BIG_KEYS = [S.entry_key(e["token"], e["heroic"]) for e in BIG]
+
+
+def big_plan(pid, keys, state="paused"):
+    pool = [{"token": k.split(":")[0], "heroic": k.endswith(":heroic")} for k in keys]
+    return plan_obj(pid, state=state, pool=pool)
+
+
+def test_long_pool_starts_paused_loads_in_chunks_then_resumes_once(cfg):
+    from testdeck.bridge import MAX_CMD_LEN
+    write_catalogue(cfg)
+    sup, bridge, _ = make_sup(cfg)
+
+    async def go():
+        s = await sup.start("Tester", dict(CONFIG, pool=BIG, concurrent=15))
+        start = bridge.cmds[0]
+        assert start.endswith(" paused") and len(start) <= MAX_CMD_LEN
+        first = start[len(".dc test plan start pool="):].split(" ")[0].split(",")
+        assert 0 < len(first) < len(BIG_KEYS) and first == BIG_KEYS[:len(first)]
+
+        # The plan registers with the first chunk: adopted, and the rest added.
+        heartbeat(cfg, plans=[big_plan("tp-1", first)])
+        await sup.tick()
+        assert s.state["currentPlanId"] == "tp-1"
+        adds = [c for c in bridge.cmds if c.startswith(".dc test plan edit tp-1 add=")]
+        assert adds and all(len(c) <= MAX_CMD_LEN for c in adds)
+        added = [k for c in adds for k in c.split("add=")[1].split(",")]
+        assert added == BIG_KEYS[len(first):]
+        assert s.state["status"] == "starting"
+        assert "loading the pool" in s.state["statusDetail"]
+        assert ".dc test plan resume tp-1" not in bridge.cmds
+
+        # The heartbeat has not caught up yet: nothing is re-sent.
+        n = len(bridge.cmds)
+        await sup.tick()
+        assert len(bridge.cmds) == n
+
+        # Pool complete: resume exactly once.
+        heartbeat(cfg, plans=[big_plan("tp-1", BIG_KEYS)])
+        await sup.tick()
+        await sup.tick()
+        assert bridge.cmds.count(".dc test plan resume tp-1") == 1
+        assert not s.state["awaitingResume"]
+        return s
+
+    run(go())
+
+
+def test_a_lost_add_chunk_is_resent(cfg):
+    write_catalogue(cfg)
+    sup, bridge, _ = make_sup(cfg)
+
+    async def go():
+        s = await sup.start("Tester", dict(CONFIG, pool=BIG))
+        first = bridge.cmds[0][len(".dc test plan start pool="):].split(" ")[0].split(",")
+        heartbeat(cfg, plans=[big_plan("tp-1", first)])
+        await sup.tick()
+        n_adds = sum(c.startswith(".dc test plan edit tp-1 add=") for c in bridge.cmds)
+        # A chunk never landed (screen ate it): after the resend window the
+        # missing entries go again, and only those.
+        s.state["addSentAtMs"] -= S.ADD_RESEND_MS + 1
+        partial = BIG_KEYS[:-5]
+        heartbeat(cfg, plans=[big_plan("tp-1", partial)])
+        await sup.tick()
+        again = [c for c in bridge.cmds if c.startswith(".dc test plan edit tp-1 add=")][n_adds:]
+        assert [k for c in again for k in c.split("add=")[1].split(",")] == BIG_KEYS[-5:]
+        return s
+
+    run(go())
+
+
+def test_a_long_pool_edit_replaces_with_the_first_chunk_then_adds(cfg):
+    from testdeck.bridge import MAX_CMD_LEN
+    write_catalogue(cfg)
+    sup, bridge, _ = make_sup(cfg)
+
+    async def go():
+        s = await started(cfg, sup)
+        await sup.edit(s, pool=BIG, concurrent=8)
+        edit = bridge.cmds[-1]
+        assert edit.startswith(".dc test plan edit tp-1 pool=") and "concurrent=8" in edit
+        assert len(edit) <= MAX_CMD_LEN
+        first = edit.split("pool=")[1].split(" ")[0].split(",")
+        # No add until the heartbeat can show the replaced pool.
+        heartbeat(cfg, plans=[plan_obj("tp-1")])
+        await sup.tick()
+        assert not any("add=" in c for c in bridge.cmds)
+        s.state["addSentAtMs"] -= S.ADD_RESEND_MS + 1
+        heartbeat(cfg, plans=[big_plan("tp-1", first, state="running")])
+        await sup.tick()
+        added = [k for c in bridge.cmds if "add=" in c for k in c.split("add=")[1].split(",")]
+        assert added == BIG_KEYS[len(first):]
+        # A running session is never paused or resumed by a pool edit.
+        assert not any(c.endswith(("resume tp-1", "pause tp-1")) for c in bridge.cmds)
+        return s
+
+    run(go())

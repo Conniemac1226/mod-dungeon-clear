@@ -318,9 +318,13 @@ The server side is an ordinary endless pool plan, usable from the console too:
 
 ```
 .dc test plan start pool=rfc,wc,uk:heroic,kara total=0 concurrent=3 [pick=random]
-.dc test plan edit <planId> pool=… concurrent=N
+.dc test plan edit <planId> pool=…|add=… concurrent=N
 .dc test plan pause|resume|stop <planId>
 ```
+
+A console line is short (the bridge takes 300 characters; a screen session
+silently drops anything past ~750), so the deck starts a long pool `paused`
+with the first part, `add=`s the rest, and resumes once the plan holds it all.
 
 Evidence capture needs the module's `tools/` next to this checkout; set
 `[soak] dc_test_run` in `testdeck.toml` if it is elsewhere. The page is hidden

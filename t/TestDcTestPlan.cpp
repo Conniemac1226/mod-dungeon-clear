@@ -440,3 +440,30 @@ TEST(DcTestPlanAccumulatorTest, PoolLineCarriesPerEntryStats)
     // A single-dungeon plan's line has no pool key at all.
     EXPECT_EQ(DcTestPlanSummary::ToJsonl(h, rfc.Build()).find("\"pool\":["), std::string::npos);
 }
+
+// ---- chunked pools (a console line has a length limit) ---------------------------
+
+TEST(DcTestPlanPoolParseTest, PausedBareWordStartsThePlanPaused)
+{
+    ParseResult const r = ParseStartArgs("pool=rfc,wc total=0 paused");
+    ASSERT_TRUE(r.ok) << r.err;
+    EXPECT_TRUE(r.spec.startPaused);
+    EXPECT_FALSE(ParseStartArgs("pool=rfc,wc").spec.startPaused);
+    // Still exactly one positional token: `paused` is a flag, not a dungeon.
+    ParseResult const single = ParseStartArgs("deadmines paused total=3");
+    ASSERT_TRUE(single.ok) << single.err;
+    EXPECT_EQ(single.spec.dungeonToken, "deadmines");
+}
+
+TEST(DcTestPlanEditParseTest, AddAppendsAndExcludesPool)
+{
+    EditParse const r = ParseEditArgs("tp-1 add=uk:hc,kara");
+    ASSERT_TRUE(r.ok) << r.err;
+    EXPECT_TRUE(r.edit.hasAdd);
+    EXPECT_FALSE(r.edit.hasPool);
+    ASSERT_EQ(r.edit.add.size(), 2u);
+    EXPECT_EQ(r.edit.add[0].Key(), "uk:heroic");
+    EXPECT_FALSE(ParseEditArgs("tp-1 pool=rfc add=wc").ok);
+    EXPECT_FALSE(ParseEditArgs("tp-1 add=rfc,rfc").ok);
+    EXPECT_FALSE(ParseEditArgs("tp-1 add=").ok);
+}

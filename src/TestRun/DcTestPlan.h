@@ -58,6 +58,10 @@ namespace DcTestPlan
         std::vector<PoolEntry> pool;
         bool isPool = false;
         bool endless = false;          // total=0 with pool=: run until stopped
+        // `paused`: register the plan without launching; `.dc test plan
+        // resume` starts it. Lets a caller whose console line is too short
+        // for the whole pool start with part of it and `edit add=` the rest.
+        bool startPaused = false;
         PickMode pick = PickMode::Bag;
         std::uint32_t total = 0;       // runs to complete (failures count)
         std::uint32_t concurrent = 0;  // plan-local in-flight cap
@@ -227,13 +231,16 @@ namespace DcTestPlan
     };
     PoolParse ParsePool(std::string const& list);
 
-    // `.dc test plan edit <planId> [pool=…] [concurrent=N]` — at least one of
-    // the two changes is required.
+    // `.dc test plan edit <planId> [pool=…|add=…] [concurrent=N]` — at least
+    // one change is required. pool= replaces the pool, add= appends to it
+    // (refusing an entry already there); the two cannot be combined.
     struct EditSpec
     {
         std::string planId;
         bool hasPool = false;
         std::vector<PoolEntry> pool;
+        bool hasAdd = false;
+        std::vector<PoolEntry> add;
         bool hasConcurrent = false;
         std::uint32_t concurrent = 0;
     };
