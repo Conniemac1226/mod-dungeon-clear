@@ -757,13 +757,21 @@ std::optional<Position> DcEngageGeometry::AggroSafeApproachPoint(
     Player* bot, float bx, float by, float bz, float safeRadius, Unit* target,
     int8* orbitDir, OrbitProfile profile)
 {
-    if (!bot || !target || safeRadius <= 0.0f)
+    if (!target)
+        return std::nullopt;
+    return AggroSafeApproachPoint(bot, bx, by, bz, safeRadius, target->GetPositionX(),
+                                  target->GetPositionY(), orbitDir, profile);
+}
+
+std::optional<Position> DcEngageGeometry::AggroSafeApproachPoint(
+    Player* bot, float bx, float by, float bz, float safeRadius, float gx, float gy,
+    int8* orbitDir, OrbitProfile profile)
+{
+    if (!bot || safeRadius <= 0.0f)
         return std::nullopt;
 
     float const tx = bot->GetPositionX();
     float const ty = bot->GetPositionY();
-    float const gx = target->GetPositionX();
-    float const gy = target->GetPositionY();
 
     // Distance from the boss centre to the target. USUALLY > safeRadius (kept
     // room-trash sits outside the aggro sphere), but a forced-advanced pull

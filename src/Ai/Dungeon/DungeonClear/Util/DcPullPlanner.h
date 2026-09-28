@@ -104,6 +104,27 @@ public:
                                                    float maxDrag,
                                                    float& clearanceOut, float& dragOut);
 
+    // Room-clear straight pull (RoomAggroRegistry): where the tank should stand to
+    // tag `target`, and the camp straight back along the same line, chosen so the
+    // tag spot and the drag stay as far from `boss` (at `bossRadius`) and from
+    // every other pack (at `safeRadius`) as the room allows. The stand spot sits
+    // `standDist` from the pack; the camp `setback` beyond it, shortened to stay
+    // inside the room's camp box. Both points are navmesh-snapped, reachable,
+    // on the pack's floor, and the stand spot sees the pack. nullopt when no
+    // bearing passes — the caller falls back to the walk-in and trail camp.
+    struct RoomClearLane
+    {
+        Position stand;
+        Position camp;
+        float margin = 0.0f;
+    };
+    static std::optional<RoomClearLane> ComputeRoomClearLane(PlayerbotAI* botAI,
+                                                             Unit* target, Unit* boss,
+                                                             float bossRadius,
+                                                             float standDist,
+                                                             float setback,
+                                                             float safeRadius);
+
     // Lean, target-less twin of ComputeSafeCamp for the Idle SCOUT phase: returns
     // a point `setback` back along the breadcrumb trail behind the tank (the
     // search gives up at maxDrag), so the camp can TRAIL the moving tank while no

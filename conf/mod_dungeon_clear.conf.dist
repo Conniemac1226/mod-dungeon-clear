@@ -567,7 +567,8 @@ DungeonClear.ClearRoomBeforeBoss = 1
 #        ClearRoomBeforeBoss) without the remaining count dropping, before it
 #        gives up and pulls the boss anyway (noting it in chat). Stops a livelock
 #        on an unreachable straggler or a respawn that keeps the count flat. Any
-#        real progress re-arms the clock.
+#        real progress re-arms the clock. Time the party spends fighting,
+#        resting, looting or regrouping between pulls does not count.
 #            0 = never give up (not recommended — can livelock)
 #
 #        Default: 30

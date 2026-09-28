@@ -290,6 +290,17 @@ struct DcPullContext
                                                  // Advance's spline again the moment
                                                  // the tank closed a single yard
 
+    // --- room-clear straight pull -------------------------------------------
+    // The stand spot / camp line for the room-trash pack being pulled
+    // (DcPullPlanner::ComputeRoomClearLane). Computed once per pack and kept, so
+    // the tank walks to one fixed spot; recomputed when the pack changes or
+    // wanders off the spot it was measured from (pathing Waiters).
+    ObjectGuid  laneTarget;                      // pack the lane belongs to
+    bool        laneOk         = false;          // a lane was found for it
+    Position    laneAnchor;                      // pack position when measured
+    Position    laneStand;                       // tag from here
+    Position    laneCamp;                        // drag straight back to here
+
     // --- CC-assist gate ---------------------------------------------------
     uint32      ccSince    = 0;                  // getMSTime() the tank's CURRENT
                                                  // continuous drag-ruining CC

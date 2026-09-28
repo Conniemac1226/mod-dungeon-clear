@@ -120,7 +120,10 @@ protected:
     // DcEngageGeometry::AggroSafeApproachPoint with RoomAggroPathPadding honoured.
     // The single home of the skirt geometry, shared by EngageDirect's walk-in and
     // MoveToSkirtingRoomAggro so all three room-clear drivers orbit identically.
-    std::optional<Position> RoomAggroSkirtPoint(Unit* target);
+    // With `dest`, the approach line ends at that point instead of at `target`
+    // (the orbit latch is still keyed on `target`).
+    std::optional<Position> RoomAggroSkirtPoint(Unit* target,
+                                                Position const* dest = nullptr);
 
     // Walk toward `target`, detouring around an active room-aggro boss sphere
     // when one lies between (RoomAggroSkirtPoint) — else straight at `target`.
@@ -129,6 +132,13 @@ protected:
     // engage handshake (the pull-idle room-clear branch); EngageDirect consumers
     // get the skirt for free via EngageDirect itself.
     bool MoveToSkirtingRoomAggro(Unit* target, MovementPriority prio);
+
+    // Walk to `dest`, the room-clear stand spot in front of `pack`: skirt the
+    // room-aggro boss sphere first, then orbit `pack` at `packRadius` so the walk
+    // around it to the front never crosses its aggro. Same own-the-tick semantics
+    // as MoveToSkirtingRoomAggro.
+    bool MoveToStandSkirtingRoomAggro(Unit* pack, Position const& dest,
+                                      float packRadius, MovementPriority prio);
 
     // Drive an EscortCreature step (Wailing Caverns' Disciple of Naralex): START
     // its scripted escort via gossip, then each tick FOLLOW the escortee and

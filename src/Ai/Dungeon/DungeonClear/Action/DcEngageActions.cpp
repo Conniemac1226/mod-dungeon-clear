@@ -516,7 +516,8 @@ bool DungeonClearEngageActionBase::DriveObjectiveEngage()
     return EngageDirect(target);
 }
 
-std::optional<Position> DungeonClearEngageActionBase::RoomAggroSkirtPoint(Unit* target)
+std::optional<Position> DungeonClearEngageActionBase::RoomAggroSkirtPoint(Unit* target,
+                                                                        Position const* dest)
 {
     if (!target)
         return std::nullopt;
@@ -579,9 +580,14 @@ std::optional<Position> DungeonClearEngageActionBase::RoomAggroSkirtPoint(Unit* 
         appr.skirtOrbitDir = 0;
     }
 
-    std::optional<Position> wp = DcEngageGeometry::AggroSafeApproachPoint(
-        bot, boss->GetPositionX(), boss->GetPositionY(), boss->GetPositionZ(),
-        safeRadius, target, &appr.skirtOrbitDir);
+    std::optional<Position> wp = dest
+        ? DcEngageGeometry::AggroSafeApproachPoint(
+              bot, boss->GetPositionX(), boss->GetPositionY(), boss->GetPositionZ(),
+              safeRadius, dest->GetPositionX(), dest->GetPositionY(),
+              &appr.skirtOrbitDir)
+        : DcEngageGeometry::AggroSafeApproachPoint(
+              bot, boss->GetPositionX(), boss->GetPositionY(), boss->GetPositionZ(),
+              safeRadius, target, &appr.skirtOrbitDir);
     if (wp)
         LOG_DEBUG("playerbots.dungeonclear",
                   "[DC:{}] room-clear: skirting {}'s aggro sphere (r={:.1f}) -> "
@@ -620,6 +626,31 @@ bool DungeonClearEngageActionBase::MoveToSkirtingRoomAggro(Unit* target,
                               /*normal_only*/ false, /*exact_waypoint*/ false, prio);
     // Own the tick while the move is in flight (a duplicate-move returns false but
     // the bot is still gliding) — mirrors EngageDirect's walk-branch semantics.
+    return moved || bot->isMoving() || IsWaitingForLastMove(prio);
+}
+
+bool DungeonClearEngageActionBase::MoveToStandSkirtingRoomAggro(Unit* pack,
+                                                                Position const& dest,
+                                                                float packRadius,
+                                                                MovementPriority prio)
+{
+    if (!pack)
+        return false;
+
+    // Boss sphere first, as in MoveToSkirtingRoomAggro. Then the pack itself:
+    // the stand spot is on its commit ring, and the tank may be starting from
+    // its side or behind it, so round it on the ring instead of cutting across.
+    std::optional<Position> wp = RoomAggroSkirtPoint(pack, &dest);
+    if (!wp)
+        wp = DcEngageGeometry::AggroSafeApproachPoint(
+            bot, pack->GetPositionX(), pack->GetPositionY(), pack->GetPositionZ(),
+            packRadius, dest.GetPositionX(), dest.GetPositionY(), nullptr,
+            DcEngageGeometry::OrbitProfile::Bystander);
+    Position const to = wp ? *wp : dest;
+
+    bool const moved = DcMoveTo(pack->GetMapId(), to.GetPositionX(), to.GetPositionY(),
+                                to.GetPositionZ(), /*idle*/ false, /*react*/ false,
+                                /*normal_only*/ false, /*exact_waypoint*/ false, prio);
     return moved || bot->isMoving() || IsWaitingForLastMove(prio);
 }
 

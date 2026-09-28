@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 #include "G3D/Vector3.h"
@@ -929,6 +930,65 @@ namespace DungeonClearMath
         return ChaseVerdict::Hold;
     }
 
+    // --- room-clear give-up clock ------------------------------------------
+    // State for the room-trash value's no-progress valve (RoomClearTimeout).
+    struct RoomClearClock
+    {
+        std::uint32_t lastRemaining = 0;  // count at the last progress (0 = none yet)
+        std::uint32_t idleMs = 0;         // observed ready time since that progress
+        std::uint32_t lastTickMs = 0;     // when the clock last ran (0 = never)
+    };
+
+    // The longest gap between two evaluations that still counts as observed. The
+    // value polls every 500ms while it is read; a longer gap means nobody read it —
+    // the at-boss gate stops reaching it while the party rests or loots — and
+    // time nobody watched must not be charged as "stalled".
+    inline constexpr std::uint32_t DC_ROOM_CLEAR_MAX_OBSERVED_GAP_MS = 2000;
+
+    // One tick of the no-progress valve (pure). True once the room-clear should be
+    // given up on: `idleMs` of READY time has passed with the remaining count never
+    // dropping.
+    //
+    // Only time the party could have been pulling counts. A `busy` tick (in combat,
+    // resting, looting, or not yet set) and an unobserved gap pause the clock
+    // instead of re-arming it, so a room whose packs each need a fight plus a
+    // full-mana rest (Karazhan's Banquet Hall: eight to nine elites per formation)
+    // does not read as stalled between formations, while a respawn churn that never
+    // lowers the count still adds up its ready gaps and gives up.
+    //
+    // Outside the room (`inRoom` false) the clock is held re-armed: the travel leg
+    // is not a stall. Progress (a smaller count, or the first sighting) re-arms it.
+    inline bool RoomClearGiveUpDue(RoomClearClock& c, std::uint32_t remaining, bool inRoom,
+                                   bool busy, std::uint32_t now, std::uint32_t timeoutMs)
+    {
+        std::uint32_t const prevTick = c.lastTickMs;
+        c.lastTickMs = now ? now : 1;
+
+        if (remaining == 0)
+        {
+            c.lastRemaining = 0;
+            c.idleMs = 0;
+            return false;
+        }
+        if (!inRoom || c.lastRemaining == 0 || remaining < c.lastRemaining)
+        {
+            c.lastRemaining = remaining;
+            c.idleMs = 0;
+            return false;
+        }
+        // A patroller walking into the radius raises the count. Track the new high
+        // so that killing it reads as progress, but leave the idle time alone.
+        if (remaining > c.lastRemaining)
+            c.lastRemaining = remaining;
+
+        // `now >= prevTick` guards the unsigned subtraction against a clock wrap.
+        std::uint32_t const elapsed = (prevTick && now >= prevTick) ? now - prevTick : 0;
+        if (!busy && elapsed <= DC_ROOM_CLEAR_MAX_OBSERVED_GAP_MS)
+            c.idleMs += elapsed;
+
+        return timeoutMs && c.idleMs > timeoutMs;
+    }
+
     // Engage-fizzle handoff latch (pure). An advanced-pull "camp fight" ended with
     // the tank out of combat but the pulled pack still ALIVE and IDLE — the drag
     // fizzled (a planted caster evaded home the moment the tank broke LOS at camp).
@@ -1201,6 +1261,133 @@ namespace DungeonClearMath
         v.haltStaleMove  = deviation > best + slack;
         v.bestDeviation  = v.haltStaleMove ? deviation : best;
         return v;
+    }
+    // --- Room-clear straight pull ---------------------------------------------
+    //
+    // A disc the pull lane must stay clear of: the room-aggro boss at its skirt,
+    // or another pack at the camp clearance.
+    struct LaneKeepAway
+    {
+        float x;
+        float y;
+        float radius;
+    };
+
+    // One candidate lane for a room-clear pull: the tank tags the pack from
+    // (standX, standY) and drags it straight back along the same bearing to
+    // (campX, campY).
+    struct StraightPullLane
+    {
+        float bearing = 0.0f;  // radians, pack -> stand
+        float standX = 0.0f;
+        float standY = 0.0f;
+        float campX = 0.0f;
+        float campY = 0.0f;
+        float margin = 0.0f;   // min over keep-aways of dist(lane) - radius
+        float walk = 0.0f;     // tank's straight-line distance to the stand spot
+        float score = 0.0f;    // margin, less a small charge for the walk
+    };
+
+    // 2D distance from (px,py) to the segment (ax,ay)-(bx,by).
+    inline float PointSegmentDist2d(float px, float py, float ax, float ay,
+                                    float bx, float by)
+    {
+        float const dx = bx - ax;
+        float const dy = by - ay;
+        float const len2 = dx * dx + dy * dy;
+        float t = 0.0f;
+        if (len2 > 1e-6f)
+            t = std::clamp(((px - ax) * dx + (py - ay) * dy) / len2, 0.0f, 1.0f);
+        float const cx = ax + t * dx - px;
+        float const cy = ay + t * dy - py;
+        return std::sqrt(cx * cx + cy * cy);
+    }
+
+    // Walk-distance charge per yard in the lane score: 20yd of extra walk is
+    // worth giving up 1yd of margin.
+    inline constexpr float StraightPullWalkCost = 0.05f;
+
+    // Clearance past this is as good as any more; the cap also keeps the walk
+    // charge meaningful when nothing is in the room.
+    inline constexpr float StraightPullMarginCap = 100.0f;
+
+    // Ranks the straight-pull lanes around a pack, best first.
+    //
+    // In a room pre-clear the tank used to close on the pack from wherever it
+    // stood and tag it at commit range, and the camp was the trail back the way
+    // it came. From the far side of a room that is a diagonal in front of the
+    // boss: the tag spot, the drag and every straggler's run all cross the
+    // boss's aggro (Moroes, tr-20260926-192642-3 — the lane ran 23yd from a
+    // dinner guest). A player walks up square in front of the pack and pulls it
+    // straight back instead.
+    //
+    // For each of `bearings` directions out of the pack: stand spot `standDist`
+    // out, camp straight on along the same line at the farthest drag in
+    // [minDrag, drag] that is inside the camp box (when there is one). The lane
+    // scored is stand -> camp, where the tank and the fight stand; its margin is
+    // the worst clearance over the keep-aways. Bearings with no in-box camp are
+    // dropped.
+    inline std::vector<StraightPullLane> RankStraightPullLanes(
+        float packX, float packY, float tankX, float tankY, float standDist,
+        float drag, float minDrag, std::vector<LaneKeepAway> const& keepAways,
+        bool hasBox, float boxMinX, float boxMaxX, float boxMinY, float boxMaxY,
+        int bearings = 24)
+    {
+        std::vector<StraightPullLane> out;
+        if (bearings <= 0 || standDist <= 0.0f || drag <= 0.0f)
+            return out;
+        minDrag = std::clamp(minDrag, 0.0f, drag);
+        auto inBox = [&](float x, float y)
+        {
+            return !hasBox ||
+                   (x >= boxMinX && x <= boxMaxX && y >= boxMinY && y <= boxMaxY);
+        };
+
+        constexpr float kTwoPi = 6.28318530718f;
+        for (int i = 0; i < bearings; ++i)
+        {
+            float const a = kTwoPi * float(i) / float(bearings);
+            float const ux = std::cos(a);
+            float const uy = std::sin(a);
+
+            StraightPullLane lane;
+            lane.bearing = a;
+            lane.standX = packX + ux * standDist;
+            lane.standY = packY + uy * standDist;
+
+            bool found = false;
+            for (float d = drag; d >= minDrag - 1e-3f; d -= 1.0f)
+            {
+                float const cx = lane.standX + ux * d;
+                float const cy = lane.standY + uy * d;
+                if (inBox(cx, cy))
+                {
+                    lane.campX = cx;
+                    lane.campY = cy;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found)
+                continue;
+
+            lane.margin = StraightPullMarginCap;
+            for (LaneKeepAway const& k : keepAways)
+                lane.margin = std::min(
+                    lane.margin, PointSegmentDist2d(k.x, k.y, lane.standX, lane.standY,
+                                                    lane.campX, lane.campY) -
+                                     k.radius);
+            float const wx = lane.standX - tankX;
+            float const wy = lane.standY - tankY;
+            lane.walk = std::sqrt(wx * wx + wy * wy);
+            lane.score = lane.margin - StraightPullWalkCost * lane.walk;
+            out.push_back(lane);
+        }
+
+        std::stable_sort(out.begin(), out.end(),
+                         [](StraightPullLane const& l, StraightPullLane const& r)
+                         { return l.score > r.score; });
+        return out;
     }
 }
 

@@ -60,6 +60,7 @@
 #include "Timer.h"
 #include "World.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
+#include "Ai/Dungeon/DungeonClear/Data/RoomAggroRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Util/ChunkedPathfinder.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcEngageGeometry.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcPullDecision.h"
@@ -958,6 +959,17 @@ std::optional<Position> DcPullPlanner::ComputeSafeCamp(PlayerbotAI* botAI, Unit*
     // — twice, for the point and the leg. Nothing below moves an emitter.
     DcHazard::LiveSet const live = DcHazard::Sample(bot);
 
+    // Room camp box (RoomAggroBoss::hasCampBox), resolved once like the hazards:
+    // while that boss's room is pre-cleared, no candidate outside it may become
+    // the camp. When nothing inside qualifies, the search falls through to its
+    // last resort, the tank's own spot.
+    RoomAggroBoss const* const campBox = DcTargeting::ActiveRoomCampBox(bot, ctx);
+    auto outsideCampBox = [campBox](Position const& p) -> bool
+    {
+        return campBox &&
+               !RoomAggroRegistry::InCampBox(*campBox, p.GetPositionX(), p.GetPositionY());
+    };
+
     // Resolve the other-pack hostiles once (alive, hostile, not the target, not a
     // packmate). Same candidate set the pull / trash scans use.
     GuidVector const& farTargets =
@@ -1042,7 +1054,7 @@ std::optional<Position> DcPullPlanner::ComputeSafeCamp(PlayerbotAI* botAI, Unit*
             // dungeon's first pull the oldest crumbs are ALL over the line, so
             // short-circuiting here is the difference between rejecting them for
             // free and paying a path build apiece to reject them anyway.
-            if (CampOverZoneLine(bot, c) || !IsNavReachable(bot, c) ||
+            if (outsideCampBox(c) || CampOverZoneLine(bot, c) || !IsNavReachable(bot, c) ||
                 CampBlockedByDoor(bot, c) || CampInHazard(bot, live, c))
                 return true;
             float const clear = clearanceAt(c);
@@ -1121,8 +1133,9 @@ std::optional<Position> DcPullPlanner::ComputeSafeCamp(PlayerbotAI* botAI, Unit*
                 DungeonPathFollower::PointBehind(bot, path, follower, setback))
         {
             Position cand(back->x, back->y, back->z);
-            if (IsNavReachable(bot, cand) && !CampBlockedByDoor(bot, cand) &&
-                !CampInHazard(bot, live, cand) && !CampOverZoneLine(bot, cand))
+            if (!outsideCampBox(cand) && IsNavReachable(bot, cand) &&
+                !CampBlockedByDoor(bot, cand) && !CampInHazard(bot, live, cand) &&
+                !CampOverZoneLine(bot, cand))
             {
                 clearanceOut = clearanceAt(cand);
                 dragOut = tankPos.GetExactDist(&cand);
@@ -1172,8 +1185,9 @@ std::optional<Position> DcPullPlanner::ComputeSafeCamp(PlayerbotAI* botAI, Unit*
             // but on the far side of a wall / on another level. Only keep it if a
             // complete generated path reaches it, so the move never straight-lines
             // through the geometry in between — and never across/into a shut door.
-            if (!IsNavReachable(bot, cand) || CampBlockedByDoor(bot, cand) ||
-                CampInHazard(bot, live, cand) || CampOverZoneLine(bot, cand))
+            if (outsideCampBox(cand) || !IsNavReachable(bot, cand) ||
+                CampBlockedByDoor(bot, cand) || CampInHazard(bot, live, cand) ||
+                CampOverZoneLine(bot, cand))
                 continue;
             float const c = clearanceAt(cand);
             float const drag = tankPos.GetExactDist(&cand);
@@ -1196,6 +1210,98 @@ std::optional<Position> DcPullPlanner::ComputeSafeCamp(PlayerbotAI* botAI, Unit*
     dragOut = bestDrag;
     return best;
 }
+std::optional<DcPullPlanner::RoomClearLane> DcPullPlanner::ComputeRoomClearLane(
+    PlayerbotAI* botAI, Unit* target, Unit* boss, float bossRadius, float standDist,
+    float setback, float safeRadius)
+{
+    if (!botAI || !target || !boss)
+        return std::nullopt;
+    Player* bot = botAI->GetBot();
+    if (!bot)
+        return std::nullopt;
+    AiObjectContext* ctx = botAI->GetAiObjectContext();
+
+    // Packmates come along anyway (ComputeSafeCamp's kPackRadius); every other
+    // live hostile on the pack's floor is a disc the lane keeps safeRadius from.
+    constexpr float kPackRadius = 12.0f;
+    // A snapped point may slide this far off the ideal line before the bearing
+    // is treated as walled off.
+    constexpr float kMaxSnapShift = 3.0f;
+    // Candidates path-validated before giving up; the ranking is cheap, the
+    // validation is two path builds per bearing.
+    constexpr std::size_t kMaxValidated = 8;
+
+    std::vector<DungeonClearMath::LaneKeepAway> keepAways;
+    keepAways.push_back({boss->GetPositionX(), boss->GetPositionY(), bossRadius});
+
+    GuidVector const& farTargets = ctx->GetValue<GuidVector>(DcKey::FarTargets)->Get();
+    GuidVector const& possibleTargets =
+        ctx->GetValue<GuidVector>(DcKey::Stock::PossibleTargets)->Get();
+    GuidVector const& candidates = farTargets.empty() ? possibleTargets : farTargets;
+    for (ObjectGuid guid : candidates)
+    {
+        Unit* u = ObjectAccessor::GetUnit(*bot, guid);
+        if (!u || !u->IsAlive() || u == target || u == boss || !bot->IsHostileTo(u))
+            continue;
+        if (std::fabs(u->GetPositionZ() - target->GetPositionZ()) > DC_Z_LEVEL_TOLERANCE)
+            continue;
+        if (u->GetExactDist2d(target) <= kPackRadius)
+            continue;
+        keepAways.push_back({u->GetPositionX(), u->GetPositionY(), safeRadius});
+    }
+
+    RoomAggroBoss const* const box = DcTargeting::ActiveRoomCampBox(bot, ctx);
+    std::vector<DungeonClearMath::StraightPullLane> const lanes =
+        DungeonClearMath::RankStraightPullLanes(
+            target->GetPositionX(), target->GetPositionY(), bot->GetPositionX(),
+            bot->GetPositionY(), standDist, setback, setback * 0.5f, keepAways,
+            box != nullptr, box ? box->campMinX : 0.0f, box ? box->campMaxX : 0.0f,
+            box ? box->campMinY : 0.0f, box ? box->campMaxY : 0.0f);
+
+    float const tz = target->GetPositionZ();
+    auto snapOnFloor = [&](float x, float y) -> std::optional<Position>
+    {
+        NavmeshSnap::Result const snap = NavmeshSnap::Snap(bot, x, y, tz, kMaxSnapShift);
+        if (!snap.ok || std::fabs(snap.z - tz) > DC_Z_LEVEL_TOLERANCE)
+            return std::nullopt;
+        float const dx = snap.x - x;
+        float const dy = snap.y - y;
+        if (dx * dx + dy * dy > kMaxSnapShift * kMaxSnapShift)
+            return std::nullopt;
+        return Position(snap.x, snap.y, snap.z, 0.0f);
+    };
+
+    DcHazard::LiveSet const live = DcHazard::Sample(bot);
+    std::size_t tried = 0;
+    for (DungeonClearMath::StraightPullLane const& lane : lanes)
+    {
+        if (tried++ >= kMaxValidated)
+            break;
+        std::optional<Position> stand = snapOnFloor(lane.standX, lane.standY);
+        if (!stand || !IsNavReachable(bot, *stand))
+            continue;
+        if (!target->IsWithinLOS(stand->GetPositionX(), stand->GetPositionY(),
+                                 stand->GetPositionZ() + 2.0f,
+                                 VMAP::ModelIgnoreFlags::Nothing, LINEOFSIGHT_CHECK_VMAP))
+            continue;
+        std::optional<Position> camp = snapOnFloor(lane.campX, lane.campY);
+        if (!camp)
+            continue;
+        if (box && !RoomAggroRegistry::InCampBox(*box, camp->GetPositionX(),
+                                                 camp->GetPositionY()))
+            continue;
+        if (CampOverZoneLine(bot, *camp) || !IsNavReachable(bot, *camp) ||
+            CampBlockedByDoor(bot, *camp) || CampInHazard(bot, live, *camp))
+            continue;
+
+        float const face = stand->GetAngle(target);
+        stand->SetOrientation(face);
+        camp->SetOrientation(face);
+        return RoomClearLane{*stand, *camp, lane.margin};
+    }
+    return std::nullopt;
+}
+
 std::optional<Position> DcPullPlanner::ComputeTrailCamp(PlayerbotAI* botAI,
                                                            float setback, float maxDrag)
 {

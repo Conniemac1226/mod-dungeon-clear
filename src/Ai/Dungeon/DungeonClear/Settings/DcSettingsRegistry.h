@@ -361,10 +361,10 @@ inline constexpr DcSettingDef kDcSettings[] =
     // stops holding and pulls the boss anyway, noting it in chat. The clock only
     // runs WHILE the tank is at the boss and actively clearing (it's re-armed
     // during the walk-in), so this measures a true stall — an unreachable
-    // straggler or respawn churn — not the time to clear. It must therefore
-    // tolerate a slow pack plus a between-pulls drink/rest, hence the generous
-    // default. 0 = never give up. Max 600s. (Old 30s default tripped before the
-    // tank even reached the room.)
+    // straggler or respawn churn — not the time to clear. It is also PAUSED while
+    // the party fights, rests, loots or regroups between pulls, so only ready
+    // time counts (DungeonClearMath::RoomClearGiveUpDue). 0 = never give up.
+    // Max 600s. (Old 30s default tripped before the tank even reached the room.)
     { "ClearRoomBeforeBoss",   DcType::Bool,   1,   0,    1,  true  },
     { "RoomClearTimeout",      DcType::UInt, 180,   0,  600,  true  },
     // Extra yards added to a room-aggro boss's avoid-sphere when the tank routes

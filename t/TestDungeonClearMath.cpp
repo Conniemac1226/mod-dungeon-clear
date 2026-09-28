@@ -2858,3 +2858,186 @@ TEST(DungeonClearMathTest, LootRollRungCountsRollsRatherThanTrustingTheDigest)
     EXPECT_TRUE(DungeonClearMath::LootRollRungMayFire(1, 0, 5, sig, ticks));
     EXPECT_EQ(ticks, 1u);
 }
+
+// --- RoomClearGiveUpDue (the room-clear no-progress valve) -----------------
+// Only READY time with no drop in the count may give up a room clear. A fight, a
+// rest or a loot between packs pauses the clock; an unobserved gap (nobody read
+// the value) is not charged either.
+
+using DungeonClearMath::RoomClearClock;
+using DungeonClearMath::RoomClearGiveUpDue;
+
+namespace
+{
+    // Advance the clock in 500ms polls from `from` to `to` with a fixed count.
+    bool Poll(RoomClearClock& c, std::uint32_t remaining, bool busy,
+              std::uint32_t from, std::uint32_t to, std::uint32_t timeoutMs)
+    {
+        bool due = false;
+        for (std::uint32_t t = from; t <= to; t += 500)
+            due = RoomClearGiveUpDue(c, remaining, /*inRoom*/ true, busy, t, timeoutMs);
+        return due;
+    }
+}
+
+TEST(DungeonClearRoomClearClockTest, ReadyStallGivesUpAfterTimeout)
+{
+    RoomClearClock c;
+    EXPECT_FALSE(Poll(c, 5, false, 1000, 30000, 30000));
+    EXPECT_TRUE(Poll(c, 5, false, 30500, 32000, 30000));
+}
+
+TEST(DungeonClearRoomClearClockTest, BusyTimeDoesNotCount)
+{
+    // A long fight then a long rest after the first formation: 90s busy.
+    RoomClearClock c;
+    EXPECT_FALSE(Poll(c, 4, false, 1000, 5000, 30000));
+    EXPECT_FALSE(Poll(c, 4, true, 5500, 95000, 30000));
+    // Ready again: the clock resumes from ~4s, not from 94s.
+    EXPECT_FALSE(Poll(c, 4, false, 95500, 110000, 30000));
+    EXPECT_TRUE(Poll(c, 4, false, 110500, 125000, 30000));
+}
+
+TEST(DungeonClearRoomClearClockTest, UnobservedGapIsNotCharged)
+{
+    RoomClearClock c;
+    EXPECT_FALSE(Poll(c, 4, false, 1000, 3000, 30000));
+    // Nobody read the value for a minute (the at-boss gate never reached it).
+    EXPECT_FALSE(RoomClearGiveUpDue(c, 4, true, false, 63000, 30000));
+    EXPECT_LT(c.idleMs, 5000u);
+}
+
+TEST(DungeonClearRoomClearClockTest, RespawnChurnStillGivesUp)
+{
+    // Pull, fight, rest, ready for a few seconds, repeat — the count never drops.
+    RoomClearClock c;
+    std::uint32_t t = 1000;
+    bool due = false;
+    for (int cycle = 0; cycle < 12 && !due; ++cycle)
+    {
+        due = Poll(c, 3, false, t, t + 4000, 30000);
+        t += 4500;
+        due = due || Poll(c, 3, true, t, t + 20000, 30000);
+        t += 20500;
+    }
+    EXPECT_TRUE(due);
+}
+
+TEST(DungeonClearRoomClearClockTest, ProgressAndTravelReArm)
+{
+    RoomClearClock c;
+    EXPECT_FALSE(Poll(c, 6, false, 1000, 25000, 30000));
+    // A kill re-arms.
+    EXPECT_FALSE(Poll(c, 5, false, 25500, 50000, 30000));
+    EXPECT_EQ(c.lastRemaining, 5u);
+    // Leaving the room re-arms too.
+    EXPECT_FALSE(RoomClearGiveUpDue(c, 5, /*inRoom*/ false, false, 50500, 30000));
+    EXPECT_EQ(c.idleMs, 0u);
+    // An empty room resets everything.
+    EXPECT_FALSE(RoomClearGiveUpDue(c, 0, true, false, 51000, 30000));
+    EXPECT_EQ(c.lastRemaining, 0u);
+}
+
+TEST(DungeonClearRoomClearClockTest, PatrollerWalkingInThenDyingIsProgress)
+{
+    RoomClearClock c;
+    EXPECT_FALSE(Poll(c, 5, false, 1000, 20000, 30000));
+    // A Skeletal Waiter walks into the radius: 6. Idle time is kept.
+    EXPECT_FALSE(RoomClearGiveUpDue(c, 6, true, false, 20500, 30000));
+    std::uint32_t const idleBefore = c.idleMs;
+    EXPECT_GT(idleBefore, 15000u);
+    // It dies: back to 5, which is below the new high, so progress.
+    EXPECT_FALSE(RoomClearGiveUpDue(c, 5, true, false, 21000, 30000));
+    EXPECT_EQ(c.idleMs, 0u);
+}
+
+TEST(DungeonClearRoomClearClockTest, ZeroTimeoutNeverGivesUp)
+{
+    RoomClearClock c;
+    EXPECT_FALSE(Poll(c, 5, false, 1000, 200000, 0));
+}
+
+// --- Room-clear straight pull (RankStraightPullLanes) -------------------------
+//
+// Karazhan Banquet Hall, tr-20260926-192642-3: the west Phantom Guest formation
+// was tagged from the dais side and dragged to an east camp; the lane passed
+// 23yd from a dinner guest and Moroes joined the trash fight.
+namespace
+{
+    constexpr float kMoroesX = -10982.7f, kMoroesY = -1877.9f;
+    constexpr float kPackX = -11003.0f, kPackY = -1896.0f;
+    constexpr float kTankX = -10971.8f, kTankY = -1939.7f;  // previous camp
+    // Moroes' camp box (RoomAggroRegistry row).
+    constexpr float kBoxMinX = -11013.0f, kBoxMaxX = -10900.0f;
+    constexpr float kBoxMinY = -1940.0f, kBoxMaxY = -1800.0f;
+
+    std::vector<DungeonClearMath::StraightPullLane> MoroesLanes()
+    {
+        std::vector<DungeonClearMath::LaneKeepAway> const keep = {
+            {kMoroesX, kMoroesY, 32.0f}};
+        return DungeonClearMath::RankStraightPullLanes(
+            kPackX, kPackY, kTankX, kTankY, /*standDist*/ 23.7f, /*drag*/ 25.0f,
+            /*minDrag*/ 12.5f, keep, true, kBoxMinX, kBoxMaxX, kBoxMinY, kBoxMaxY);
+    }
+}
+
+TEST(DungeonClearStraightPullTest, PointSegmentDistance)
+{
+    using DungeonClearMath::PointSegmentDist2d;
+    EXPECT_NEAR(PointSegmentDist2d(0, 5, -10, 0, 10, 0), 5.0f, 1e-4f);
+    EXPECT_NEAR(PointSegmentDist2d(13, 4, -10, 0, 10, 0), 5.0f, 1e-4f);  // past an end
+    EXPECT_NEAR(PointSegmentDist2d(3, 4, 0, 0, 0, 0), 5.0f, 1e-4f);      // degenerate
+}
+
+TEST(DungeonClearStraightPullTest, MoroesWestPackPullsStraightSouthNotAcrossTheDais)
+{
+    auto const lanes = MoroesLanes();
+    ASSERT_FALSE(lanes.empty());
+    auto const& best = lanes.front();
+
+    // Pulled back away from the dais (south), not east across its front.
+    EXPECT_LT(std::sin(best.bearing), -0.7f);
+    auto dist = [](float x, float y) { return std::hypot(x - kMoroesX, y - kMoroesY); };
+    EXPECT_GT(dist(best.standX, best.standY), 40.0f);
+    EXPECT_GT(dist(best.campX, best.campY), 50.0f);
+
+    // The lane this run actually used: tag (-10975.5,-1911.7), camp (-10954.1,-1924.5).
+    float const oldMargin = DungeonClearMath::PointSegmentDist2d(
+                                kMoroesX, kMoroesY, -10975.5f, -1911.7f, -10954.1f,
+                                -1924.5f) - 32.0f;
+    EXPECT_LT(oldMargin, 3.0f);
+    EXPECT_GT(best.margin, oldMargin + 8.0f);
+}
+
+TEST(DungeonClearStraightPullTest, EveryCampIsInsideTheBox)
+{
+    for (auto const& l : MoroesLanes())
+    {
+        EXPECT_GE(l.campX, kBoxMinX);
+        EXPECT_LE(l.campX, kBoxMaxX);
+        EXPECT_GE(l.campY, kBoxMinY);
+        EXPECT_LE(l.campY, kBoxMaxY);
+    }
+}
+
+TEST(DungeonClearStraightPullTest, BearingWithNoInBoxCampIsDropped)
+{
+    // Box is a 10yd square far east of the pack: only bearings pointing into it
+    // can land a camp there.
+    std::vector<DungeonClearMath::LaneKeepAway> const none;
+    auto const lanes = DungeonClearMath::RankStraightPullLanes(
+        0, 0, 0, 0, 20.0f, 25.0f, 12.5f, none, true, 35.0f, 45.0f, -5.0f, 5.0f);
+    ASSERT_FALSE(lanes.empty());
+    for (auto const& l : lanes)
+        EXPECT_GT(std::cos(l.bearing), 0.95f);
+}
+
+TEST(DungeonClearStraightPullTest, OpenRoomTiesBreakTowardTheTank)
+{
+    std::vector<DungeonClearMath::LaneKeepAway> const none;
+    auto const lanes = DungeonClearMath::RankStraightPullLanes(
+        0, 0, 0, -50.0f, 20.0f, 25.0f, 12.5f, none, false, 0, 0, 0, 0);
+    ASSERT_EQ(lanes.size(), 24u);
+    EXPECT_NEAR(lanes.front().standX, 0.0f, 1e-3f);
+    EXPECT_NEAR(lanes.front().standY, -20.0f, 1e-3f);
+}

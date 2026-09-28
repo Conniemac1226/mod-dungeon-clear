@@ -30,6 +30,7 @@
 #include "CellImpl.h"
 #include "CombatManager.h"
 #include "Creature.h"
+#include "TemporarySummon.h"
 #include "CreatureGroups.h"
 #include "GameObject.h"
 #include "GridNotifiers.h"
@@ -237,6 +238,11 @@ namespace
             // this scan falls back to the stock `possible targets` value when
             // FarTargets is empty, so the check is repeated here.
             if (DcNeverTargetRegistry::IsNeverTarget(bot->GetMapId(), u->GetEntry()))
+                continue;
+            // Nor is an add a live boss summoned for his own encounter (Moroes'
+            // dinner guests on the dais): it comes with the boss, and pulling it
+            // pulls him (tr-20260926-174359-2 picked Baron Rafe Dreuger).
+            if (DcTargeting::IsBossSummon(u))
                 continue;
             // Nor is a creature the run is currently BARRED from engaging. The
             // exclusion registry reached the stock combat engine's target pickers
@@ -636,7 +642,8 @@ Unit* DcTargeting::FindEnRouteAggroPack(Player* bot, AiObjectContext* ctx,
                                          return true;
                                      if (DcNeverTargetRegistry::IsNeverTarget(mapId, u->GetEntry()))
                                          return true;
-                                     if (IsDungeonBossEntry(ctx, u->GetEntry()))
+                                     if (IsDungeonBossEntry(ctx, u->GetEntry()) ||
+                                         IsBossSummon(u))
                                          return true;
                                      return RoomAggroRegistry::Find(mapId, u->GetEntry()) != nullptr;
                                  }),
@@ -800,10 +807,10 @@ Unit* DcTargeting::FindPullTarget(PlayerbotAI* botAI, DungeonBossInfo const& nex
     // collection). Deliberately NOT applied to the FindBlockingTrash* scans:
     // in plain mode, walking in on a boss in the corridor band degenerates to
     // a normal engage, which is acceptable — only the camp-drag is wrong.
-    if (IsDungeonBossEntry(context, trash->GetEntry()))
+    if (IsDungeonBossEntry(context, trash->GetEntry()) || IsBossSummon(trash))
     {
-        DC_PULL_DEBUG("[DC:{}] pull target vetoed — {} ({}) is a dungeon boss, "
-                      "at-boss path owns it",
+        DC_PULL_DEBUG("[DC:{}] pull target vetoed — {} ({}) is a dungeon boss or "
+                      "his summoned add, at-boss path owns it",
                       bot->GetName(), trash->GetName(), trash->GetGUID().ToString());
         return nullptr;
     }
@@ -834,6 +841,19 @@ bool DcTargeting::IsDungeonBossEntry(AiObjectContext* ctx, uint32 entry)
         if (boss.entry == entry)
             return true;
     return false;
+}
+bool DcTargeting::IsBossSummon(Unit const* u)
+{
+    Creature const* c = u ? u->ToCreature() : nullptr;
+    if (!c || !c->IsSummon())
+        return false;
+    Unit* const summoner = c->ToTempSummon()->GetSummonerUnit();
+    Creature const* boss = summoner ? summoner->ToCreature() : nullptr;
+    if (!boss || !boss->IsAlive())
+        return false;
+    CreatureTemplate const* info = boss->GetCreatureTemplate();
+    return boss->IsDungeonBoss() || boss->isWorldBoss() ||
+           (info && info->rank == CREATURE_ELITE_WORLDBOSS);
 }
 Unit* DcTargeting::GetPullTarget(PlayerbotAI* botAI)
 {
@@ -878,7 +898,7 @@ bool DcTargeting::IsStickyPullTargetValid(Player* bot, AiObjectContext* ctx, Uni
     // Mirror the fresh scan's boss veto. The governor can only latch what the
     // scan returned, so a boss should never be sticky — but the invariant
     // (a boss is NEVER a pull target) is cheap to keep airtight locally.
-    if (IsDungeonBossEntry(ctx, u->GetEntry()))
+    if (IsDungeonBossEntry(ctx, u->GetEntry()) || IsBossSummon(u))
         return false;
 
     // A pack a prior pull gave up on is handed to the normal walk-in engage;
@@ -1285,6 +1305,22 @@ float DcTargeting::ActiveRoomSkirt(Player* bot, AiObjectContext* ctx)
 
     return IsRoomClearActive(bot, ctx) ? skirt : 0.0f;
 }
+RoomAggroBoss const* DcTargeting::ActiveRoomCampBox(Player* bot, AiObjectContext* ctx)
+{
+    if (!bot || !ctx)
+        return nullptr;
+
+    // Same cheap-gates-first order as ActiveRoomSkirt.
+    std::optional<DungeonBossInfo> next =
+        ctx->GetValue<std::optional<DungeonBossInfo>>(DcKey::NextDungeonBoss)->Get();
+    if (!next.has_value())
+        return nullptr;
+    RoomAggroBoss const* room = RoomAggroRegistry::Find(bot->GetMapId(), next->entry);
+    if (!room || !room->hasCampBox)
+        return nullptr;
+
+    return IsRoomClearActive(bot, ctx) ? room : nullptr;
+}
 Unit* DcTargeting::NearestRoomTrash(Player* bot, AiObjectContext* ctx)
 {
     if (!bot || !ctx)
@@ -1353,7 +1389,7 @@ Unit* DcTargeting::NearestHostileNearPoint(Player* bot, AiObjectContext* ctx,
             continue;
         // Never treat an encounter boss or a room-aggro boss/partner as clearable
         // area trash — those belong to the dedicated boss/at-boss paths.
-        if (IsDungeonBossEntry(ctx, u->GetEntry()))
+        if (IsDungeonBossEntry(ctx, u->GetEntry()) || IsBossSummon(u))
             continue;
         if (RoomAggroRegistry::Find(bot->GetMapId(), u->GetEntry()))
             continue;

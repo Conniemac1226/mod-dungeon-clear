@@ -22,6 +22,7 @@ class InstanceScript;
 class AiObjectContext;
 class PlayerbotAI;
 struct DungeonBossInfo;
+struct RoomAggroBoss;
 
 class DcTargeting
 {
@@ -130,6 +131,13 @@ public:
     // (engage-range gate, anchor checks, door veto, party-ready gate) owns
     // them, and scripted bosses misbehave when camp-dragged.
     static bool IsDungeonBossEntry(AiObjectContext* ctx, uint32 entry);
+
+    // True when `u` is a live boss's own summon: a TempSummon whose summoner is
+    // alive and is a boss (core dungeon-boss flag, world-boss flag, or boss
+    // rank). Such adds belong to the encounter — Moroes' dinner guests on his
+    // dais — so no pull or corridor scan may pick one as trash. Needs no
+    // context, so the context-free corridor scans can ask it too.
+    static bool IsBossSummon(Unit const* u);
 
     // Validity predicate for KEEPING the sticky pull target between scans:
     // alive, hostile, not a dungeon boss, not the pull context's abort target,
@@ -284,6 +292,12 @@ public:
     // DRAGGED OUT and fought outside her aggro, not killed in her wake (the Sepethrea
     // "combat too close, pulls the boss" failure). Leader/room-scoped; cheap.
     static float ActiveRoomSkirt(Player* bot, AiObjectContext* ctx);
+
+    // The row of the room-aggro boss currently being pre-cleared when it carries
+    // a camp box (RoomAggroBoss::hasCampBox), else nullptr. The advanced-pull camp
+    // search rejects every candidate outside that box, so the skirt-widened drag
+    // stops at the room's edge instead of walking out of the door.
+    static RoomAggroBoss const* ActiveRoomCampBox(Player* bot, AiObjectContext* ctx);
 
     // The nearest remaining room-trash unit (from "dungeon clear room trash
     // remaining"), or nullptr. Nearest-first so the tank clears the room from

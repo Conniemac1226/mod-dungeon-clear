@@ -159,6 +159,11 @@ public:
         Player* bot, float bx, float by, float bz, float safeRadius, Unit* target,
         int8* orbitDir = nullptr,
         OrbitProfile profile = OrbitProfile::RoomAggroBoss);
+    // Same orbit toward a destination POINT (gx, gy) rather than a unit.
+    static std::optional<Position> AggroSafeApproachPoint(
+        Player* bot, float bx, float by, float bz, float safeRadius, float gx, float gy,
+        int8* orbitDir = nullptr,
+        OrbitProfile profile = OrbitProfile::RoomAggroBoss);
 
     // Pure: the ring radius and angular step one orbit tick should use, split out
     // of AggroSafeApproachPoint so the "never radially outward, never radially
