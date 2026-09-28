@@ -59,6 +59,10 @@ RUNS_FILE = "dc_testruns.jsonl"
 PLANS_FILE = "dc_testplans.jsonl"
 LIVE_FILE = "dc_testrun_live.json"
 
+# Continuous-mode ("soak") sessions live in the Test Deck's data dir, not the
+# worldserver's: <deck data_dir>/soaks/<sk-id>/{state.json,ledger.jsonl,evidence/}.
+SOAKS_SUBDIR = "soaks"
+
 # Opt-in decision captures. Keyed by bot GUID, not by run, so they are filtered
 # on the run's comp GUIDs rather than on names.
 DECISION_FILES = ["dungeonclear_decisions.jsonl", "dungeonclear_pull_decisions.jsonl"]
@@ -68,6 +72,14 @@ DECISION_FILES = ["dungeonclear_decisions.jsonl", "dungeonclear_pull_decisions.j
 # (revive, recall, logout) trails the recorded end.
 PAD_BEFORE_S = 10
 PAD_AFTER_S = 30
+
+# Log files are time-ordered, so a slice binary-searches its way to the window
+# instead of scanning a multi-GB PlayerbotsEngine.log from the top, and stops
+# once lines are this far past the window (threads interleave a few seconds out
+# of order, never minutes). Files under SEEK_MIN_BYTES are just scanned.
+SEEK_MIN_BYTES = 4 << 20
+SEEK_SLACK_S = 5
+STOP_SLACK_S = 60
 
 LEVELS = ["TRACE", "DEBUG", "INFO", "WARN", "WARNING", "ERROR", "FATAL"]
 LEVEL_RANK = {"TRACE": 0, "DEBUG": 1, "INFO": 2, "WARN": 3, "WARNING": 3, "ERROR": 4, "FATAL": 5}
@@ -304,7 +316,73 @@ def parse_stamp(text, cache):
     return hit
 
 
-def slice_log(path, start_s, end_s, matcher, cap=0):
+def _stamp_of(raw, cache):
+    """Epoch seconds of a raw (bytes) log line, or None for a continuation."""
+    m = LINE_RE.match(raw.lstrip(b"\0").decode("utf-8", errors="replace"))
+    if not m:
+        return None
+    try:
+        return parse_stamp(m.group(1), cache)
+    except ValueError:
+        return None
+
+
+# A probe reads at most this much looking for a stamped line; a region with no
+# line breaks in it (a NUL run, see data_start) must not turn one bisection step
+# into a multi-GB read.
+PROBE_MAX_BYTES = 1 << 20
+
+
+def _first_stamp_from(fh, offset, cache):
+    """Stamp of the first timestamped line that STARTS at or after `offset`,
+    looking no further than PROBE_MAX_BYTES; None when there is none in reach."""
+    fh.seek(offset)
+    budget = PROBE_MAX_BYTES
+    if offset:
+        partial = fh.readline(budget)  # finish the line `offset` landed inside
+        budget -= len(partial)
+        if not partial.endswith(b"\n"):
+            return None
+    while budget > 0:
+        raw = fh.readline(budget)
+        if not raw:
+            return None
+        budget -= len(raw)
+        st = _stamp_of(raw, cache)
+        if st is not None:
+            return st
+    return None
+
+
+def data_start(fh):
+    """First byte worth reading. A log truncated while worldserver still held
+    it open (its appenders don't use O_APPEND) keeps being written at the old
+    offset, so the file becomes a sparse hole of NULs — gigabytes of them, with
+    no line breaks — followed by the live tail. SEEK_DATA skips the hole where
+    the OS supports it; elsewhere this is 0 and the byte-bounded probes cope."""
+    try:
+        return os.lseek(fh.fileno(), 0, os.SEEK_DATA)
+    except (AttributeError, OSError):
+        return 0
+
+
+def seek_offset(fh, size, target_s, cache, lo=0):
+    """Byte offset from which reading forward reaches every line stamped at or
+    after target_s: the lower bound of a binary search over line stamps. A probe
+    that finds no stamp (a line longer than a probe) counts as "at or after",
+    which only ever starts the read earlier than needed."""
+    hi = size
+    while hi - lo > (64 << 10):
+        mid = (lo + hi) // 2
+        st = _first_stamp_from(fh, mid, cache)
+        if st is None or st >= target_s:
+            hi = mid
+        else:
+            lo = mid
+    return lo
+
+
+def slice_log(path, start_s, end_s, matcher, cap=0, seek=True):
     """Return (lines, meta) for the lines of `path` inside the window that name
     one of this run's bots.
 
@@ -315,19 +393,43 @@ def slice_log(path, start_s, end_s, matcher, cap=0):
     characters are provisioned per run and never shared by two runs at once, so
     within the window a name identifies exactly one run. Continuation lines (no
     leading timestamp) inherit the previous line's verdict.
+
+    With `seek`, a large file is entered at the window's start (binary search
+    on the line stamps) and left once lines are well past its end, so the cost
+    is the window, not the file. meta["first"] is still the file's first stamp
+    — it is what says when the server session (and so the file) began.
     """
     out = deque(maxlen=cap) if cap > 0 else []
     meta = {"path": str(path), "name": path.name, "scanned": 0, "matched": 0,
-            "first": None, "last": None, "truncated": False, "levels": Counter()}
+            "first": None, "last": None, "truncated": False, "levels": Counter(),
+            "seeked": False}
     cache = {}
     keep_prev = False
     prev_stamp = None
     try:
-        fh = path.open("r", encoding="utf-8", errors="replace")
+        fh = path.open("rb")
+        size = path.stat().st_size
     except OSError:
         return list(out), meta
     with fh:
-        for raw in fh:
+        start = data_start(fh)
+        if seek and size >= SEEK_MIN_BYTES:
+            meta["first"] = _first_stamp_from(fh, start, cache)
+            if meta["first"] is None:
+                # A raw console stream (Server.log): nothing to window on, and
+                # far too big to count — report its size instead.
+                meta["scanned"] = 1
+                meta["sizeBytes"] = size
+                return list(out), meta
+            offset = seek_offset(fh, size, start_s - SEEK_SLACK_S, cache, start)
+            fh.seek(offset)
+            if offset:
+                fh.readline(PROBE_MAX_BYTES)
+            meta["seeked"] = offset > 0
+        elif start:
+            fh.seek(start)
+        for rawb in fh:
+            raw = rawb.lstrip(b"\0").decode("utf-8", errors="replace")
             meta["scanned"] += 1
             m = LINE_RE.match(raw)
             if not m:
@@ -339,11 +441,17 @@ def slice_log(path, start_s, end_s, matcher, cap=0):
                 # No level column in this appender: the token belongs to the body.
                 body = (level + " " + body).strip()
                 level = ""
-            stamp = parse_stamp(stamp_text, cache)
+            try:
+                stamp = parse_stamp(stamp_text, cache)
+            except ValueError:
+                keep_prev = False
+                continue
             if meta["first"] is None:
                 meta["first"] = stamp
             meta["last"] = stamp
             prev_stamp = stamp
+            if seek and stamp > end_s + STOP_SLACK_S:
+                break
             if stamp < start_s or stamp > end_s:
                 keep_prev = False
                 continue
@@ -901,9 +1009,12 @@ def render_plan(plan, plan_live, runs_by_id, this_run):
     out = []
     if plan:
         out.append(f"  {plan.get('planId')} — {plan.get('result','?')}"
-                   + (f" ({plan['abortReason']})" if plan.get("abortReason") else ""))
+                   + (f" ({plan['abortReason']})" if plan.get("abortReason") else "")
+                   + ("  [checkpoint — plan still running when written]"
+                      if plan.get("checkpoint") else ""))
         req = plan.get("requested") or {}
-        out.append(f"  requested: {req.get('total')} runs, {req.get('concurrent')} concurrent, "
+        total = "endless" if plan.get("endless") else f"{req.get('total')} runs"
+        out.append(f"  requested: {total}, {req.get('concurrent')} concurrent, "
                    f"level {req.get('level') or 'default'}, heroic={req.get('heroic')}, "
                    f"ilvl<={req.get('gearIlvl') or '∞'} quality<={req.get('gearQuality') or '∞'}")
         r = plan.get("runs") or {}
@@ -921,6 +1032,19 @@ def render_plan(plan, plan_live, runs_by_id, this_run):
             out.append("  boss funnel:")
             out += table([[f.get("name", ""), f.get("killed", 0), f.get("wiped", 0)] for f in funnel],
                          ["boss", "killed", "wiped"])
+        pool = plan.get("pool") or []
+        if pool:
+            out.append(f"  pool ({plan.get('pick') or 'bag'}):")
+            rows = []
+            for e in pool:
+                r = e.get("runs") or {}
+                n = r.get("launched", 0)
+                rows.append([(e.get("token") or "?") + (":heroic" if e.get("heroic") else "")
+                             + ("" if e.get("inPool", True) else " (removed)"),
+                             n, r.get("succeeded", 0), r.get("failed", 0),
+                             f"{100 * r.get('succeeded', 0) / n:.0f}%" if n else "-",
+                             dur((e.get("duration") or {}).get("medianS"))])
+            out += table(rows, ["entry", "runs", "ok", "fail", "rate", "median"])
         p = plan.get("pulls") or {}
         if p:
             out.append(f"  pulls    : {p.get('count',0)} · advanced {p.get('advanced',0)} · "
@@ -934,6 +1058,8 @@ def render_plan(plan, plan_live, runs_by_id, this_run):
                    f"{plan_live.get('active',0)} active, elapsed {dur(plan_live.get('elapsedS'))}")
 
     ids = (plan or {}).get("runIds") or []
+    if len(ids) > 60:
+        ids = ids[-60:]  # a soak's plan lists hundreds; the newest are the relevant ones
     if ids:
         rows = []
         for rid in ids:
@@ -966,10 +1092,11 @@ def render_log_summary(slices, start_s, end_s, names, session_s, run_start_s):
     for lines, meta in slices:
         levels = " ".join(f"{k}:{v}" for k, v in sorted(meta["levels"].items(),
                                                         key=lambda kv: -LEVEL_RANK.get(kv[0], 9)))
-        rows.append([meta["name"], meta["matched"], meta["scanned"],
+        rows.append([meta["name"], meta["matched"],
+                     f"{meta['scanned']}{' (seeked)' if meta.get('seeked') else ''}",
                      clock(meta["first"]), levels,
                      "⚠ capped: oldest lines dropped" if meta["truncated"] else ""])
-    out += table(rows, ["log", "run lines", "file lines", "opens", "levels", ""])
+    out += table(rows, ["log", "run lines", "lines read", "opens", "levels", ""])
     return out
 
 
@@ -980,8 +1107,12 @@ def render_untimestamped(data_dir, metas):
     whole class of weird run behaviour."""
     if not metas:
         return []
+    def size_of(m):
+        if m.get("sizeBytes"):
+            return f"{m['sizeBytes'] / (1 << 20):.0f} MB"
+        return f"{m['scanned']} lines"
     out = ["  no time column, so not attributable to a run — check by hand: "
-           + ", ".join(f"{m['name']} ({m['scanned']} lines)" for m in metas)]
+           + ", ".join(f"{m['name']} ({size_of(m)})" for m in metas)]
     for m in metas:
         if m["name"] != "Errors.log":
             continue
@@ -1113,6 +1244,128 @@ def cmd_plan(data_dir, plan_id, runs, live):
 
 
 # --------------------------------------------------------------------------
+# continuous-mode (soak) sessions
+
+
+def default_deck_data_dir():
+    """The Test Deck's default data_dir (hostenv.default_data_dir)."""
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return Path(base) / "ac-testdeck"
+    base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+    return Path(base) / "ac-testdeck"
+
+
+def find_soak_dir(explicit, soak_id):
+    roots = []
+    if explicit:
+        roots.append(Path(explicit).expanduser())
+    if os.environ.get("DC_SOAK_DIR"):
+        roots.append(Path(os.environ["DC_SOAK_DIR"]).expanduser())
+    roots.append(default_deck_data_dir() / SOAKS_SUBDIR)
+    for root in roots:
+        for cand in (root / soak_id, root / SOAKS_SUBDIR / soak_id):
+            if (cand / "state.json").exists():
+                return cand
+    die(f"no soak {soak_id} under {', '.join(str(r) for r in roots)} "
+        "(pass --soak-dir <deck data_dir>/soaks)")
+
+
+# Failure reasons embed names, numbers and coordinates; strip them so the same
+# failure mode groups across runs ("Moroes pulled early" x7). The Test Deck's
+# soak page uses the same rule (testdeck/soak.py cluster_reason).
+CLUSTER_NUM_RE = re.compile(r"-?\d+(?:\.\d+)?")
+CLUSTER_QUOTED_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
+CLUSTER_WS_RE = re.compile(r"\s+")
+
+
+def cluster_reason(reason):
+    s = CLUSTER_QUOTED_RE.sub("'…'", reason or "")
+    s = CLUSTER_NUM_RE.sub("#", s)
+    s = CLUSTER_WS_RE.sub(" ", s).strip()
+    return s[:120] or "(no reason)"
+
+
+def entry_key(rec):
+    return (rec.get("dungeon") or "?") + (":heroic" if rec.get("heroic") else "")
+
+
+def cmd_soak(soak_dir, limit):
+    try:
+        state = json.loads((soak_dir / "state.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        die(f"cannot read {soak_dir / 'state.json'}: {exc}")
+    ledger = list(iter_jsonl(soak_dir / "ledger.jsonl"))
+    cfg = state.get("config") or {}
+    pool = ", ".join((e.get("token") or "?") + (":heroic" if e.get("heroic") else "")
+                     for e in cfg.get("pool") or [])
+    ok = sum(1 for r in ledger if r.get("result") == "success")
+    fails = [r for r in ledger if r.get("result") != "success"]
+    lost = sum(1 for r in ledger if r.get("result") == "lost")
+    created = (state.get("createdAtMs") or 0) / 1000
+    stopped = (state.get("stoppedAtMs") or 0) / 1000
+    span = (stopped or time.time()) - created if created else 0
+
+    print(bold(f"══ {state.get('soakId', soak_dir.name)} — continuous ══"))
+    print(f"  status     {state.get('status', '?')}"
+          + (f" — {state['statusDetail']}" if state.get("statusDetail") else ""))
+    print(f"  owner      {state.get('owner', '?')}   started {ts(created) if created else '?'}"
+          + (f"   stopped {ts(stopped)}" if stopped else "") + f"   ({dur(int(span))})")
+    print(f"  pool       {pool or '?'}")
+    print(f"  concurrent {cfg.get('concurrent', '?')}   pick {cfg.get('pick', 'bag')}"
+          f"   plans {', '.join(state.get('planIds') or []) or '-'}"
+          f"   restarts {state.get('restarts', 0)}")
+    rate = f"{100 * ok / len(ledger):.0f}%" if ledger else "-"
+    per_h = f"{len(ledger) / (span / 3600):.1f}/h" if span > 60 else "-"
+    print(f"  runs       {len(ledger)}   ok {ok}   fail {len(fails)} (lost {lost})"
+          f"   success {rate}   {per_h}")
+
+    print(hr("PER DUNGEON"))
+    by = OrderedDict()
+    for r in ledger:
+        by.setdefault(entry_key(r), []).append(r)
+    rows = []
+    for key, recs in sorted(by.items(), key=lambda kv: -len(kv[1])):
+        good = [r for r in recs if r.get("result") == "success"]
+        durs = sorted(int(r.get("durationS") or 0) for r in good)
+        med = durs[len(durs) // 2] if durs else 0
+        strip = "".join("✓" if r.get("result") == "success" else "✗" for r in recs[-20:])
+        rows.append([key, len(recs), len(good), len(recs) - len(good),
+                     f"{100 * len(good) / len(recs):.0f}%", dur(med) if med else "-", strip])
+    print("\n".join(table(rows, ["dungeon", "runs", "ok", "fail", "rate", "median", "last 20"]))
+          if rows else "  no runs yet")
+
+    print(hr("FAILURE CLUSTERS"))
+    clusters = Counter()
+    where = {}
+    for r in fails:
+        c = (r.get("result") or "?") + ": " + cluster_reason(r.get("failReason"))
+        clusters[c] += 1
+        where.setdefault(c, Counter())[entry_key(r)] += 1
+    rows = [[n, c[:80], ", ".join(f"{k}×{v}" for k, v in where[c].most_common(4))]
+            for c, n in clusters.most_common(25)]
+    print("\n".join(table(rows, ["n", "verdict: reason", "where"])) if rows else "  no failures")
+
+    print(hr(f"FAILURES (newest {limit})" if limit else "FAILURES"))
+    shown = list(reversed(fails))[:limit] if limit else list(reversed(fails))
+    ev_root = soak_dir / "evidence"
+    rows = []
+    for r in shown:
+        rid = r.get("runId", "")
+        ev = ev_root / rid
+        mark = "✓" if (ev / "report.txt").exists() else ("…" if ev.exists() else "-")
+        rows.append([clock((r.get("endedAtMs") or r.get("startedAtMs") or 0) / 1000), rid,
+                     entry_key(r), r.get("result", ""),
+                     f"{r.get('bossesKilled', '?')}/{r.get('bossesTotal', '?')}",
+                     dur(r.get("durationS") or r.get("elapsedS")), mark,
+                     (r.get("failReason") or "")[:50]])
+    print("\n".join(table(rows, ["ended", "runId", "dungeon", "result", "bosses", "duration",
+                                 "ev", "fail reason"])) if rows else "  none")
+    if fails:
+        print(f"\n  evidence: {ev_root}/<runId>/report.txt · full post-mortem: dc_test_run.py <runId>")
+
+
+# --------------------------------------------------------------------------
 
 
 def main():
@@ -1123,9 +1376,17 @@ def main():
                "  dc_test_run.py tr-20260801-174432-3\n"
                "  dc_test_run.py tr-20260801-174432-3 --logs pull --grep 'scout-lag'\n"
                "  dc_test_run.py tr-20260801-174432-3 --dump /tmp/run3\n"
+               "  dc_test_run.py sk-20260928-220000\n"
                "  dc_test_run.py --list 20\n")
-    ap.add_argument("run_id", nargs="?", help="tr-<id>, tp-<planid>, an id prefix, or 'last'")
+    ap.add_argument("run_id", nargs="?",
+                    help="tr-<id>, tp-<planid>, sk-<soakid>, an id prefix, or 'last'")
+    ap.add_argument("--soak-dir", help="Test Deck soaks dir for sk- ids "
+                                       "(default: $DC_SOAK_DIR, then <deck data_dir>/soaks)")
+    ap.add_argument("--failures", type=int, default=40, metavar="N",
+                    help="sk-: newest N failures to list (0 = all)")
     ap.add_argument("--data-dir", help="worldserver cwd (default: found by walking up to env/dist/bin)")
+    ap.add_argument("--log-dir", help="where the *.log files are, when worldserver.conf's "
+                                      "LogsDir is not its cwd (default: --data-dir)")
     ap.add_argument("--list", nargs="?", type=int, const=20, metavar="N",
                     help="list the N most recent runs and exit")
     ap.add_argument("--logs", nargs="*", metavar="NAME",
@@ -1150,6 +1411,10 @@ def main():
     ap.add_argument("--no-diag", action="store_true", help="skip the diag snapshot")
     ap.add_argument("--json", action="store_true", help="emit the whole bundle as JSON")
     args = ap.parse_args()
+
+    if args.run_id and args.run_id.strip().startswith("sk-"):
+        cmd_soak(find_soak_dir(args.soak_dir, args.run_id.strip()), args.failures)
+        return
 
     data_dir = find_data_dir(args.data_dir)
     if args.list is not None:
@@ -1208,12 +1473,13 @@ def main():
         names = [b.get("name") for b in ((live_rec or {}).get("bots") or []) if b.get("name")]
     guids = {c.get("guid") for c in (rec.get("comp") or []) if c.get("guid")}
 
+    log_dir = Path(args.log_dir).expanduser() if args.log_dir else data_dir
     slices = []
     untimestamped = []
     all_lines = []
     if not args.no_logs and start_s:
         matcher = build_matcher(names, [wanted, plan_id])
-        for path in candidate_logs(data_dir, win_start):
+        for path in candidate_logs(log_dir, win_start):
             lines, meta = slice_log(path, win_start, win_end, matcher, args.max_lines)
             if meta["first"] is None:
                 if meta["scanned"]:
@@ -1268,7 +1534,7 @@ def main():
         print(hr("LOGS"))
         print("\n".join(render_log_summary(slices, win_start, win_end, names, session_s, start_s)))
         if untimestamped:
-            print("\n".join(render_untimestamped(data_dir, untimestamped)))
+            print("\n".join(render_untimestamped(log_dir, untimestamped)))
         event_lines = render_event_lines(all_lines, args.notable)
         if event_lines:
             print(hr("EVENT LINES (" + ", ".join(EVENT_TAGS) + ")"))
