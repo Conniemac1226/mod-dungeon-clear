@@ -71,13 +71,13 @@ namespace
     {
         if (!corpse || !corpse->IsInWorld())
             return false;
-        std::list<Unit*> near;
+        std::list<Unit*> nearby;
         Acore::AnyUnfriendlyUnitInObjectRangeCheck check(corpse, corpse,
                                                          DC_REZ_CORPSE_HOSTILE_RADIUS);
         Acore::UnitListSearcher<Acore::AnyUnfriendlyUnitInObjectRangeCheck> searcher(
-            corpse, near, check);
+            corpse, nearby, check);
         Cell::VisitObjects(corpse, searcher, DC_REZ_CORPSE_HOSTILE_RADIUS);
-        for (Unit* u : near)
+        for (Unit* u : nearby)
         {
             Creature* c = u ? u->ToCreature() : nullptr;
             if (!c || !c->IsAlive() || c->IsInCombat() || c->IsTotem() || c->IsCivilian() ||
