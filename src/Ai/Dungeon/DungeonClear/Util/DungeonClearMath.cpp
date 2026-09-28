@@ -220,6 +220,19 @@ bool DungeonClearMath::ShouldReleaseStandingPull(bool effectiveOn, bool standing
     return !partyInCombat && !holdingPhase;
 }
 
+bool DungeonClearMath::ShouldAdvanceUnclassifiedAggro(bool inCombat, bool phaseIdle,
+                                                      bool modeOn, bool hasVerdict,
+                                                      bool sweepMap, bool bossInFight)
+{
+    if (!inCombat || !phaseIdle)
+        return false;             // not an aggro taken while scouting
+    if (modeOn || hasVerdict)
+        return false;             // the pull owns it / the classifier already chose
+    if (bossInFight)
+        return false;             // the at-boss path owns a boss engagement
+    return sweepMap;              // elsewhere an unplanned aggro is a lone patrol
+}
+
 bool DungeonClearMath::ShouldDropPullVerdict(bool targetPresent, std::uint32_t lostSince,
                                              std::uint32_t now, std::uint32_t graceMs,
                                              std::uint32_t& lostSinceOut)

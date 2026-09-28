@@ -164,6 +164,14 @@ constexpr float DC_PULL_START_RANGE = 26.0f;
 // silence the run's driver forever.
 constexpr uint32 DC_PULL_ADVANCE_STANDDOWN_MAX_MS = 30000;
 
+// How long an unplanned aggro while scouting holds the party passive at camp
+// before the drag-back maneuver has taken the pull (DcPullContext::scoutAggroMs).
+// The maneuver normally flips Idle -> Returning within one leader tick (<1s), and
+// from then on the ordinary holding-phase rule applies; this only bounds the case
+// where it declines to drag, so the party is never left passive watching the
+// tank fight alone.
+constexpr uint32 DC_PULL_SCOUT_AGGRO_HOLD_MS = 2000;
+
 // How long a camp write by the pull machinery (prospective publish, commit,
 // dynamic seed, unplanned-aggro fresh camp) counts as "fresh". While fresh, the
 // pull action owns the camp and Advance's scout camp-trailing stands down; once

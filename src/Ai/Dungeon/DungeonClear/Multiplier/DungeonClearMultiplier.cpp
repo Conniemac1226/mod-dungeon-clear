@@ -285,6 +285,23 @@ float DungeonClearMultiplier::GetValue(Action* action)
             return 0.0f;
     }
 
+    // Stock group-target pickers while the camp hold is PASSIVE (the tank is
+    // tagging or dragging). "dps assist" / "tank assist" sit at relevance 50 in the
+    // non-combat engine — above hold-at-camp (28), where +passive does not apply —
+    // so they target the tank's attacker and flip the follower onto the combat
+    // engine before the hold can pin it. On a planned pull the +passive already on
+    // the combat engine caught that; on a scout aggro nothing did, and the casters
+    // opened on the pack at its spawn (tr-20260923-171623-1). The off-tank's
+    // "tank assist" is the same picker and ran it 27yd off camp. Only while
+    // passive: between pulls and at Engage the party must still defend itself.
+    if (name == "dps assist" || name == "tank assist")
+    {
+        Position camp;
+        bool passive = false;
+        if (DcLeaderSignal::GetLeaderCampHold(bot, camp, passive) && passive)
+            return 0.0f;
+    }
+
     // Stock follow-master (FollowAction, relevance ~1) points a bot at its MASTER —
     // the human party leader — NOT the dungeon-clear tank. While a DC run is active
     // DC owns 100% of positioning: follow-tank (rel 25) trails the tank out of

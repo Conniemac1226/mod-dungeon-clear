@@ -611,11 +611,6 @@ void DcPullPlanner::UpdateDynamicPullMode(PlayerbotAI* botAI, AiObjectContext* c
     DcPullContext& pull = context->GetValue<DcPullContext&>(DcKey::PullContext)->Get();
     bool const curBool = context->GetValue<bool>(DcKey::PullMode)->Get();
 
-    // Never flip the verdict mid-engagement: in combat or any non-Idle pull phase
-    // the standing decision is latched until the fight resolves.
-    if (bot->IsInCombat() || pull.phase != DcPullPhase::Idle)
-        return;
-
     auto apply = [&](bool want, DcPullDecisionCode decision)
     {
         pull.decision = decision;
@@ -659,6 +654,84 @@ void DcPullPlanner::UpdateDynamicPullMode(PlayerbotAI* botAI, AiObjectContext* c
         if (DcSettings::GetBool(bot, "RecordDecisions"))
             DcPullDecisionIo::Record(bot->GetGUID().GetRawValue(), getMSTime(), obs, v);
     };
+
+    // UNCLASSIFIED AGGRO ON A SWEEP MAP -> ADVANCED, so the maneuver's Idle branch
+    // drags it to a fresh camp instead of the walk-in engage fighting it where it
+    // bit. Between packs Dynamic answers "no target" with the bool OFF, and with
+    // the bool off the pull ACTION is not live — the "unplanned aggro while
+    // scouting -> fresh camp" branch (DcPullActions, first combat tick at Idle)
+    // lives inside it. So an aggro the scan never sized became a Leeroy in place.
+    // On a sweep map that is the bug by the registry's own definition: every
+    // fight spot is inside a neighbour's reach.
+    //
+    // Live: tr-20260927-003140-1, Karazhan ballroom. The planned pull worked and
+    // died at camp; 00:38:51 `pull released: mode off`; the route rejoin put the
+    // tank 20yd beside the residual half of the same cluster (corridor band 18yd,
+    // Phantom Guest aggro 22yd), 00:39:01 first contact with `camp none` ->
+    // engage-trash walk-in INTO the formation -> the rest of the room, a
+    // Skeletal Waiter and the north formation followed. Both sibling runs lost
+    // Moroes the same way one room on.
+    //
+    // `decision == None` is the whole discriminator: a standing LEEROY is a pack
+    // the classifier sized and chose to walk in on, and that choice stands. Only
+    // an aggro nobody sized is answered with the safe direction. Sweep maps only,
+    // for the reason TargetInsideBystanderPack is: elsewhere an unplanned aggro
+    // is a lone patrol, and dragging it costs the full FSM for nothing.
+    //
+    // The aggressor is latched as the pack so the sticky target value hands it to
+    // the action and the harness splits a per-pull record on decisionSeq. No
+    // estimate exists for it — zeroed rather than left over from the last pack,
+    // so the pull table shows an unplanned pull as one.
+    //
+    // Never a boss or his summoned add: that fight is the at-boss path's, the same
+    // rule GetPullTarget's boss veto enforces. tr-20260927-094926-4: the raid
+    // muster released Maiden's pull, her combat flag landed at Idle with no
+    // verdict, and this gate turned the boss engagement into a trash drag-back.
+    if (bot->IsInCombat() && pull.phase == DcPullPhase::Idle)
+    {
+        auto const isBoss = [&](Unit const* u)
+        {
+            return u && (DcTargeting::IsDungeonBossEntry(context, u->GetEntry()) ||
+                         DcTargeting::IsBossSummon(u));
+        };
+        Unit* aggressor = bot->GetVictim();
+        bool bossInFight = isBoss(aggressor);
+        for (Unit* a : bot->getAttackers())
+        {
+            if (!a || !a->IsAlive())
+                continue;
+            bossInFight = bossInFight || isBoss(a);
+            if (!aggressor ||
+                bot->GetExactDist2d(a) < bot->GetExactDist2d(aggressor))
+                aggressor = a;
+        }
+        if (DungeonClearMath::ShouldAdvanceUnclassifiedAggro(
+                /*inCombat*/ true, /*phaseIdle*/ true, curBool,
+                pull.decision != DcPullDecisionCode::None,
+                DcEngageGeometry::EnRouteSweepApplies(bot), bossInFight))
+        {
+            pull.decisionTarget      = aggressor ? aggressor->GetGUID() : ObjectGuid::Empty;
+            pull.decisionTargetEntry = aggressor ? aggressor->GetEntry() : 0u;
+            pull.decisionSince       = getMSTime();
+            pull.targetLostSince     = 0;
+            ++pull.decisionSeq;
+            pull.predictedThirds = 0;
+            pull.predictedCount  = 0;
+            DC_PULL_INFO("[DC:{}] dynamic: unclassified aggro on a sweep map — {} (entry {}) "
+                         "at {:.1f}yd bit the scout leg with no verdict -> ADVANCED, the "
+                         "maneuver drags it to a fresh camp", bot->GetName(),
+                         aggressor ? aggressor->GetName() : std::string("-"),
+                         aggressor ? aggressor->GetEntry() : 0u,
+                         aggressor ? bot->GetExactDist2d(aggressor) : 0.0f);
+            apply(true, DcPullDecisionCode::Advanced);
+        }
+        return;
+    }
+
+    // Never flip the verdict mid-engagement: any non-Idle pull phase keeps the
+    // standing decision latched until the fight resolves.
+    if (pull.phase != DcPullPhase::Idle)
+        return;
 
     Unit* target = DcTargeting::GetPullTarget(botAI);
     if (!target)

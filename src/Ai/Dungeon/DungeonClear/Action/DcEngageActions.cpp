@@ -889,6 +889,14 @@ bool DungeonClearEngageBossAction::Execute(Event event)
     if (!next.has_value())
         return false;
 
+    // Travel objectives are not creatures — the trigger's kind guard, repeated for
+    // the already-queued-basket race: the trigger passed on the boss, the boss died
+    // before this ran, and `next` is now the objective behind it. Without this the
+    // live-boss lookup misses and paints a "not spawned" stall that nothing clears
+    // until Advance moves again (tr-20260927-094926-4: Maiden -> Opera: Barnes).
+    if (next->kind != DungeonAnchorKind::Boss)
+        return false;
+
     Creature* boss = DcTargeting::GetLiveBoss(bot, context, next->entry);
     if (!boss)
     {

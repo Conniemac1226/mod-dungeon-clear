@@ -396,6 +396,27 @@ struct DcPullContext
     uint32      predictedCount     = 0;  // DcPullClassification::bodyCount
     uint32      predictedCeiling   = 0;  // DcPullClassification::ceiling
 
+    // --- scout-aggro hold ---------------------------------------------------
+    // getMSTime() the leader's combat flag went 0->1 while the FSM sat in Idle
+    // (an unplanned aggro while scouting), stamped by DcPullBrake from the
+    // enter-combat hook; 0 = never. Closes the gap between that flag and the
+    // maneuver's first combat tick flipping Idle -> Returning: with the phase
+    // still Idle the party read `passive=false`, so stock "dps assist" (rel 50,
+    // above hold-at-camp) grabbed the tank's new attacker and the casters nuked
+    // it at its spawn while the tank was turning to drag it home
+    // (tr-20260923-171623-1, 17:21:49 — Arcane Barrage + Corruption on a Waiter
+    // that never followed, then a 49yd assist walk that woke Moroes).
+    uint32      scoutAggroMs = 0;
+
+    // Is the party held by a fresh scout aggro? Idle only: once the maneuver
+    // takes the pull (Returning) the ordinary holding-phase rule owns the party,
+    // and the window bounds the case where the maneuver declines to drag at all.
+    bool ScoutAggroHolding(uint32 nowMs, uint32 windowMs) const
+    {
+        return phase == DcPullPhase::Idle && scoutAggroMs != 0 &&
+               nowMs - scoutAggroMs < windowMs;
+    }
+
     void Reset() { *this = DcPullContext{}; }
 
     // Tear down the standing Dynamic verdict and every latch that feeds it.

@@ -387,6 +387,21 @@ namespace DungeonClearMath
     bool ShouldReleaseStandingPull(bool effectiveOn, bool standing, bool partyInCombat,
                                    bool holdingPhase, bool bossPullback);
 
+    // Unclassified-aggro gate for the Dynamic governor (pure). Between packs the
+    // governor answers "no target" with the bool OFF, and with the bool off the pull
+    // action is not live — including its Idle-branch "unplanned aggro while scouting
+    // -> fresh camp" drag-back. An aggro the scan never sized therefore became a
+    // walk-in fought where it bit. On a sweep map (RouteSweepRegistry) that spot is
+    // inside a neighbour's reach by definition, so the answer is the safe direction:
+    // flip to ADVANCED and let the maneuver drag it home. `hasVerdict` is the whole
+    // discriminator — a standing LEEROY is a pack the classifier sized and chose to
+    // walk in on, and that choice stands; only an aggro nobody sized is answered.
+    // A boss (or his summoned add) among the attackers is never dragged: that is
+    // the at-boss path's engagement, and scripted bosses misbehave when camp-dragged.
+    // True only for: in combat, phase Idle, bool off, no verdict, sweep map, no boss.
+    bool ShouldAdvanceUnclassifiedAggro(bool inCombat, bool phaseIdle, bool modeOn,
+                                        bool hasVerdict, bool sweepMap, bool bossInFight);
+
     // Dynamic-verdict drop grace gate (pure). A standing Leeroy/Advanced verdict
     // must survive a TRANSIENT no-target read (door veto flicker, long-path cache
     // mid-rebuild, far-targets poll boundary): dropping it instantly flips the

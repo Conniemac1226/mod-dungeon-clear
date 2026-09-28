@@ -766,8 +766,15 @@ bool DcLeaderSignal::GetLeaderCampHold(Player* bot, Position& campOut, bool& pas
     // A standing camp-safety release keeps the maneuver (the tank is still
     // dragging) but frees the party: still camped, no longer passive — the same
     // posture as holding at camp between pulls.
-    passiveOut = IsPullPhaseHolding(static_cast<uint32>(pull.phase)) &&
-                 !pull.partyReleased;
+    //
+    // A fresh scout aggro holds too: the leader's combat flag is up but the drag-back
+    // maneuver has not yet run its first combat tick to flip Idle -> Returning. See
+    // DcPullContext::scoutAggroMs. Not gated on partyReleased — that latch belongs to
+    // a previous maneuver until the next Transition clears it.
+    passiveOut = (IsPullPhaseHolding(static_cast<uint32>(pull.phase)) &&
+                  !pull.partyReleased) ||
+                 (leader->IsInCombat() &&
+                  pull.ScoutAggroHolding(getMSTime(), DC_PULL_SCOUT_AGGRO_HOLD_MS));
     return true;
 }
 bool DcLeaderSignal::IsLeaderCampFightActive(Player* bot)

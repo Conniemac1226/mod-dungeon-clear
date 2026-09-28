@@ -88,6 +88,9 @@ SIGNALS = [
     ("stranded recovery", ["stranded-recovery", "stranded recovery"]),
     ("unreachable", ["unreachable", "no path", "path ends short", "cannot reach", "can't reach"]),
     ("pull", ["pull released", "pull fizzled", "fizzle", "camp re-anchored", "camp anchor"]),
+    # An aggro the scan never sized, answered with ADVANCED on a sweep map so the
+    # maneuver drags it home instead of the walk-in fighting it where it bit.
+    ("unplanned pull", ["unclassified aggro"]),
     # How each fight STARTED. The pull rows only cover fights DC pulled; an
     # objective that shows up here is one that joined a fight nobody pulled it into.
     ("first contact", ["first contact:"]),

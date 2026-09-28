@@ -645,9 +645,10 @@ TEST(DcPolylineAvoidTest, StockadeSweepReachStopsAtTheDeepCellBank)
 
 #include "Ai/Dungeon/DungeonClear/Data/RouteSweepRegistry.h"
 
-TEST(DcRouteSweepRegistryTest, OnlyTheStockadeSweepsForNow)
+TEST(DcRouteSweepRegistryTest, OnlyTheStockadeAndKarazhanSweep)
 {
     EXPECT_TRUE(RouteSweepRegistry::SweepsRoute(34));    // The Stockade
+    EXPECT_TRUE(RouteSweepRegistry::SweepsRoute(532));   // Karazhan (ballroom / banquet hall)
 
     // Every other dungeon keeps the historical corridor-band pick AND the
     // untouched Dynamic verdict. Forcing Advanced reshapes how every fight in a

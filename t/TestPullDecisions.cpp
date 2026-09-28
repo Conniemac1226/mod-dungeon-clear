@@ -321,3 +321,59 @@ TEST(DcPullStandDown, ClearDynamicVerdictIsIdempotentAndLeavesTheManeuverAlone)
     EXPECT_EQ(pull.phase, DcPullPhase::Returning);
     EXPECT_FALSE(pull.pullTarget.IsEmpty());
 }
+
+// ---------------------------------------------------------------------------
+// DcPullContext::ScoutAggroHolding — an unplanned aggro while scouting holds the
+// party passive from the combat flag, not from the maneuver's first combat tick
+// (tr-20260923-171623-1: casters opened on the aggressor at its spawn in the gap).
+// ---------------------------------------------------------------------------
+
+TEST(DcPullScoutAggro, NeverStampedDoesNotHold)
+{
+    DcPullContext pull;
+    EXPECT_FALSE(pull.ScoutAggroHolding(5000u, 2000u));
+}
+
+TEST(DcPullScoutAggro, FreshStampInIdleHolds)
+{
+    DcPullContext pull;
+    pull.scoutAggroMs = 10000u;
+    EXPECT_TRUE(pull.ScoutAggroHolding(10000u, 2000u));
+    EXPECT_TRUE(pull.ScoutAggroHolding(11999u, 2000u));
+}
+
+TEST(DcPullScoutAggro, WindowExpiryReleases)
+{
+    // The maneuver declined to drag: the party must not stay passive for good.
+    DcPullContext pull;
+    pull.scoutAggroMs = 10000u;
+    EXPECT_FALSE(pull.ScoutAggroHolding(12000u, 2000u));
+}
+
+TEST(DcPullScoutAggro, OnlyIdleHolds)
+{
+    // Once the drag-back takes the pull, the holding-phase rule owns the party;
+    // a stale stamp surviving into the camp fight must not re-pin it.
+    DcPullContext pull;
+    pull.scoutAggroMs = 10000u;
+    pull.Transition(DcPullPhase::Returning, 10100u);
+    EXPECT_FALSE(pull.ScoutAggroHolding(10200u, 2000u));
+    pull.Transition(DcPullPhase::Engage, 10300u);
+    EXPECT_FALSE(pull.ScoutAggroHolding(10400u, 2000u));
+}
+
+TEST(DcPullScoutAggro, SurvivesClockWrap)
+{
+    DcPullContext pull;
+    pull.scoutAggroMs = 0xFFFFFF00u;
+    EXPECT_TRUE(pull.ScoutAggroHolding(0x00000100u, 2000u));   // 512ms later
+    EXPECT_FALSE(pull.ScoutAggroHolding(0x00001000u, 2000u));  // ~4.3s later
+}
+
+TEST(DcPullScoutAggro, ResetClearsStamp)
+{
+    DcPullContext pull;
+    pull.scoutAggroMs = 10000u;
+    pull.Reset();
+    EXPECT_FALSE(pull.ScoutAggroHolding(10001u, 2000u));
+}

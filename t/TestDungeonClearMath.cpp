@@ -583,6 +583,59 @@ TEST(DungeonClearPullReleaseTest, NeverReleasesABossPullback)
 }
 
 // ---------------------------------------------------------------------------
+// ShouldAdvanceUnclassifiedAggro — the unclassified-aggro gate on sweep maps.
+// ---------------------------------------------------------------------------
+using DungeonClearMath::ShouldAdvanceUnclassifiedAggro;
+
+// The live case (tr-20260927-003140-1, Kara ballroom): mode dropped to off after
+// the camp fight, the tank walked the route, a cluster the band never picked bit
+// it at 18yd. In combat, Idle, bool off, no verdict, sweep map -> ADVANCED.
+TEST(DungeonClearUnclassifiedAggroTest, AdvancesAnUnsizedAggroOnASweepMap)
+{
+    EXPECT_TRUE(ShouldAdvanceUnclassifiedAggro(/*inCombat*/ true, /*phaseIdle*/ true,
+                                               /*modeOn*/ false, /*hasVerdict*/ false,
+                                               /*sweepMap*/ true, /*bossInFight*/ false));
+}
+
+// A standing verdict is the classifier's choice — a LEEROY walk-in stays a
+// walk-in, an ADVANCED pull is already the maneuver's. Never overridden.
+TEST(DungeonClearUnclassifiedAggroTest, AStandingVerdictStands)
+{
+    EXPECT_FALSE(ShouldAdvanceUnclassifiedAggro(true, true, false, /*hasVerdict*/ true, true, false));
+}
+
+// Bool already on: the pull action is live and its own Idle branch drags the
+// aggro home. Nothing to flip.
+TEST(DungeonClearUnclassifiedAggroTest, NothingToDoWhenTheModeIsAlreadyOn)
+{
+    EXPECT_FALSE(ShouldAdvanceUnclassifiedAggro(true, true, /*modeOn*/ true, false, true, false));
+}
+
+// Off a sweep map an unplanned aggro is a lone patrol; dragging it costs the full
+// FSM for nothing. The registry row is the evidence gate.
+TEST(DungeonClearUnclassifiedAggroTest, SweepMapsOnly)
+{
+    EXPECT_FALSE(ShouldAdvanceUnclassifiedAggro(true, true, false, false, /*sweepMap*/ false, false));
+}
+
+// Not an aggro taken while scouting: out of combat there is nothing to answer,
+// and a non-Idle phase is a maneuver in flight that owns its own verdict.
+TEST(DungeonClearUnclassifiedAggroTest, OnlyAnAggroTakenWhileScouting)
+{
+    EXPECT_FALSE(ShouldAdvanceUnclassifiedAggro(/*inCombat*/ false, true, false, false, true, false));
+    EXPECT_FALSE(ShouldAdvanceUnclassifiedAggro(true, /*phaseIdle*/ false, false, false, true, false));
+}
+
+// A boss (or his summoned add) among the attackers is the at-boss path's fight,
+// never a trash drag-back. tr-20260927-094926-4: Maiden's flag landed at Idle with
+// no verdict after the raid muster released her pull, and the gate dragged her.
+TEST(DungeonClearUnclassifiedAggroTest, NeverDragsABoss)
+{
+    EXPECT_FALSE(ShouldAdvanceUnclassifiedAggro(true, true, false, false, true,
+                                                /*bossInFight*/ true));
+}
+
+// ---------------------------------------------------------------------------
 // ShouldDropPullVerdict — the no-target verdict-drop grace gate.
 // ---------------------------------------------------------------------------
 using DungeonClearMath::ShouldDropPullVerdict;
