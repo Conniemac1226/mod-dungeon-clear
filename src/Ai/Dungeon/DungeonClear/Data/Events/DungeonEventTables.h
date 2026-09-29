@@ -5358,6 +5358,8 @@ void RegisterMaraudonWings(std::unordered_map<uint32, DungeonWingLayout>& store)
 // Blackrock Spire (229) — LBRS / UBRS, chosen per run (WingSelect::Explicit).
 // No events or roster patch yet; lives in BlackrockSpireEvents.cpp.
 void RegisterBlackrockSpireWings(std::unordered_map<uint32, DungeonWingLayout>& store);
+// Blackrock Depths (230) — Detention Block / Upper City, chosen per run.
+void RegisterBlackrockDepthsWings(std::unordered_map<uint32, DungeonWingLayout>& store);
 
 // --- anchor routes (one appender per dungeon that hand-authors a route) ---
 // Waypoint anchors StridedPathfinder walks INSTEAD of asking the navmesh

@@ -57,7 +57,13 @@ namespace DcTestDungeonRegistry
             { "zf",              "Zul'Farrak",                    209,  1213.52f,   841.59f,    8.93f, 6.090f, 46, "" },
             { "maraudon",        "Maraudon",                      349,  1019.69f,  -458.31f,  -43.43f, 0.310f, 48, "" },
             { "st",              "The Temple of Atal'Hakkar",     109,  -319.24f,    99.90f, -131.85f, 3.190f, 52, "" },
-            { "brd",             "Blackrock Depths",              230,   456.93f,    34.09f,  -68.09f, 4.712f, 54, "" },
+            // Blackrock Depths is two dungeons on one map (see BlackrockDepthsEvents):
+            // the Detention Block (Gerstahn -> Bael'Gar) and the Upper City
+            // (Shadowforge Lock, Angerforge -> Thaurissan). Both enter at the one
+            // portal, as the dungeon finder does. The retired `brd` token aliases
+            // to `brd-db`.
+            { "brd-db",          "Blackrock Depths: Detention Block", 230, 456.93f,  34.09f,  -68.09f, 4.712f, 54, "Detention Block" },
+            { "brd-uc",          "Blackrock Depths: Upper City",  230,   456.93f,    34.09f,  -68.09f, 4.712f, 58, "Upper City" },
             // Blackrock Spire is two dungeons on one map (see BlackrockSpireEvents).
             // LBRS enters at the shared portal; UBRS drops the party inside the
             // shared hall facing the Dragonspine Door (GO 164725), where a UBRS
@@ -171,6 +177,7 @@ namespace DcTestDungeonRegistry
     {
         static std::vector<Alias> const aliases = {
             { "brs", "lbrs" },   // Blackrock Spire before the LBRS/UBRS split
+            { "brd", "brd-db" }, // Blackrock Depths before the Detention Block/Upper City split
         };
         return aliases;
     }

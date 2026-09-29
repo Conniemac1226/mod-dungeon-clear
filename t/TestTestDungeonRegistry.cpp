@@ -133,6 +133,31 @@ TEST(DcTestDungeonRegistryTest, NumericLookupOnWingSplitMapIsRefused)
     EXPECT_EQ(Find("189"), nullptr);
     // 229 = Blackrock Spire, LBRS + UBRS.
     EXPECT_EQ(Find("229"), nullptr);
+    // 230 = Blackrock Depths, Detention Block + Upper City.
+    EXPECT_EQ(Find("230"), nullptr);
+}
+
+TEST(DcTestDungeonRegistryTest, BlackrockDepthsRowsAreItsWings)
+{
+    Row const* db = Find("brd-db");
+    ASSERT_NE(db, nullptr);
+    EXPECT_EQ(db->mapId, 230u);
+    EXPECT_STREQ(db->wing, "Detention Block");
+
+    Row const* uc = Find("brd-uc");
+    ASSERT_NE(uc, nullptr);
+    EXPECT_EQ(uc->mapId, 230u);
+    EXPECT_STREQ(uc->wing, "Upper City");
+    // Both wings enter at the one portal, as the dungeon finder sends them.
+    EXPECT_TRUE(uc->x == db->x && uc->y == db->y);
+}
+
+TEST(DcTestDungeonRegistryTest, RetiredBrdTokenAliasesToTheDetentionBlock)
+{
+    EXPECT_STREQ(DcTestDungeonRegistry::AliasTarget("brd"), "brd-db");
+    Row const* row = Find("brd");
+    ASSERT_NE(row, nullptr);
+    EXPECT_STREQ(row->token, "brd-db");
 }
 
 TEST(DcTestDungeonRegistryTest, BlackrockSpireRowsAreItsWings)

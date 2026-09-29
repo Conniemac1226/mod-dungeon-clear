@@ -14,10 +14,11 @@
 // Hand-authored catalogue of the dungeons the `.dc test` harness can run:
 // every map with a curated clear definition (roster patch / event file), one
 // row per *enterable unit*. Split-wing maps whose wings are physically
-// isolated (Dire Maul, Scarlet Monastery, Blackrock Spire) get one row per wing,
-// so each wing has its own token and entrance. On DM/SM the wing a run covers is
-// decided by where the party stands; on Blackrock Spire (one shared portal) the
-// row's token IS the run wing (DungeonWing::token, latched by the harness).
+// isolated (Dire Maul, Scarlet Monastery, Blackrock Spire, Blackrock Depths) get
+// one row per wing, so each wing has its own token and entrance. On DM/SM the wing
+// a run covers is decided by where the party stands; on Blackrock Spire and
+// Blackrock Depths (one shared portal) the row's token IS the run wing
+// (DungeonWing::token, latched by the harness).
 // Maraudon's wings interconnect, so it stays one row.
 //
 // Entrance coordinates are the world-DB areatrigger_teleport targets (the
@@ -143,7 +144,8 @@ namespace DcTestDungeonRegistry
 
     // Retired tokens that still resolve, so old commands, saved soak pools, test
     // plans and queued streamcast requests keep working: `brs` (Blackrock Spire
-    // before the LBRS/UBRS split) -> `lbrs`. Published in the sidecar as
+    // before the LBRS/UBRS split) -> `lbrs`, `brd` (Blackrock Depths before the
+    // Detention Block/Upper City split) -> `brd-db`. Published in the sidecar as
     // "aliases" so the Test Deck and streamcast can normalise stored tokens.
     struct Alias
     {

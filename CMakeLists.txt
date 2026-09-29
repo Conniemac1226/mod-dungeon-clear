@@ -1026,3 +1026,9 @@ AC_ADD_CONFIG_FILE("${CMAKE_CURRENT_LIST_DIR}/conf/mod_dungeon_clear.conf.dist")
 #    wing's terminal boss completes the run, the test harness counts only the
 #    wing's encounter bits, and wing-tagged DcNavPenaltyRegistry rows keep each
 #    wing's routes out of the other.)
+
+# New files added: t/TestBlackrockDepthsRouteProbe.cpp
+#   (Blackrock Depths, map 230, split into the Detention Block and the Upper
+#    City as a second Explicit wing layout. The probe routes the Upper City legs
+#    from the portal and checks none crosses the Ring of Law arena floor, which
+#    is why map 230 needs no wing-tagged nav fence.)

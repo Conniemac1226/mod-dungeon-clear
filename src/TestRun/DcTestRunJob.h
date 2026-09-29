@@ -349,8 +349,8 @@ private:
     // The predicate's latch + grace clock (pure — DcTestRunVerdict.h).
     DcTestRun::ScenarioGrace _grace;
 
-    // --- run wing (Blackrock Spire: a map whose wing is chosen per run) -------
-    // The row's wing token when its map picks wings explicitly ("lbrs"/"ubrs"),
+    // --- run wing (Blackrock Spire/Depths: a map whose wing is chosen per run) -
+    // The row's wing token when its map picks wings explicitly ("lbrs", "brd-uc"),
     // "" otherwise. Latched on the tank before the roster is read, so the roster,
     // bossesTotal and the run all see only that wing. `_wingMask` is the wing's
     // DungeonEncounter bits (0 = count every bit): it scopes the kill count and
