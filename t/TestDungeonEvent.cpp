@@ -5,6 +5,8 @@
 
 #include "gtest/gtest.h"
 
+#include <algorithm>
+
 #include "Ai/Dungeon/DungeonClear/Data/DungeonEventRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Overrides/BossRosterRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Overrides/ObjectiveHookRegistry.h"
@@ -1534,4 +1536,117 @@ TEST(DungeonEventProgressTest, BeginEventLeavesCrossEventStateAlone)
     EXPECT_EQ(p.instanceId, 42u);
     EXPECT_EQ(p.lastDriveMs, 9999u);
     EXPECT_EQ(p.relocationCombatHoldMs, 4321u);
+}
+
+// --- any-of spawn gate (OrSpawnOf) ------------------------------------------
+// A spawn whose entry the script rolls per instance (Karazhan's Opera cast) is
+// waited on by listing every entry it may be; the gate clears on any of them.
+
+TEST(EventBuilderAnyOfTest, OrSpawnOfWidensTheGarrisonGate)
+{
+    DungeonEvent const ev = EventBuilder(1, 1, "any-of")
+                                .MoveToHoldUntilSpawn(1.0f, 2.0f, 3.0f, 5.0f, 100)
+                                .OrSpawnOf({200, 300})
+                                .Build();
+    ASSERT_EQ(ev.steps.size(), 1u);
+    std::vector<uint32> const gate = EventStepGateEntries(ev.steps[0]);
+    ASSERT_EQ(gate.size(), 3u);
+    for (uint32 entry : {100u, 200u, 300u})
+        EXPECT_NE(std::find(gate.begin(), gate.end(), entry), gate.end()) << entry;
+}
+
+TEST(EventBuilderAnyOfTest, OrSpawnOfAppliesToWaitForSpawnToo)
+{
+    DungeonEvent const ev = EventBuilder(1, 1, "any-of")
+                                .WaitForSpawn(100)
+                                .OrSpawnOf({200})
+                                .Build();
+    EXPECT_EQ(EventStepGateEntries(ev.steps[0]), (std::vector<uint32>{100, 200}));
+}
+
+TEST(EventBuilderAnyOfTest, PlainGateIsTheSingleEntry)
+{
+    DungeonEvent const ev = EventBuilder(1, 1, "plain").WaitForSpawn(100).Build();
+    EXPECT_EQ(EventStepGateEntries(ev.steps[0]), (std::vector<uint32>{100}));
+    // A gate listing only alternatives (creatureEntry 0) still has entries.
+    EventStep s;
+    s.orEntries = {0, 7};
+    EXPECT_EQ(EventStepGateEntries(s), (std::vector<uint32>{7}));
+}
+
+// --- boss-state garrison gate ---------------------------------------------
+// A boss state is not monotonic (an evade puts it back to NOT_STARTED, a wipe to
+// FAIL), so the gate takes a set of states to clear on and a set that rewinds the
+// event. EncounterState values: NOT_STARTED 0, IN_PROGRESS 1, FAIL 2, DONE 3.
+
+TEST(EventBuilderBossStateTest, GarrisonCarriesSlotAndMasks)
+{
+    DungeonEvent const ev = EventBuilder(1, 1, "boss state")
+                                .MoveToHoldUntilBossState(1.0f, 2.0f, 3.0f, 8.0f, 4,
+                                                          DcBossStateBit(3))
+                                .RestartOnBossState(DcBossStateBit(2))
+                                .Build();
+    ASSERT_EQ(ev.steps.size(), 1u);
+    EventStep const& s = ev.steps[0];
+    EXPECT_EQ(s.kind, EventStepKind::MoveTo);
+    EXPECT_EQ(s.bossStateId, 4);
+    EXPECT_EQ(s.bossStateClearMask, DcBossStateBit(3));
+    EXPECT_EQ(s.restartOnBossStateMask, DcBossStateBit(2));
+    // No other gate is armed by it.
+    EXPECT_EQ(s.creatureEntry, 0u);
+    EXPECT_EQ(s.instanceDataId, -1);
+    EXPECT_EQ(s.persistentDataId, -1);
+}
+
+TEST(EventBuilderBossStateTest, PlainGarrisonHasNoBossStateGate)
+{
+    DungeonEvent const ev = EventBuilder(1, 1, "plain").MoveTo(1.0f, 2.0f, 3.0f).Build();
+    EXPECT_EQ(ev.steps[0].bossStateId, -1);
+}
+
+TEST(EventBuilderBossStateTest, GateVerdicts)
+{
+    uint32 const clear = DcBossStateBit(3);                        // DONE
+    uint32 const restart = DcBossStateBit(0) | DcBossStateBit(2);  // NOT_STARTED, FAIL
+    EXPECT_EQ(DecideBossStateGate(3, clear, restart), BossStateGateVerdict::Clear);
+    EXPECT_EQ(DecideBossStateGate(1, clear, restart), BossStateGateVerdict::Hold);
+    EXPECT_EQ(DecideBossStateGate(2, clear, restart), BossStateGateVerdict::Restart);
+    EXPECT_EQ(DecideBossStateGate(0, clear, restart), BossStateGateVerdict::Restart);
+    // Without a restart mask a reset state just holds.
+    EXPECT_EQ(DecideBossStateGate(2, clear, 0), BossStateGateVerdict::Hold);
+    // Clear wins when a state is in both masks.
+    EXPECT_EQ(DecideBossStateGate(3, clear, clear), BossStateGateVerdict::Clear);
+    // Out-of-range states never match.
+    EXPECT_EQ(DecideBossStateGate(40, ~0u, ~0u), BossStateGateVerdict::Hold);
+}
+
+// CarryItem tags the LAST UseGO step with a key item the clicker must hold; the
+// click step is otherwise an ordinary UseGameObject.
+TEST(DungeonEventBuilderTest, CarryItemTagsOnlyTheLastUseGO)
+{
+    DungeonEvent e = EventBuilder(1, 1, "e")
+                         .UseGO(100, 10.0f)
+                         .UseGO(200, 10.0f)
+                         .CarryItem(24140)
+                         .Build();
+    ASSERT_EQ(e.steps.size(), 2u);
+    EXPECT_EQ(e.steps[0].itemId, 0u);
+    EXPECT_EQ(e.steps[1].kind, EventStepKind::UseGameObject);
+    EXPECT_EQ(e.steps[1].goEntry, 200u);
+    EXPECT_EQ(e.steps[1].itemId, 24140u);
+    EXPECT_FALSE(e.steps[1].reportUse);
+}
+
+// Karazhan's urn: mod-individual-progression's go_blackened_urn refuses a clicker
+// without the Blackened Urn item (24140), silently, so the intro never started
+// and every run stalled at the urn (tp-20260924-004412-1, 5/5).
+TEST(DungeonEventBuilderTest, KarazhanUrnClickCarriesTheBlackenedUrn)
+{
+    DungeonEvent const* ev = DungeonEventRegistry::Find(532, 2);
+    ASSERT_NE(ev, nullptr) << "Karazhan (532) event 2 (Nightbane urn) is missing";
+    ASSERT_FALSE(ev->steps.empty());
+    EventStep const& click = ev->steps[0];
+    EXPECT_EQ(click.kind, EventStepKind::UseGameObject);
+    EXPECT_EQ(click.goEntry, 194092u);
+    EXPECT_EQ(click.itemId, 24140u);
 }

@@ -33,9 +33,12 @@ async def api_testdungeons():
 
 
 @router.get("/api/testplans")
-async def api_testplans(limit: int = 50):
-    """Completed test-plan summaries: tail dc_testplans.jsonl, newest first."""
-    return {"plans": tail_jsonl(ctx.cfg.testplans_file, limit)}
+async def api_testplans(limit: int = 50, checkpoints: bool = False):
+    """Completed test-plan summaries: tail dc_testplans.jsonl, newest first.
+    An endless (continuous-mode) plan also appends periodic checkpoint lines
+    while it runs; those are left out unless asked for."""
+    keep = None if checkpoints else (lambda row: not row.get("checkpoint"))
+    return {"plans": tail_jsonl(ctx.cfg.testplans_file, limit, keep)}
 
 
 @router.post("/api/testplans/clear")
@@ -69,6 +72,14 @@ class PlanStopRequest(BaseModel):
     planId: str
 
 
+def resolve_alias(cat, token):
+    """A retired dungeon token (the catalogue's "aliases": brs -> lbrs after the
+    Blackrock Spire split) as the token that replaced it; any other unchanged."""
+    aliases = cat.get("aliases") or {}
+    target = aliases.get(token)
+    return target if isinstance(target, str) and target else token
+
+
 async def catalogue_rows():
     """{token: row} from the catalogue, refusing early if it is not there yet."""
     cat = await api_testdungeons()
@@ -85,7 +96,18 @@ def check_dungeon(rows, token, heroic):
         raise HTTPException(400, f"unknown dungeon '{token}'")
     # heroicLevel 0/absent = no heroic mode: classic dungeons, which have no
     # heroic difficulty at all (mirrors the module-side gate).
-    if heroic and not rows[token].get("heroicLevel"):
+    row = rows[token]
+    # Scenario rows (module T1): a slice of a parent dungeon, launched by its
+    # own token. The module refuses heroic on them (heroicLevel is always 0);
+    # the parent must be in the same catalogue, or the row is a stale sidecar.
+    if row.get("scenario"):
+        parent = row.get("scenarioOf") or ""
+        if parent not in rows or rows[parent].get("scenario"):
+            raise HTTPException(400, f"scenario '{token}' has no parent dungeon "
+                                     f"'{parent}' in the catalogue")
+        if heroic:
+            raise HTTPException(400, f"scenario '{token}' has no heroic mode")
+    if heroic and not row.get("heroicLevel"):
         raise HTTPException(400, f"'{token}' has no heroic mode "
                                  "(classic dungeons have none)")
 
@@ -100,6 +122,12 @@ def check_size(rows, token, size):
     if not row.get("raid"):
         raise HTTPException(400, f"'{token}' is not a raid — size only applies "
                                  "to raid rows")
+    # A scenario runs at its parent's default size: its focus, grace and
+    # watchdog budget were authored for that raid, so the form locks it.
+    if row.get("scenario"):
+        locked = int(row.get("defaultSize") or 0)
+        if locked and size != locked:
+            raise HTTPException(400, f"scenario '{token}' runs at size {locked} only")
     lo = int(row.get("sizeMin") or 2)
     hi = int(row.get("sizeMax") or 40)
     if not lo <= size <= hi:
@@ -126,6 +154,7 @@ def check_gear(rows, token, heroic, ilvl, quality):
 @router.post("/api/testplans/start")
 async def api_testplans_start(req: PlanStartRequest, request: Request):
     cat, rows = await catalogue_rows()
+    req.dungeon = resolve_alias(cat, req.dungeon)
     check_dungeon(rows, req.dungeon, req.heroic)
     # planMaxTotal 0/absent = unlimited (the module's default). Only mirror a
     # positive cap — inventing a local one here just refused plans the

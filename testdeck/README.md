@@ -281,6 +281,55 @@ a name it controls at your server and driving it from their browser.
 readable copy of that file is enough to forge an admin session, so do not
 relax it or place it somewhere shared.
 
+## Continuous mode
+
+The **Continuous** page runs tests around the clock. Pick dungeons (each with
+Normal, Heroic or Both), a concurrency, and press **Start continuous**: the
+worldserver keeps that many runs in flight, drawing each launch from your pool,
+until you stop it. *Balanced* order runs every dungeon once per round in a
+shuffled order; *Pure random* draws independently. Pools can be saved as
+presets, and "Re-run failures from…" builds a pool from a past session's
+failed dungeons.
+
+What keeps it honest over hours or days:
+
+- **Every failure stays listed** — the page pages through the session's own
+  ledger, never a capped tail — and each gets its **evidence** captured as it
+  lands: `tools/dc_test_run.py`'s report plus the run's log slices, saved
+  before the next worldserver restart truncates the logs.
+- **Restarts are survived.** A session outlives the worldserver: after a
+  restart it re-issues its plan (`auto-resume`, on by default), and every run
+  that was live when the server went away gets a synthesized `lost` record
+  with its last known state and timeline — crashes do not vanish.
+- **The nightly instance reset is avoided.** Around `Instance.ResetTimeHour`
+  heroic and raid entries stop launching (`DungeonClear.TestRun.Plan.ResetGuardMin`,
+  default 45 min) and resume two minutes after it.
+- **A broken setup does not spin.** Five `setup_failed` runs in a row pause
+  the session with the reason; one click resumes.
+
+One session runs at a time (it owns the bot budget). Anyone who can log in may
+start one; its owner or an admin may pause, edit, stop and delete it. Sessions
+live under `<data_dir>/soaks/<sk-id>/` (`state.json`, `ledger.jsonl`,
+`evidence/`), are never pruned automatically, and are listed under History →
+Continuous. From a shell, `python3 tools/dc_test_run.py sk-<id>` prints a
+session's per-dungeon table and failure clusters.
+
+The server side is an ordinary endless pool plan, usable from the console too:
+
+```
+.dc test plan start pool=rfc,wc,uk:heroic,kara total=0 concurrent=3 [pick=random]
+.dc test plan edit <planId> pool=…|add=… concurrent=N
+.dc test plan pause|resume|stop <planId>
+```
+
+A console line is short (the bridge takes 300 characters; a screen session
+silently drops anything past ~750), so the deck starts a long pool `paused`
+with the first part, `add=`s the rest, and resumes once the plan holds it all.
+
+Evidence capture needs the module's `tools/` next to this checkout; set
+`[soak] dc_test_run` in `testdeck.toml` if it is elsewhere. The page is hidden
+behind an explanation on a worldserver built before pool plans existed.
+
 ## Development
 
 ```sh

@@ -5,6 +5,7 @@
 
 #include "DcRezRecovery.h"
 
+#include "Ai/Dungeon/DungeonClear/Data/DcNeverTargetRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Data/Events/DungeonEventTables.h"
 #include "Ai/Dungeon/DungeonClear/DcPullContext.h"
 #include "Ai/Dungeon/DungeonClear/DcValueKeys.h"
@@ -12,6 +13,7 @@
 #include "Ai/Dungeon/DungeonClear/Util/DcCombatFlag.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcLeaderSignal.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcRun.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcRunWing.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcStatusPublisher.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTargeting.h"
 #include "Ai/Dungeon/DungeonClear/DcApproachState.h"
@@ -23,6 +25,10 @@
 #include <string>
 #include <vector>
 
+#include "CellImpl.h"
+#include "Creature.h"
+#include "GridNotifiers.h"
+#include "GridNotifiersImpl.h"
 #include "Group.h"
 #include "InstanceScript.h"
 #include "Log.h"
@@ -56,6 +62,38 @@ namespace
     // DcLeaderSignal::FindRunOwner and the header comment.
     Player* ResolveRunOwner(Player* bot) { return DcLeaderSignal::FindRunOwner(bot); }
 
+    // Is a live hostile nobody is fighting standing beside this body? Then a rezzer
+    // walking to it walks into an unpulled pack — see DcRezDecision's
+    // UnsafeStandDown branch. Idle only: a mob still fighting the party is the
+    // engagement gate's business, and counting it would stand the recovery down
+    // (and spend the episode's one announcement) in the middle of a fight that is
+    // about to leave the body safe.
+    bool CorpseAmongIdleHostiles(Player* corpse)
+    {
+        if (!corpse || !corpse->IsInWorld())
+            return false;
+        std::list<Unit*> nearby;
+        Acore::AnyUnfriendlyUnitInObjectRangeCheck check(corpse, corpse,
+                                                         DC_REZ_CORPSE_HOSTILE_RADIUS);
+        Acore::UnitListSearcher<Acore::AnyUnfriendlyUnitInObjectRangeCheck> searcher(
+            corpse, nearby, check);
+        Cell::VisitObjects(corpse, searcher, DC_REZ_CORPSE_HOSTILE_RADIUS);
+        for (Unit* u : nearby)
+        {
+            Creature* c = u ? u->ToCreature() : nullptr;
+            if (!c || !c->IsAlive() || c->IsInCombat() || c->IsTotem() || c->IsCivilian() ||
+                c->IsCritter() || c->IsTrigger() || c->HasReactState(REACT_PASSIVE) ||
+                c->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE))
+                continue;
+            if (!c->IsHostileTo(corpse))
+                continue;
+            if (DcNeverTargetRegistry::IsNeverTarget(corpse->GetMapId(), c->GetEntry()))
+                continue;
+            return true;
+        }
+        return false;
+    }
+
     // Same-map group snapshot, KEEPING dead members (unlike the Smart Rest
     // snapshot — the corpses are the whole point here). `players` receives the
     // matching Player* per row so verdict indices resolve to live identities.
@@ -70,6 +108,7 @@ namespace
             m.isHealerRole = PlayerbotAI::IsHeal(member);
             m.isTankRole = PlayerbotAI::IsTank(member);
             m.isBot = GET_PLAYERBOT_AI(member) != nullptr;
+            m.corpseUnsafe = m.isDead && CorpseAmongIdleHostiles(member);
             out.push_back(m);
             players.push_back(member);
         };
@@ -282,10 +321,21 @@ namespace
         // A block clears it for the same reason and then some: time spent unable to
         // cast must not be charged to a recovery that has not been allowed to start,
         // or the timeout fires the moment the block lifts.
+        // A live chess game holds every body at the board (the rezzer included),
+        // so it stops the clock too: the tank that died at the board is raised
+        // once the game is over, not timed out in the middle of it.
+        // Every corpse among idle hostiles stands the recovery down (see the
+        // kernel), and like a block it must not spend the budget meanwhile — or the
+        // corpse that comes back into play once the party clears beside it would
+        // time the run out on the spot.
+        bool allCorpsesUnsafe = true;
+        for (Member const& m : members)
+            if (m.isDead && !m.corpseUnsafe)
+                allCorpsesUnsafe = false;
         bool const partyEngaged = AnyMemberEngaged(players);
         if (mutate)
         {
-            if (partyEngaged || rezBlocked)
+            if (partyEngaged || rezBlocked || allCorpsesUnsafe || DcKarazhan::ChessIsOn(bot))
                 run.rezPendingSinceMs = 0;
             else if (run.rezPendingSinceMs == 0)
                 run.rezPendingSinceMs = now ? now : 1;
@@ -403,8 +453,11 @@ namespace
         // named explicitly here.
         bool const blockedStandDown =
             plan.verdict.reason == DcRezDecision::Reason::BlockedStandDown;
+        bool const unsafeStandDown =
+            plan.verdict.reason == DcRezDecision::Reason::UnsafeStandDown;
         bool const announceable =
-            blockedStandDown || (plan.verdict.outcome == DcRezDecision::Outcome::Hold &&
+            blockedStandDown || unsafeStandDown ||
+            (plan.verdict.outcome == DcRezDecision::Outcome::Hold &&
                                  plan.verdict.reason != DcRezDecision::Reason::BlockedWaiting);
         if (mutate && announceable && run.rezAnnounceMs == 0)
         {
@@ -416,6 +469,9 @@ namespace
                 // up when the encounter releases (or at the end of the run).
                 line = plan.targetName + " died and the encounter won't allow a "
                        "resurrection \xe2\x80\x94 carrying on without them.";
+            else if (unsafeStandDown)
+                line = plan.targetName + " died among enemies we haven't pulled \xe2\x80\x94 "
+                       "carrying on without them rather than walk into the pack.";
             else if (plan.verdict.reason == DcRezDecision::Reason::WaitingOnHuman)
                 line = plan.targetName + " died \xe2\x80\x94 waiting for you to resurrect them (" +
                        std::to_string(in.timeoutMs / 1000) + "s).";
@@ -433,7 +489,9 @@ namespace
                      "[DC:{}] post-combat rez: {} \xe2\x80\x94 {}", owner->GetName(),
                      blockedStandDown ? "the instance refuses every resurrect, clearing "
                                         "short-handed"
-                                      : "holding the run", line);
+                     : unsafeStandDown ? "every corpse lies among idle hostiles, clearing "
+                                         "short-handed"
+                                       : "holding the run", line);
         }
 
         return plan;
@@ -482,12 +540,15 @@ namespace DcRezRecovery
         Group* group = leaderTank->GetGroup();
         if (!group)
             return false;
+        // A corpse among idle hostiles is not a recovery in progress either — the
+        // kernel stands down on it (UnsafeStandDown), so holding the run over it
+        // would park the party with nobody walking. Same scan as the snapshot.
         for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
         {
             Player* member = ref->GetSource();
             if (!member || member->GetMapId() != leaderTank->GetMapId())
                 continue;
-            if (member->isDead())
+            if (member->isDead() && !CorpseAmongIdleHostiles(member))
                 return true;
         }
         return false;
@@ -606,13 +667,27 @@ namespace DcRezRecovery
         // The entrance teleport target comes from the dungeon catalogue (its
         // rows carry the world-DB areatrigger targets). No row -> the caller
         // falls back to the classic disable.
+        //
+        // On a split map the row is the RUN's wing's (row token == wing token):
+        // a wiped UBRS party regroups at the UBRS entrance, a Scarlet Monastery
+        // Library party at the Library's — not at whichever wing's row happens to
+        // come first in the table. Any other map (or no wing resolved) takes the
+        // first non-scenario row for the map, as before.
+        std::string const wingToken = DcRunWing::ActiveWingToken(owner);
         DcTestDungeonRegistry::Row const* row = nullptr;
         for (DcTestDungeonRegistry::Row const& r : DcTestDungeonRegistry::All())
-            if (r.mapId == map->GetId())
+        {
+            // A scenario's drop point is mid-instance, never the entrance.
+            if (r.mapId != map->GetId() || DcTestDungeonRegistry::IsScenario(r))
+                continue;
+            if (!wingToken.empty() && wingToken == r.token)
             {
                 row = &r;
                 break;
             }
+            if (!row)
+                row = &r;
+        }
         if (!row)
             return false;
 

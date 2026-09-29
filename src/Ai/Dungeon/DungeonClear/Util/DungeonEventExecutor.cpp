@@ -103,6 +103,17 @@ namespace
     }
     // How far out WaitForSpawn / KillCreature scan for the named creature.
     constexpr float DC_EVENT_CREATURE_SCAN = 250.0f;
+
+    // The spawn gate of a WaitForSpawn / garrison MoveTo: is any of the step's gate
+    // entries (EventStepGateEntries) present — alive when wantAlive, in any state
+    // otherwise, matching the single-entry scan this replaced.
+    bool AnyGateCreaturePresent(Player* bot, EventStep const& step)
+    {
+        for (uint32 entry : EventStepGateEntries(step))
+            if (bot->FindNearestCreature(entry, DC_EVENT_CREATURE_SCAN, /*alive*/ step.wantAlive))
+                return true;
+        return false;
+    }
     // Range from which a creature can be gossiped (mirrors the core's
     // GetNPCIfCanInteractWith INTERACTION_DISTANCE check; kept a hair tighter).
     constexpr float DC_EVENT_GOSSIP_RANGE = 5.0f;
@@ -485,6 +496,39 @@ StepResult DungeonEventExecutor::RunStep(Player* bot, AiObjectContext* context,
     {
         case EventStepKind::MoveTo:
         {
+            // Boss-state gate, evaluated BEFORE the walk: an encounter that has
+            // finished or reset needs nothing from the garrison spot, and walking
+            // back to it first would only delay the retry.
+            if (step.bossStateId >= 0)
+            {
+                InstanceScript* inst = DcTargeting::GetInstanceScript(bot);
+                if (!inst)
+                    return StepResult::Running;
+                uint32 const state = inst->GetBossState(static_cast<uint32>(step.bossStateId));
+                switch (DecideBossStateGate(state, step.bossStateClearMask,
+                                            step.restartOnBossStateMask))
+                {
+                    case BossStateGateVerdict::Clear:
+                        return StepResult::Done;
+                    case BossStateGateVerdict::Restart:
+                        LOG_INFO("playerbots.dungeonclear",
+                                 "[DC:{}] event boss-state gate: slot {} reads {} — encounter "
+                                 "reset, rewinding the event to step 0 (was step {})",
+                                 bot->GetName(), step.bossStateId, state, prog.stepIndex);
+                        // The same rewind DcRunEventAction does for a repeatable
+                        // event, forward-progress watchdog included, or the old
+                        // high-water mark makes the new pass look wedged.
+                        prog.stepIndex = 0;
+                        prog.attempts = 0;
+                        prog.stepStartMs = nowMs;
+                        prog.maxStepIndex = 0;
+                        prog.progressMs = nowMs;
+                        return StepResult::Running;
+                    case BossStateGateVerdict::Hold:
+                        break;
+                }
+            }
+
             float const radius = step.radius > 0.0f ? step.radius : DC_EVENT_MOVE_RADIUS;
             if (bot->GetExactDist(step.x, step.y, step.z) > radius)
             {
@@ -532,15 +576,14 @@ StepResult DungeonEventExecutor::RunStep(Player* bot, AiObjectContext* context,
                     inst ? inst->GetPersistentData(static_cast<uint32>(step.persistentDataId)) : 0;
                 return (v >= step.persistentDataMin) ? StepResult::Done : StepResult::Running;
             }
+            // Boss-state gate: holding (Clear/Restart returned above).
+            if (step.bossStateId >= 0)
+                return StepResult::Running;
             // Creature gate: hold until the gate creature matches wantAlive.
-            if (step.creatureEntry != 0)
-            {
-                Creature* c = bot->FindNearestCreature(step.creatureEntry,
-                                                       DC_EVENT_CREATURE_SCAN,
-                                                       /*alive*/ step.wantAlive);
-                return ((c != nullptr) == step.wantAlive) ? StepResult::Done
-                                                          : StepResult::Running;
-            }
+            if (step.creatureEntry != 0 || !step.orEntries.empty())
+                return (AnyGateCreaturePresent(bot, step) == step.wantAlive)
+                           ? StepResult::Done
+                           : StepResult::Running;
             return StepResult::Done;
         }
 
@@ -603,6 +646,18 @@ StepResult DungeonEventExecutor::RunStep(Player* bot, AiObjectContext* context,
                           bot->GetName(), go->GetGUID().ToString(), go->GetName());
                 return StepResult::Running;
             }
+            // A GO script that gates on a carried key item refuses a click from an
+            // empty bag without a word the headless harness can see (Karazhan's
+            // Blackened Urn under mod-individual-progression). Grant it first.
+            if (step.itemId && !bot->HasItemCount(step.itemId, 1))
+            {
+                bot->AddItem(step.itemId, 1);
+                if (!bot->HasItemCount(step.itemId, 1))
+                    return StepResult::Running;  // bags full this tick — retry
+                LOG_INFO("playerbots.dungeonclear",
+                         "[DC:{}] event-step Use GO '{}': granted carried item {}",
+                         bot->GetName(), go->GetName(), step.itemId);
+            }
             // REPORT-USE variant: hand the click to the GO's script the way the
             // report-use opcode does, and do NOT also call Use(). GameObject::Use()
             // passes reportUse=false, which for a script that keys its work off the
@@ -622,16 +677,26 @@ StepResult DungeonEventExecutor::RunStep(Player* bot, AiObjectContext* context,
                       "[dungeon-clear] {} event-step Use GO {} '{}'",
                       bot->GetName(), go->GetGUID().ToString(), go->GetName());
             go->Use(bot);
+            // A script that handles the click returns true from OnGossipHello and
+            // Use() stops there, leaving the GO READY; a script that declines lets
+            // Use() fall through to the type handler, which activates a button or
+            // door. So the state after the call says whether the script took it.
+            LOG_INFO("playerbots.dungeonclear",
+                     "[DC:{}] event-step Use GO '{}' (entry {}, script {}): state {} -> {} "
+                     "flags 0x{:X}",
+                     bot->GetName(), go->GetName(), go->GetEntry(), go->GetScriptId(),
+                     static_cast<uint32>(GO_STATE_READY),
+                     static_cast<uint32>(go->GetGoState()),
+                     static_cast<uint32>(go->GetGameObjectFlags()));
             return StepResult::Done;
         }
 
         case EventStepKind::WaitForSpawn:
         {
-            Creature* c = bot->FindNearestCreature(step.creatureEntry, DC_EVENT_CREATURE_SCAN,
-                                                   /*alive*/ step.wantAlive);
-            bool const present = c != nullptr;
             // wantAlive: done once it's up. !wantAlive: done once it's gone.
-            return (present == step.wantAlive) ? StepResult::Done : StepResult::Running;
+            return (AnyGateCreaturePresent(bot, step) == step.wantAlive)
+                       ? StepResult::Done
+                       : StepResult::Running;
         }
 
         case EventStepKind::WaitForGameObjectState:
@@ -1460,6 +1525,33 @@ EventDriveOutcome DungeonEventExecutor::Drive(Player* bot, AiObjectContext* cont
                                      static_cast<uint32>(active.persistentDataId))
                                : 0u,
                           active.persistentDataMin);
+            }
+            // Boss-state gate: the slot, and the boss the script registered for it
+            // — a hold that never clears reads the same whether he never moved,
+            // is flying the intro, or landed and was never engaged.
+            if (active.bossStateId >= 0 && result != StepResult::Done)
+            {
+                InstanceScript* inst = DcTargeting::GetInstanceScript(bot);
+                uint32 const slot = static_cast<uint32>(active.bossStateId);
+                Creature* boss = inst ? inst->GetCreature(slot) : nullptr;
+                if (!boss)
+                    LOG_DEBUG("playerbots.dungeonclear",
+                              "[DC:{}] event '{}' step {} boss gate: slot {}={} boss not resolved",
+                              bot->GetName(), ev.name, prog.stepIndex, slot,
+                              inst ? static_cast<uint32>(inst->GetBossState(slot)) : 99u);
+                else
+                    LOG_DEBUG("playerbots.dungeonclear",
+                              "[DC:{}] event '{}' step {} boss gate: slot {}={} {} alive={} "
+                              "at ({:.1f},{:.1f},{:.1f}) dist {:.1f} motion {} moving={} "
+                              "combat={} unitFlags 0x{:X}",
+                              bot->GetName(), ev.name, prog.stepIndex, slot,
+                              static_cast<uint32>(inst->GetBossState(slot)), boss->GetName(),
+                              boss->IsAlive(), boss->GetPositionX(), boss->GetPositionY(),
+                              boss->GetPositionZ(), bot->GetExactDist(boss),
+                              static_cast<uint32>(
+                                  boss->GetMotionMaster()->GetCurrentMovementGeneratorType()),
+                              boss->isMoving(), boss->IsInCombat(),
+                              static_cast<uint32>(boss->GetUnitFlags()));
             }
             prog.lastLoggedStep = static_cast<int32>(prog.stepIndex);
             prog.lastLoggedResult = static_cast<int32>(result);

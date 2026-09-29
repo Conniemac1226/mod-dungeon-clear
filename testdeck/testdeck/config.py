@@ -128,6 +128,9 @@ class Config:
     dc_testplans: str = "dc_testplans.jsonl"
     dc_live: str = "dc_testrun_live.json"
     dc_dungeons: str = "dc_test_dungeons.json"
+    # continuous mode: tools/dc_test_run.py for evidence capture ("" = the
+    # one beside this checkout)
+    soak_tool: str = ""
     # misc
     bot_account_prefix_default: str = "rndbot"
     driver_character_default: str = "Dcdriver"
@@ -285,6 +288,7 @@ def load(explicit=None, app_dir=None):
     _load_bridge(cfg, data.get("bridge", {}))
     _load_realm(cfg, data.get("realm", {}))
     _load_dc(cfg, data.get("dungeonclear", {}))
+    cfg.soak_tool = str(data.get("soak", {}).get("dc_test_run", "") or "")
     return cfg
 
 

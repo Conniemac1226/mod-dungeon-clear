@@ -470,6 +470,106 @@ namespace
         maxDrag = std::max(maxDrag, skirt + DcSettings::GetFloat(bot, "RoomAggroPartyMargin"));
     }
 
+    // A pack that has wandered this far from where its lane was measured (a
+    // pathing Skeletal Waiter) gets a fresh lane.
+    constexpr float DC_ROOM_LANE_DRIFT = 5.0f;
+    // Arrival band on the lane's stand spot — tighter than the camp's: the spot
+    // sits on the pack's commit ring, so five yards short can be five yards in.
+    constexpr float DC_ROOM_LANE_ARRIVE = 3.0f;
+
+    // Room trash within this of a refused pack is its formation: same lanes, same
+    // answer, refused with it (ComputeRoomClearLane's own pack radius).
+    constexpr float DC_ROOM_LANE_PACK_RADIUS = 12.0f;
+
+    enum class DcRoomLane
+    {
+        Ok,         // pull.laneStand / laneCamp hold the lane for `trash`
+        None,       // no lane: close on the pack the old way
+        Deferred,   // no CLEAN lane and a cleaner pack is left: refused, pull that
+    };
+
+    // The room-clear straight-pull lane for `trash` (DcPullPlanner::
+    // ComputeRoomClearLane), cached in the pull context: computed once per pack,
+    // failures included, so a pack with no lane costs its path builds once.
+    //
+    // Only a CLEAN lane is taken while another room-trash pack is still unrefused:
+    // otherwise the pack is refused (DcTargeting::RefuseRoomLane) and Deferred, and
+    // the room clear moves on to one that can be pulled without walking or dragging
+    // through anybody else's reach. tr-20260927-210901-8 took a lane logged
+    // "worst margin -0.9yd" and woke a Steward and a second Guest formation on the
+    // walk to its stand spot. When everything left is refused, the best lane is
+    // taken whatever its margin — the old behaviour, as a last resort.
+    DcRoomLane DcResolveRoomClearLane(PlayerbotAI* botAI, Player* bot, AiObjectContext* ctx,
+                                      Unit* trash, float commitRange)
+    {
+        DcPullContext& pull = ctx->GetValue<DcPullContext&>(DcKey::PullContext)->Get();
+        if (pull.laneTarget == trash->GetGUID() &&
+            trash->GetExactDist2d(&pull.laneAnchor) <= DC_ROOM_LANE_DRIFT)
+            return pull.laneOk ? DcRoomLane::Ok : DcRoomLane::None;
+
+        pull.laneTarget = trash->GetGUID();
+        pull.laneAnchor = trash->GetPosition();
+        pull.laneOk = false;
+
+        std::optional<DungeonBossInfo> const next =
+            ctx->GetValue<std::optional<DungeonBossInfo>>(DcKey::NextDungeonBoss)->Get();
+        if (!next.has_value())
+            return DcRoomLane::None;
+        Creature* const boss = DcTargeting::GetLiveBoss(bot, ctx, next->entry);
+        if (!boss)
+            return DcRoomLane::None;
+
+        float const bossRadius = std::max(DcEngageGeometry::RoomAggroSphereRadius(bot, boss),
+                                          DcTargeting::ActiveRoomSkirt(bot, ctx));
+        float const setback = DcSettings::GetFloat(bot, "PullSetback");
+        float const safeRadius = DcSettings::GetFloat(bot, "PullCampSafeRadius");
+        float const standDist = std::max(commitRange - 1.5f, 8.0f);
+        bool const lastResort = !DcTargeting::HasUnrefusedRoomTrash(bot, ctx, trash);
+        std::optional<DcPullPlanner::RoomClearLane> const lane =
+            DcPullPlanner::ComputeRoomClearLane(botAI, trash, boss, bossRadius, standDist,
+                                                setback, safeRadius,
+                                                /*requireClean*/ !lastResort);
+        if (!lane && !lastResort)
+        {
+            DcTargeting::RefuseRoomLane(bot, ctx, trash, DC_ROOM_LANE_PACK_RADIUS);
+            // Not cached: when it comes round again as the last resort, it is
+            // measured without the clean requirement.
+            pull.laneTarget = ObjectGuid::Empty;
+            pull.ClearDynamicVerdict();
+            ctx->GetValue<ObjectGuid>(DcKey::PullTarget)->Reset();
+            DC_PULL_INFO("[DC:{}] room-clear lane: no clean lane to {} ({:.1f}yd off {}) "
+                         "-> deferred, pulling a cleaner pack first ({} refused)",
+                         bot->GetName(), trash->GetGUID().ToString(),
+                         trash->GetExactDist2d(boss), boss->GetName(),
+                         pull.laneRefused.size());
+            return DcRoomLane::Deferred;
+        }
+        if (!lane)
+        {
+            DC_PULL_INFO("[DC:{}] room-clear lane: no straight lane to {} ({:.1f}yd off "
+                         "{}) -> closing on it the old way",
+                         bot->GetName(), trash->GetGUID().ToString(),
+                         trash->GetExactDist2d(boss), boss->GetName());
+            return DcRoomLane::None;
+        }
+        pull.laneOk = true;
+        pull.laneStand = lane->stand;
+        pull.laneCamp = lane->camp;
+        DC_PULL_INFO("[DC:{}] room-clear lane: {} ({:.1f}yd off {}) -> stand "
+                     "({:.1f},{:.1f},{:.1f}) {:.1f}yd from it, camp ({:.1f},{:.1f},{:.1f}) "
+                     "drag {:.1f}yd; stand {:.1f}yd / camp {:.1f}yd off {} (keep {:.0f}), "
+                     "worst margin {:.1f}yd",
+                     bot->GetName(), trash->GetGUID().ToString(),
+                     trash->GetExactDist2d(boss), boss->GetName(),
+                     lane->stand.GetPositionX(), lane->stand.GetPositionY(),
+                     lane->stand.GetPositionZ(), lane->stand.GetExactDist2d(trash),
+                     lane->camp.GetPositionX(), lane->camp.GetPositionY(),
+                     lane->camp.GetPositionZ(), lane->stand.GetExactDist2d(&lane->camp),
+                     lane->stand.GetExactDist2d(boss), lane->camp.GetExactDist2d(boss),
+                     boss->GetName(), bossRadius, lane->margin);
+        return DcRoomLane::Ok;
+    }
+
     // Thin context adapter: resolves the pull-context value and delegates every
     // phase write to DcPullContext::Transition, where the Engage special-case and
     // the transition invariants live. No phase-write logic remains in this TU.
@@ -477,6 +577,32 @@ namespace
     {
         DcPullContext& pull = context->GetValue<DcPullContext&>(DcKey::PullContext)->Get();
         pull.Transition(p, getMSTime());
+    }
+
+    // Latch DcPullContext::roomCampFight for the pull in flight. Runs at the top of
+    // both leader drivers and once more right before the drag hands to Engage, so the
+    // flag is up before the camp fight whose gates read it — the maneuver trigger
+    // only lets Engage in when it is already set. Only a boxed room-clear
+    // (ActiveRoomCampBox) anchors its fight: that box is the ground the row says the
+    // fight must stay on.
+    void DcLatchRoomCampFight(Player* bot, AiObjectContext* ctx, DcPullContext& pull)
+    {
+        if (pull.phase == DcPullPhase::Idle)
+        {
+            pull.roomCampFight = false;
+            return;
+        }
+        if (pull.roomCampFight || pull.phase == DcPullPhase::Engage ||
+            pull.scriptedStage >= 0 || !pull.HasCamp())
+            return;
+        if (!DcTargeting::ActiveRoomCampBox(bot, ctx))
+            return;
+        pull.roomCampFight = true;
+        DC_PULL_INFO("[DC:{}] room-clear camp fight: anchored to camp ({:.1f},{:.1f},"
+                     "{:.1f}) — tank leash {:.0f}yd, party leash {:.0f}yd",
+                     bot->GetName(), pull.camp.GetPositionX(), pull.camp.GetPositionY(),
+                     pull.camp.GetPositionZ(), DC_SCRIPTED_PULL_LEASH,
+                     DC_SCRIPTED_PULL_FOLLOWER_LEASH);
     }
 
     // HARD loss of control: the four states under which the drag-back is not happening
@@ -528,6 +654,7 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
     uint32 const since = pull.phaseSince;
     uint32 const now = getMSTime();
     DcPullPhase const phase = pull.phase;
+    DcLatchRoomCampFight(bot, context, pull);
 
     std::optional<DungeonBossInfo> next = AI_VALUE(std::optional<DungeonBossInfo>, DcKey::NextDungeonBoss);
 
@@ -714,7 +841,50 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
             // the tank stops to Form just outside where it would otherwise face-pull.
             float const commitRange =
                 DcEngageGeometry::PullCommitRange(bot, trash, DC_PULL_START_RANGE);
-            if (toTrash > commitRange)
+
+            // ROOM CLEAR: WALK UP SQUARE IN FRONT OF THE PACK, PULL IT STRAIGHT BACK.
+            //
+            // Closing on the pack from wherever the tank stands and committing at
+            // commit range tags it from whatever side the tank happened to arrive
+            // on, and the trail camp then drags it back the same way. Across a room
+            // that is a diagonal in front of the boss: the Moroes west formation was
+            // tagged from the dais side and dragged to an east camp, and the lane
+            // every straggler ran down passed 23yd from a dinner guest — who woke
+            // Moroes into the trash fight (tr-20260926-192642-3). The lane fixes the
+            // stand spot and the camp on one straight line out of the pack, as far
+            // from the boss as the room allows; the party goes straight to the camp,
+            // the tank to the stand spot, and only commits there.
+            DcRoomLane const laneState =
+                DcTargeting::IsRoomClearActive(bot, context)
+                    ? DcResolveRoomClearLane(botAI, bot, context, trash, commitRange)
+                    : DcRoomLane::None;
+            // Refused this tick: stand still and let the next tick's pull target (the
+            // cache was reset) name the cleaner pack.
+            if (laneState == DcRoomLane::Deferred)
+            {
+                DcMovement::StopBot(bot, DcMovement::Stop::Hold);
+                return true;
+            }
+            bool const roomLane = laneState == DcRoomLane::Ok;
+            if (roomLane)
+            {
+                if (!pull.HasCamp() || camp.GetExactDist2d(&pull.laneCamp) > 1.0f)
+                    pull.PublishCamp(pull.laneCamp, now);
+                else
+                    pull.TouchCampOwnership(now);
+                float const toStand = bot->GetExactDist2d(&pull.laneStand);
+                if (toStand > DC_ROOM_LANE_ARRIVE)
+                {
+                    MoveToStandSkirtingRoomAggro(trash, pull.laneStand, commitRange - 1.0f,
+                                                 MovementPriority::MOVEMENT_NORMAL);
+                    DC_PULL_TRACE("[DC:{}] pull idle (room-clear): walking to the stand "
+                                  "spot in front of {} ({:.1f}yd to go, pack {:.1f}yd)",
+                                  bot->GetName(), trash->GetGUID().ToString(), toStand,
+                                  toTrash);
+                    return true;
+                }
+            }
+            if (toTrash > commitRange && !roomLane)
             {
                 // Room-wide-aggro pre-clear (RoomAggroRegistry): the pull is aimed
                 // at a ROOM mob near a flagged boss, not a corridor pack. Yielding
@@ -876,8 +1046,18 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
             DcResolveCampParams(bot, context, setback, safeRadius, maxDrag);
             float clearance = 0.0f;
             float drag = 0.0f;
-            std::optional<Position> camped = DcPullPlanner::ComputeSafeCamp(
-                botAI, trash, setback, safeRadius, maxDrag, clearance, drag);
+            std::optional<Position> camped;
+            if (roomLane)
+            {
+                // The lane's camp, straight back from where the tank stands.
+                camped = pull.laneCamp;
+                // Clearance is the lane's, logged on the room-clear lane line.
+                drag = bot->GetExactDist(&pull.laneCamp);
+                clearance = std::numeric_limits<float>::max();
+            }
+            else
+                camped = DcPullPlanner::ComputeSafeCamp(botAI, trash, setback, safeRadius,
+                                                        maxDrag, clearance, drag);
             pull.PublishCamp(camped.has_value()
                                  ? *camped
                                  : Position(bot->GetPositionX(), bot->GetPositionY(),
@@ -918,11 +1098,12 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
             size_t const trailLen = pull.breadcrumbs.size();
             DC_PULL_INFO("[DC:{}] advanced-pull plan: target {} at {:.1f}yd | camp "
                          "({:.1f},{:.1f},{:.1f}) drag {:.1f}yd | clearance {:.1f}yd "
-                         "(safe {:.0f}, setback {:.0f}, trail {}) -> forming, "
+                         "(safe {:.0f}, setback {:.0f}, trail {}){} -> forming, "
                          "waiting for party",
                          bot->GetName(), trash->GetGUID().ToString(), toTrash,
                          camp.GetPositionX(), camp.GetPositionY(), camp.GetPositionZ(),
-                         drag, clrDisp, safeRadius, setback, trailLen);
+                         drag, clrDisp, safeRadius, setback, trailLen,
+                         roomLane ? " | straight room-clear lane" : "");
             return true;
         }
 
@@ -990,6 +1171,10 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
             if (!trash)
             {
                 // Pack died / despawned before we tagged it — nothing to pull.
+                // Kill the tag leg too: its MoveTo otherwise carries the tank on
+                // toward a pack nobody is pulling any more.
+                DcMovement::StopBot(bot, DcMovement::Stop::HardPin);
+                DcMovement::ClearMovementWait(bot);
                 DcSetPullPhase(context, DcPullPhase::Idle);
                 DC_PULL_DEBUG("[DC:{}] pull advancing: target gone -> idle",
                               bot->GetName());
@@ -1529,6 +1714,38 @@ bool DungeonClearPullAction::Execute(Event /*event*/)
                 float const f = tagStop / toTag;
                 tagX = trash->GetPositionX() + (bot->GetPositionX() - trash->GetPositionX()) * f;
                 tagY = trash->GetPositionY() + (bot->GetPositionY() - trash->GetPositionY()) * f;
+
+                // PUT THE AIM POINT ON THE FLOOR. It is invented on the straight
+                // line at the PACK's height, and round a corner that is thin air.
+                // DcMoveTo only adopts a snap within a yard of the requested x/y,
+                // so an aim point 3yd off the nearest walkable poly keeps its
+                // floating z, and stock SearchForBestPath then takes GetMapHeight
+                // under it — the next floor down — and walks there. Live
+                // (tr-20260927-201144-3, Karazhan ramp below the Homunculus room):
+                // an aim point 7yd away resolved to a floor 53yd down, reachable
+                // only by a ~580yd route that starts UP the ramp; the tank walked
+                // away from the pack until the look-ahead dropped it, twelve times.
+                // Snap to the walkable poly near the aim point on its own level; if
+                // there is none, aim at the pack itself, which is always on the
+                // mesh — the aggro-edge hold above still stops the walk in time.
+                constexpr float kTagSnapRadius = 5.0f;
+                constexpr float kTagSnapMaxDz = 3.0f;
+                NavmeshSnap::Result const snap =
+                    NavmeshSnap::Snap(bot, tagX, tagY, tagZ, kTagSnapRadius);
+                if (snap.ok && std::fabs(snap.z - tagZ) <= kTagSnapMaxDz)
+                {
+                    tagX = snap.x;
+                    tagY = snap.y;
+                    tagZ = snap.z;
+                }
+                else
+                {
+                    DC_PULL_TRACE("[DC:{}] pull advancing: aggro-edge aim point "
+                                  "({:.1f},{:.1f},{:.1f}) is off the mesh -> aiming at "
+                                  "the pack", bot->GetName(), tagX, tagY, tagZ);
+                    tagX = trash->GetPositionX();
+                    tagY = trash->GetPositionY();
+                }
             }
 
             // SCRIPTED PULL: the walk-in may not leave the stand spot.
@@ -1848,6 +2065,7 @@ namespace
             // what advances the plan: the next Idle tick re-derives the due stage,
             // finds this pack's volume empty, and arms the following one.
             AbandonScriptedStage(pull);
+            pull.roomCampFight = false;
 
             DcSetPullPhase(context, DcPullPhase::Idle);
             DC_PULL_DEBUG("[DC:{}] advanced-pull: camp fight done -> idle, ready for "
@@ -1971,6 +2189,7 @@ bool DungeonClearPullManeuverAction::Execute(Event /*event*/)
     Position& camp = pull.camp;
     uint32 const now = getMSTime();
     DcPullPhase const phase = pull.phase;
+    DcLatchRoomCampFight(bot, context, pull);
 
     // Keep the tank daze-proof for the whole drag. Immunity (set with pull mode)
     // should stop Daze landing at all; strip it here too as a backstop so a
@@ -2147,8 +2366,13 @@ bool DungeonClearPullManeuverAction::Execute(Event /*event*/)
         }
     }
 
-    if (pull.scriptedStage >= 0 && phase == DcPullPhase::Engage)
+    // A boxed room-clear's camp fight takes the same leash (roomCampFight): its
+    // pack is tagged at range and a Phantom Guest formation holds 20-30yd off the
+    // camp casting, so released-to-stock-combat means chased toward Moroes' dais.
+    if (pull.AnchoredCampFight() && phase == DcPullPhase::Engage)
     {
+        char const* const leashTag =
+            pull.scriptedStage >= 0 ? "scripted-pull" : "room-clear";
         float const toCamp = bot->GetExactDist(&camp);
         // A TANK STANDING IN FIRE IS ALLOWED TO BE OFF THE CAMP. The leash and a
         // ground-effect step-out are both right and they want different places, so
@@ -2168,9 +2392,9 @@ bool DungeonClearPullManeuverAction::Execute(Event /*event*/)
             // used to lose to an in-flight spline.
             DcMovement::StopBot(bot, DcMovement::Stop::Hold);
             DcMovement::ClearMovementWait(bot);
-            DC_PULL_INFO("[DC:{}] scripted-pull: tank strayed {:.1f}yd from the camp "
+            DC_PULL_INFO("[DC:{}] {}: tank strayed {:.1f}yd from the camp "
                          "mid-fight (leash {:.0f}) -> recalling",
-                         bot->GetName(), toCamp, DC_SCRIPTED_PULL_LEASH);
+                         bot->GetName(), leashTag, toCamp, DC_SCRIPTED_PULL_LEASH);
         }
         if (pull.scriptedRecall)
         {
@@ -2182,8 +2406,8 @@ bool DungeonClearPullManeuverAction::Execute(Event /*event*/)
                 pull.scriptedRecall = false;
                 pull.scriptedRecallBest = 0.0f;
                 DcMovement::StopBot(bot, DcMovement::Stop::Soft);
-                DC_PULL_DEBUG("[DC:{}] scripted-pull: back on the camp ({:.1f}yd) -> "
-                              "fighting", bot->GetName(), toCamp);
+                DC_PULL_DEBUG("[DC:{}] {}: back on the camp ({:.1f}yd) -> "
+                              "fighting", bot->GetName(), leashTag, toCamp);
                 return false;
             }
 
@@ -2196,10 +2420,10 @@ bool DungeonClearPullManeuverAction::Execute(Event /*event*/)
             {
                 pull.scriptedRecall = false;
                 pull.scriptedRecallBest = 0.0f;
-                DC_PULL_INFO("[DC:{}] scripted-pull: recall cancelled at {:.1f}yd — "
+                DC_PULL_INFO("[DC:{}] {}: recall cancelled at {:.1f}yd — "
                              "standing in a ground effect, so the step-out owns the "
                              "tick; the leash re-arms once we are clear",
-                             bot->GetName(), toCamp);
+                             bot->GetName(), leashTag, toCamp);
                 return false;
             }
 
@@ -2232,10 +2456,10 @@ bool DungeonClearPullManeuverAction::Execute(Event /*event*/)
             {
                 DcMovement::StopBot(bot, DcMovement::Stop::HardPin);
                 DcMovement::ClearMovementWait(bot);
-                DC_PULL_INFO("[DC:{}] scripted-pull: recall lost ground to camp "
+                DC_PULL_INFO("[DC:{}] {}: recall lost ground to camp "
                              "({:.1f}yd vs best {:.1f}) — something else is driving "
                              "the tank -> cancelled it and re-issuing the walk home",
-                             bot->GetName(), toCamp, pull.scriptedRecallBest);
+                             bot->GetName(), leashTag, toCamp, pull.scriptedRecallBest);
                 pull.scriptedRecallBest = toCamp;
             }
             else if (toCamp < pull.scriptedRecallBest || pull.scriptedRecallBest <= 0.0f)
@@ -2259,9 +2483,9 @@ bool DungeonClearPullManeuverAction::Execute(Event /*event*/)
             {
                 DcMovement::StopBot(bot, DcMovement::Stop::HardPin);
                 DcMovement::ClearMovementWait(bot);
-                DC_PULL_DEBUG("[DC:{}] scripted-pull: recall refused while standing "
+                DC_PULL_DEBUG("[DC:{}] {}: recall refused while standing "
                               "at {:.1f}yd from camp -> cleared the stale movement "
-                              "wait", bot->GetName(), toCamp);
+                              "wait", bot->GetName(), leashTag, toCamp);
             }
             return true;
         }
@@ -2312,10 +2536,12 @@ bool DungeonClearPullManeuverAction::Execute(Event /*event*/)
                 {
                     pull.PublishCamp(*fresh, now);
                     DC_PULL_INFO("[DC:{}] advanced-pull: unplanned aggro while scouting "
-                                 "-> fresh camp ({:.1f},{:.1f},{:.1f}) drag {:.1f}yd, "
-                                 "party converges", bot->GetName(),
+                                 "-> fresh camp ({:.1f},{:.1f},{:.1f}) drag {:.1f}yd | "
+                                 "clearance {:.1f}yd (safe {:.0f}, setback {:.0f}, "
+                                 "maxDrag {:.0f}), party converges", bot->GetName(),
                                  camp.GetPositionX(), camp.GetPositionY(),
-                                 camp.GetPositionZ(), drag);
+                                 camp.GetPositionZ(), drag, clr, safeRadius, setback,
+                                 maxDrag);
                 }
             }
         }
@@ -2619,6 +2845,7 @@ bool DungeonClearPullManeuverAction::Execute(Event /*event*/)
         // CAMPED either way — the follower hold survives Engage for a scripted stage
         // (GetLeaderCampHold), it is only `passive` that clears.
         DcMovement::StopBot(bot, DcMovement::Stop::Soft);
+        DcLatchRoomCampFight(bot, context, pull);
         DcSetPullPhase(context, DcPullPhase::Engage);
         DC_PULL_INFO("[DC:{}] advanced-pull: at camp ({:.1f}yd) -> engaging, party "
                      "released", bot->GetName(), dist);

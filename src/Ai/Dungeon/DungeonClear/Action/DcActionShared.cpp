@@ -4,6 +4,7 @@
  */
 
 #include "DungeonClearActions.h"
+#include "Ai/Dungeon/DungeonClear/Data/HealLeashRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcRun.h"
 #include "TestRun/DcTestRunManager.h"
 
@@ -59,6 +60,7 @@
 #include "Ai/Dungeon/DungeonClear/Util/DcDoorPolicy.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcMovement.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcPathWorker.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcRunWing.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcSocialQuarantine.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTargeting.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTickMemo.h"
@@ -352,6 +354,7 @@ namespace DcActionShared
     {
         AiObjectContext* ctx = botAI->GetAiObjectContext();
         ctx->GetValue<std::string&>(DcKey::StallReason)->Get() = reason;
+        ctx->GetValue<DcApproachState&>(DcKey::ApproachState)->Get().doorOwnsStallReason = false;
 
         std::string& lastSaid = ctx->GetValue<std::string&>(DcKey::LastSaidReason)->Get();
         if (lastSaid != reason)
@@ -363,10 +366,21 @@ namespace DcActionShared
     }
 
 
+    void StallDungeonClearForDoor(PlayerbotAI* botAI, std::string const& reason)
+    {
+        StallDungeonClear(botAI, reason);
+        botAI->GetAiObjectContext()
+            ->GetValue<DcApproachState&>(DcKey::ApproachState)
+            ->Get()
+            .doorOwnsStallReason = true;
+    }
+
+
     void ClearStall(AiObjectContext* ctx)
     {
         ctx->GetValue<std::string&>(DcKey::StallReason)->Get().clear();
         ctx->GetValue<std::string&>(DcKey::LastSaidReason)->Get().clear();
+        ctx->GetValue<DcApproachState&>(DcKey::ApproachState)->Get().doorOwnsStallReason = false;
     }
 
 
@@ -650,7 +664,7 @@ namespace DcActionShared
         pendingJob = DcPathWorker::Instance().Submit(
             bot->GetMapId(), target.entry, bot->GetGUID(), std::move(meshRef),
             bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
-            target.x, target.y, target.z);
+            target.x, target.y, target.z, DcRunWing::FenceWing(bot));
         pendingSince = now;
         appr.pendingPathStartPos = bot->GetPosition();  // drain-time start-drift baseline
 
@@ -894,7 +908,8 @@ bool DcMovementAction::DcMoveTo(uint32 mapId, float x, float y, float z, bool id
 }
 
 bool DcMovementAction::FindStandoffPoint(Map* map, Position const& center, float ringRadius,
-                                         float maxRadius, float& x, float& y, float& z)
+                                         float maxRadius, float& x, float& y, float& z,
+                                         Position const* leashCenter, float leashRadius)
 {
     if (!map)
         return false;
@@ -921,6 +936,12 @@ bool DcMovementAction::FindStandoffPoint(Map* map, Position const& center, float
         float const sdx = snap.x - cx;
         float const sdy = snap.y - cy;
         if (std::sqrt(sdx * sdx + sdy * sdy) > maxRadius)
+            continue;
+
+        if (leashCenter &&
+            !HealLeashRegistry::WithinLeash(leashCenter->GetPositionX(),
+                                            leashCenter->GetPositionY(), leashRadius,
+                                            snap.x, snap.y))
             continue;
 
         if (!map->isInLineOfSight(snap.x, snap.y, snap.z + kEyeBump, cx, cy,

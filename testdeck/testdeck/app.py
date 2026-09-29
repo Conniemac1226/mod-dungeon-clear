@@ -13,7 +13,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__, auth, bridge as bridge_mod, context
+from . import __version__, auth, bridge as bridge_mod, context, soak as soak_mod
 
 # Host values that are always answered for, whatever the config says: a
 # loopback browser is how the operator's own machine reaches the deck.
@@ -79,18 +79,22 @@ def host_allowed(cfg, header):
 
 
 def create_app(cfg, start_collectors=True):
-    from .routes import logs, mappack, plans, roster, runs, status
+    from .routes import logs, mappack, plans, roster, runs, soak, status
 
     timelines = runs.TimelineStore()
     throttle = auth.LoginThrottle(cfg.login_max_attempts, cfg.login_window_s)
     bridge = bridge_mod.make_bridge(cfg)
-    context.init(cfg, bridge=bridge, timelines=timelines, throttle=throttle)
+    supervisor = soak_mod.SoakSupervisor(cfg, lambda: context.ctx.bridge,
+                                         lambda: context.ctx.timelines)
+    context.init(cfg, bridge=bridge, timelines=timelines, throttle=throttle,
+                 soak=supervisor)
 
     @contextlib.asynccontextmanager
     async def lifespan(_app):
         tasks = []
         if start_collectors:
-            tasks = [asyncio.create_task(runs.loop_timeline())]
+            tasks = [asyncio.create_task(runs.loop_timeline()),
+                     asyncio.create_task(soak_mod.loop_soak(lambda: context.ctx.soak))]
         try:
             yield
         finally:
@@ -147,7 +151,7 @@ def create_app(cfg, start_collectors=True):
         return resp
 
     for r in (auth.router, status.router, runs.router, plans.router,
-              roster.router, logs.router, mappack.router):
+              roster.router, logs.router, mappack.router, soak.router):
         app.include_router(r)
 
     # Vite emits content-hashed filenames under assets/, safe to cache

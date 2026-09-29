@@ -137,7 +137,14 @@ namespace DcTestRunRecord
         //     boundary without checking the version first; tr-20260902-121659-12
         //     and -13 are the reference pre-12 records where it reads LEGIT about
         //     a Flame Breath Trigger that wedged the run for ten minutes.
-        std::uint32_t schema = 12;
+        // 13: added the SCENARIO block (Karazhan chess plan, T1): scenario
+        //     (row token, "" on a full-dungeon run), scenarioOf, focus,
+        //     successBy ("allCleared" | "predicate" | "grace", "" unless the run
+        //     succeeded), tailPending, and extras (the flat key/value map the
+        //     running event filled — DcRunState::SetTestExtra). On a scenario
+        //     run bossesTotal / bossRoster count the FOCUS only, so do not
+        //     compare them with a full-dungeon run of the same map.
+        std::uint32_t schema = 13;
         std::string runId;
         std::string planId;       // owning `.dc test plan`, "" for ad-hoc runs
         std::string dungeon;      // registry token
@@ -216,6 +223,30 @@ namespace DcTestRunRecord
         std::uint32_t wipeOpponentEntry = 0;
         std::string wipeOpponent;  // boss or trash-mob name
 
+        // --- scenario block (schema 13) -----------------------------------
+        // `dungeon` stays the row token (so a plan summary groups scenario runs
+        // under their own token); `scenario` repeats it only when the row IS a
+        // scenario, and `scenarioOf` names the parent dungeon.
+        std::string scenario;
+        std::string scenarioOf;
+        std::vector<std::uint32_t> focus;
+        std::string successPredicate;  // DescribePredicate(), "" = none
+        std::string successBy;         // DcTestRun::SuccessBy token
+        // Success reached before the event finished its tail (the grace ran
+        // out, or the run ended inside it) — the objective was met but, e.g.,
+        // the chest may still be on the floor.
+        bool tailPending = false;
+        // Flat key/value map the running event filled on the leader's
+        // DcRunState (see DcRunState::SetTestExtra). Written for every run —
+        // an empty object when no event published anything.
+        struct Extra
+        {
+            std::string key;
+            std::string value;
+            bool numeric = false;
+        };
+        std::vector<Extra> extras;
+
         // Full end-of-run diagnostic snapshot, captured before teardown
         // disbands the party. Serialized under "diag"; absent on records
         // written before schema 3 and on setup failures (no party existed).
@@ -233,6 +264,9 @@ namespace DcTestRunRecord
     inline constexpr std::size_t kPullLog = 500;
 
     std::string EscapeJson(std::string_view s);
+    // Strict JSON number grammar check (a numeric extra is emitted bare only
+    // when this holds).
+    bool IsJsonNumber(std::string_view v);
     std::string ToJsonl(Record const& rec);
 
     std::string CapturePath();

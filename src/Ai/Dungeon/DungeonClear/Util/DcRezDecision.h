@@ -58,6 +58,10 @@ namespace DcRezDecision
         bool isHealerRole = false; // PlayerbotAI::IsHeal — healers rez first
         bool isTankRole = false;   // PlayerbotAI::IsTank — target priority
         bool isBot = false;        // has a PlayerbotAI to drive (humans don't)
+        // Dead members only: the body lies among live hostiles nobody is fighting,
+        // so a bot rezzer walking to it walks into an unpulled pack. See the
+        // UnsafeStandDown branch in Decide.
+        bool corpseUnsafe = false;
     };
 
     struct Inputs
@@ -122,7 +126,8 @@ namespace DcRezDecision
         NoRezzerInFight, // ditto, but the survivors are still swinging — hold
         TimedOut,        // out-of-combat recovery clock expired
         BlockedWaiting,  // the instance forbids resurrection — hold, it may lift
-        BlockedStandDown // ...it did not lift; carry on short-handed, do not disable
+        BlockedStandDown, // ...it did not lift; carry on short-handed, do not disable
+        UnsafeStandDown   // every corpse lies among idle hostiles; carry on short-handed
     };
 
     struct Result
@@ -145,21 +150,29 @@ namespace DcRezDecision
     // Target priority: dead healer -> dead tank -> group order. The healer
     // back up first restores the party's ability to survive the next mistake;
     // the tank next restores the run's driver.
+    // Safe corpses (see Member::corpseUnsafe) first; when every corpse is unsafe
+    // the same priority over all of them, so a branch that only NAMES a corpse
+    // still has one to name.
     inline int PickTarget(std::vector<Member> const& members)
     {
-        int firstDead = -1, deadTank = -1;
-        for (std::size_t i = 0; i < members.size(); ++i)
+        for (bool const skipUnsafe : { true, false })
         {
-            if (!members[i].isDead)
-                continue;
-            if (members[i].isHealerRole)
-                return static_cast<int>(i);
-            if (deadTank < 0 && members[i].isTankRole)
-                deadTank = static_cast<int>(i);
-            if (firstDead < 0)
-                firstDead = static_cast<int>(i);
+            int firstDead = -1, deadTank = -1;
+            for (std::size_t i = 0; i < members.size(); ++i)
+            {
+                if (!members[i].isDead || (skipUnsafe && members[i].corpseUnsafe))
+                    continue;
+                if (members[i].isHealerRole)
+                    return static_cast<int>(i);
+                if (deadTank < 0 && members[i].isTankRole)
+                    deadTank = static_cast<int>(i);
+                if (firstDead < 0)
+                    firstDead = static_cast<int>(i);
+            }
+            if (firstDead >= 0)
+                return deadTank >= 0 ? deadTank : firstDead;
         }
-        return deadTank >= 0 ? deadTank : firstDead;
+        return -1;
     }
 
     // Deterministic parallel pairing (see Result::pairs). Target order is the
@@ -175,7 +188,7 @@ namespace DcRezDecision
             for (std::size_t i = 0; i < members.size(); ++i)
             {
                 Member const& m = members[i];
-                if (!m.isDead)
+                if (!m.isDead || m.corpseUnsafe)
                     continue;
                 if (healerPass != m.isHealerRole)
                     continue;
@@ -379,6 +392,37 @@ namespace DcRezDecision
             r.outcome = Outcome::Disable;
             r.reason = Reason::NoRezzer;
             return r;
+        }
+
+        // EVERY CORPSE LIES AMONG LIVE HOSTILES — don't walk a rezzer into them.
+        //
+        // The rezzer's approach is a straight walk to the body; nothing on the way
+        // asks what else is standing there. A body that died off the route, in rooms
+        // the party never cleared, is surrounded by the pack that killed it, back on
+        // its spawn and idle. Karazhan's Servants' Quarters lie directly under the
+        // Moroes -> Maiden corridor: in tr-20260927-184653-9 a healer was dragged down
+        // there and killed by Shadowbats, the second healer walked down to raise her
+        // and died, and then the tank and the enhancement shaman followed. 38 of 186
+        // Karazhan runs have deaths to Servants' Quarters mobs.
+        //
+        // So the verdict is the Blocked stand-down's: carry on with who is standing,
+        // do not disable. Nothing latches — a body on the route comes back into play
+        // the moment the party clears the pack beside it, and the ordinary election
+        // below takes over. Unsafe corpses are simply skipped while any safe one is
+        // left (PickTarget / PickPairs). Humans are not second-guessed: WaitingOnHuman
+        // leaves the walk to the player.
+        if (botRezzer >= 0)
+        {
+            bool anySafeCorpse = false;
+            for (Member const& m : members)
+                anySafeCorpse = anySafeCorpse || (m.isDead && !m.corpseUnsafe);
+            if (!anySafeCorpse)
+            {
+                r.targetIdx = PickTarget(members);
+                r.outcome = Outcome::None;
+                r.reason = Reason::UnsafeStandDown;
+                return r;
+            }
         }
 
         r.targetIdx = PickTarget(members);

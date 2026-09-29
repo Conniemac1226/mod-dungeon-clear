@@ -516,7 +516,8 @@ bool DungeonClearEngageActionBase::DriveObjectiveEngage()
     return EngageDirect(target);
 }
 
-std::optional<Position> DungeonClearEngageActionBase::RoomAggroSkirtPoint(Unit* target)
+std::optional<Position> DungeonClearEngageActionBase::RoomAggroSkirtPoint(Unit* target,
+                                                                        Position const* dest)
 {
     if (!target)
         return std::nullopt;
@@ -579,9 +580,14 @@ std::optional<Position> DungeonClearEngageActionBase::RoomAggroSkirtPoint(Unit* 
         appr.skirtOrbitDir = 0;
     }
 
-    std::optional<Position> wp = DcEngageGeometry::AggroSafeApproachPoint(
-        bot, boss->GetPositionX(), boss->GetPositionY(), boss->GetPositionZ(),
-        safeRadius, target, &appr.skirtOrbitDir);
+    std::optional<Position> wp = dest
+        ? DcEngageGeometry::AggroSafeApproachPoint(
+              bot, boss->GetPositionX(), boss->GetPositionY(), boss->GetPositionZ(),
+              safeRadius, dest->GetPositionX(), dest->GetPositionY(),
+              &appr.skirtOrbitDir)
+        : DcEngageGeometry::AggroSafeApproachPoint(
+              bot, boss->GetPositionX(), boss->GetPositionY(), boss->GetPositionZ(),
+              safeRadius, target, &appr.skirtOrbitDir);
     if (wp)
         LOG_DEBUG("playerbots.dungeonclear",
                   "[DC:{}] room-clear: skirting {}'s aggro sphere (r={:.1f}) -> "
@@ -620,6 +626,31 @@ bool DungeonClearEngageActionBase::MoveToSkirtingRoomAggro(Unit* target,
                               /*normal_only*/ false, /*exact_waypoint*/ false, prio);
     // Own the tick while the move is in flight (a duplicate-move returns false but
     // the bot is still gliding) — mirrors EngageDirect's walk-branch semantics.
+    return moved || bot->isMoving() || IsWaitingForLastMove(prio);
+}
+
+bool DungeonClearEngageActionBase::MoveToStandSkirtingRoomAggro(Unit* pack,
+                                                                Position const& dest,
+                                                                float packRadius,
+                                                                MovementPriority prio)
+{
+    if (!pack)
+        return false;
+
+    // Boss sphere first, as in MoveToSkirtingRoomAggro. Then the pack itself:
+    // the stand spot is on its commit ring, and the tank may be starting from
+    // its side or behind it, so round it on the ring instead of cutting across.
+    std::optional<Position> wp = RoomAggroSkirtPoint(pack, &dest);
+    if (!wp)
+        wp = DcEngageGeometry::AggroSafeApproachPoint(
+            bot, pack->GetPositionX(), pack->GetPositionY(), pack->GetPositionZ(),
+            packRadius, dest.GetPositionX(), dest.GetPositionY(), nullptr,
+            DcEngageGeometry::OrbitProfile::Bystander);
+    Position const to = wp ? *wp : dest;
+
+    bool const moved = DcMoveTo(pack->GetMapId(), to.GetPositionX(), to.GetPositionY(),
+                                to.GetPositionZ(), /*idle*/ false, /*react*/ false,
+                                /*normal_only*/ false, /*exact_waypoint*/ false, prio);
     return moved || bot->isMoving() || IsWaitingForLastMove(prio);
 }
 
@@ -711,6 +742,23 @@ bool DungeonClearEngageTrashAction::Execute(Event /*event*/)
 
     if (!target)
     {
+        // A quiet sticky the scan has left far behind is stale: the trigger is
+        // firing for `fresh`, so walking to the sticky instead drags the tank away
+        // from the very pack that keeps the trigger live (DungeonClearMath::
+        // ShouldDropTrashSticky, tr-20260927-201144-5).
+        if (sticky && fresh &&
+            DungeonClearMath::ShouldDropTrashSticky(
+                true, fresh == sticky, sticky->IsInCombat(), bot->GetDistance(sticky),
+                bot->GetDistance(fresh), DC_TRASH_STICKY_RETARGET_MARGIN))
+        {
+            LOG_DEBUG("playerbots.dungeonclear",
+                      "[DC:{}] engage trash: dropping stale sticky {} ({:.1f}yd) for the "
+                      "fresh pick {} ({:.1f}yd)",
+                      bot->GetName(), sticky->GetGUID().ToString(), bot->GetDistance(sticky),
+                      fresh->GetGUID().ToString(), bot->GetDistance(fresh));
+            sticky = nullptr;
+        }
+
         target = sticky;
         if (!target)
             target = fresh;
@@ -829,7 +877,17 @@ bool DungeonClearEngageTrashAction::Execute(Event /*event*/)
             break;
     }
 
-    return EngageDirect(target);
+    // Stamp a live walk-in so Advance leaves it alone on the ticks this action
+    // does not win (DungeonClearMath::ShouldYieldToEngageWalk). Only while out of
+    // combat — once the fight is on the combat engine owns the tank anyway.
+    bool const engaged = EngageDirect(target);
+    if (engaged && !bot->IsInCombat())
+    {
+        appr.engageWalkTarget = target->GetGUID();
+        uint32 const nowMs = getMSTime();
+        appr.engageWalkMs = nowMs ? nowMs : 1;
+    }
+    return engaged;
 }
 
 bool DungeonClearEngageBossAction::Execute(Event event)
@@ -856,6 +914,14 @@ bool DungeonClearEngageBossAction::Execute(Event event)
 
     std::optional<DungeonBossInfo> next = AI_VALUE(std::optional<DungeonBossInfo>, DcKey::NextDungeonBoss);
     if (!next.has_value())
+        return false;
+
+    // Travel objectives are not creatures — the trigger's kind guard, repeated for
+    // the already-queued-basket race: the trigger passed on the boss, the boss died
+    // before this ran, and `next` is now the objective behind it. Without this the
+    // live-boss lookup misses and paints a "not spawned" stall that nothing clears
+    // until Advance moves again (tr-20260927-094926-4: Maiden -> Opera: Barnes).
+    if (next->kind != DungeonAnchorKind::Boss)
         return false;
 
     Creature* boss = DcTargeting::GetLiveBoss(bot, context, next->entry);
@@ -1936,12 +2002,17 @@ bool DcObjectiveArriveAction::Execute(Event /*event*/)
             // Excluded when the garrison carries a WhileHolding hook (the Ring of
             // Law): there the hold's per-tick hook is the only thing that notices
             // the encounter resetting behind the party, so it must not be yielded.
+            //
+            // The raid-muster step (DC_HOOK_RAID_MUSTER) is a camp too, with no
+            // position of its own: the muster raises the rest floors to 100/100
+            // and waits for everyone to reach them, the tank included.
             bool const garrisoned =
-                step.kind == EventStepKind::MoveTo && step.hookId == 0 &&
-                (step.creatureEntry != 0 || step.instanceDataId >= 0 ||
-                 step.persistentDataId >= 0) &&
-                bot->GetExactDist(step.x, step.y, step.z) <=
-                    (step.radius > 0.0f ? step.radius : 4.0f);
+                (step.kind == EventStepKind::MoveTo && step.hookId == 0 &&
+                 (step.creatureEntry != 0 || step.instanceDataId >= 0 ||
+                  step.persistentDataId >= 0 || step.bossStateId >= 0) &&
+                 bot->GetExactDist(step.x, step.y, step.z) <=
+                     (step.radius > 0.0f ? step.radius : 4.0f)) ||
+                (step.kind == EventStepKind::Custom && step.hookId == DC_HOOK_RAID_MUSTER);
             if (garrisoned)
             {
                 switch (EventRestDecision())
@@ -2536,7 +2607,7 @@ bool DungeonClearDoorBlockedAction::Execute(Event event)
         // blocked-state watchdog ever sees one.
         if (door && DcEventDoorRegistry::IsSelfClearing(door->GetEntry()))
         {
-            StallDungeonClear(botAI, waitReason);
+            StallDungeonClearForDoor(botAI, waitReason);
             return true;
         }
 
@@ -2615,7 +2686,7 @@ bool DungeonClearDoorBlockedAction::Execute(Event event)
                          "{:.1f}yd away (> {:.0f}yd) -> holding, not clicking",
                          bot->GetName(), door->GetGUID().ToString(),
                          door->GetName(), bot->GetExactDist(door), DC_DOOR_USE_RANGE);
-                StallDungeonClear(botAI, openingReason);
+                StallDungeonClearForDoor(botAI, openingReason);
                 return true;
             }
 
@@ -2637,7 +2708,7 @@ bool DungeonClearDoorBlockedAction::Execute(Event event)
                     doorAppr.lastDoorUseGuid = door->GetGUID();
                     doorAppr.lastDoorUseMs = now;
                 }
-                StallDungeonClear(botAI, openingReason);
+                StallDungeonClearForDoor(botAI, openingReason);
                 return true;
             }
         }
@@ -2856,7 +2927,7 @@ bool DungeonClearDoorBlockedAction::Execute(Event event)
     if (unplaced && !atDoor)
     {
         DcMovement::StopBot(bot, DcMovement::Stop::Soft);
-        StallDungeonClear(botAI, waitReason);
+        StallDungeonClearForDoor(botAI, waitReason);
         return true;
     }
 

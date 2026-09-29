@@ -23,6 +23,7 @@
 #include "TestRun/DcTestRunVerdict.h"
 #include "TestRun/DcWipeContext.h"
 
+class AiObjectContext;
 class Player;
 
 // One `.dc test` run in flight: a single 5-bot party driven through the full
@@ -216,6 +217,17 @@ private:
     void TickTeleporting();
     void TickStarting();
     void TickMonitoring(uint32 dt);
+    // SCENARIO runs: put every roster entry outside the row's focus into the
+    // tank's DcKey::Skipped — the same set a hand-typed `dc skip` builds.
+    // Idempotent and cheap, so it is re-asserted every monitor tick: DC wipes
+    // Skipped on a run-instance change (DcTargeting::
+    // ResetCompletionLatchesForNewInstance), and a fill that lapsed would send
+    // the raid off to clear the whole map. No-op on a full-dungeon run.
+    void ApplyScenarioSkips(Player* tank, AiObjectContext* ctx);
+    // Copy the event-published extras (DcRunState::testExtras on the tank) into
+    // the record. Called every monitor tick and once more at Finish, so a
+    // leader that vanishes at the end still leaves the last values it wrote.
+    void CaptureExtras(Player* tank);
     void TrackDeaths(Player* tank);
     void TrackEngagement(Player* tank);
     void TrackPulls(Player* tank);
@@ -327,6 +339,25 @@ private:
     DcTestRunRecord::Record _record;
     DcTestRun::Limits _limits;
 
+    // --- scenario (Karazhan chess plan, T1; all inert on a full-dungeon row) --
+    // Copied off the registry row at InitIdentity so the job never holds a
+    // pointer into the catalogue.
+    bool _isScenario = false;
+    std::vector<uint32> _focus;             // roster entries the run is scoped to
+    DcTestDungeonRegistry::SuccessPredicate _success;
+    uint32 _successGraceMs = 0;
+    // The predicate's latch + grace clock (pure — DcTestRunVerdict.h).
+    DcTestRun::ScenarioGrace _grace;
+
+    // --- run wing (Blackrock Spire/Depths: a map whose wing is chosen per run) -
+    // The row's wing token when its map picks wings explicitly ("lbrs", "brd-uc"),
+    // "" otherwise. Latched on the tank before the roster is read, so the roster,
+    // bossesTotal and the run all see only that wing. `_wingMask` is the wing's
+    // DungeonEncounter bits (0 = count every bit): it scopes the kill count and
+    // the stale-instance guard, so an LBRS run never counts UBRS kills.
+    std::string _runWing;
+    uint32 _wingMask = 0;
+
     // --- stage bookkeeping --------------------------------------------------
     uint32 _stageMs = 0;      // time in current stage (stage timeouts)
     uint32 _totalMs = 0;      // time since Create (timeline t offsets)
@@ -353,6 +384,11 @@ private:
     std::vector<BossRef> _roster;
     uint32 _lastMask = 0;
     std::size_t _lastAnchors = 0;
+    // The no-progress clock (pure — DcTestRunVerdict.h), which folds in the
+    // leader's DcRunState::eventProgressSeq so a long scripted event's own
+    // headway counts. _sinceProgressMs mirrors its value for the readers that
+    // predate it (the freeze dump, the live snapshot).
+    DcTestRun::ProgressClock _progressClock;
     uint32 _sinceProgressMs = 0;
 
     // One-shot live freeze dump, fired partway INTO the no-progress window

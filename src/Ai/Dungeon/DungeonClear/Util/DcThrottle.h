@@ -49,6 +49,7 @@ enum class DcThrottle : uint8
     HorStayAheadIssue,   // the HoR escape's per-follower forward step
     TocMoveIssue,        // the ToC driver's point move (the horse, or the tank on foot)
     OcMoveIssue,         // the Oculus rider's drake move (the vehicle base) and its giver walk
+    ChessMoveIssue,      // a Karazhan chess member's walk (sideline, a piece, Echo, the chest)
 
     // --- log throttles (time only) -----------------------------------------
     TransitLog,          // BwlTransitLog — one crossing telemetry line per 3s
@@ -87,6 +88,9 @@ enum class DcThrottle : uint8
     OcWarn,              // the Oculus WARNs (blocked chord, stalled leg, fabricated essence)
     OcGossip,            // the Oculus rider's giver click (and its log line)
     OcEregosLog,         // the Oculus Eregos hold's per-fight line (hook 39)
+    ChessLog,            // the Karazhan chess conductor's DC_CHESS state line
+    ChessGossip,         // a chess member's piece gossip (one per 3s)
+    ChessSeatTeleport,   // a chess controller's hop to its sideline seat
 
     // --- action floors (time only) -----------------------------------------
     UpHarpoonFire,       // floor between two Harpoon Launcher clicks (its own

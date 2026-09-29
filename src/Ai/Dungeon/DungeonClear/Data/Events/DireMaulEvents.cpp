@@ -567,7 +567,7 @@ void RegisterDireMaulWings(std::unordered_map<uint32, DungeonWingLayout>& store)
             // entry, not a creature) — keep it in-wing so wing-filtering
             // doesn't drop it. See BossRosterRegistry map-429 patch.
             BossRosterRegistry::ObjectiveEntry(1),
-        }},
+        }, "dm-east"},
         {"Dire Maul (West)", {
             11489,  // Tendris Warpwood
             11488,  // Illyanna Ravenoak
@@ -593,7 +593,7 @@ void RegisterDireMaulWings(std::unordered_map<uint32, DungeonWingLayout>& store)
             BossRosterRegistry::ObjectiveEntry(12),  // mid hall (E)
             BossRosterRegistry::ObjectiveEntry(13),  // approach (W)
             BossRosterRegistry::ObjectiveEntry(14),  // approach (E)
-        }},
+        }, "dm-west"},
         {"Dire Maul (North)", {
             14326,  // Guard Mol'dar
             14322,  // Stomper Kreeg
@@ -605,6 +605,6 @@ void RegisterDireMaulWings(std::unordered_map<uint32, DungeonWingLayout>& store)
             // RegisterDireMaulRoster above), so there is no anchor to keep
             // in-wing.
             11501,  // King Gordok
-        }},
+        }, "dm-north"},
     }};
 }

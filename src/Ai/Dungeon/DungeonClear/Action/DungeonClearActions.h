@@ -52,8 +52,11 @@ protected:
     // validate. Shared by the healer LOS reposition (ring around the hurt target)
     // and the contribution-gated combat regroup (ring around the fight anchor), so
     // both park a bot in the same validated band by one implementation.
+    // `leashCenter`/`leashRadius` (optional): also reject any point farther than
+    // leashRadius (2D) from leashCenter — see HealLeashRegistry.
     bool FindStandoffPoint(Map* map, Position const& center, float ringRadius,
-                           float maxRadius, float& x, float& y, float& z);
+                           float maxRadius, float& x, float& y, float& z,
+                           Position const* leashCenter = nullptr, float leashRadius = 0.0f);
 
     // What one glide tick did, so the caller can layer its own stall/park
     // bookkeeping without the driver needing the context.
@@ -120,7 +123,10 @@ protected:
     // DcEngageGeometry::AggroSafeApproachPoint with RoomAggroPathPadding honoured.
     // The single home of the skirt geometry, shared by EngageDirect's walk-in and
     // MoveToSkirtingRoomAggro so all three room-clear drivers orbit identically.
-    std::optional<Position> RoomAggroSkirtPoint(Unit* target);
+    // With `dest`, the approach line ends at that point instead of at `target`
+    // (the orbit latch is still keyed on `target`).
+    std::optional<Position> RoomAggroSkirtPoint(Unit* target,
+                                                Position const* dest = nullptr);
 
     // Walk toward `target`, detouring around an active room-aggro boss sphere
     // when one lies between (RoomAggroSkirtPoint) — else straight at `target`.
@@ -129,6 +135,13 @@ protected:
     // engage handshake (the pull-idle room-clear branch); EngageDirect consumers
     // get the skirt for free via EngageDirect itself.
     bool MoveToSkirtingRoomAggro(Unit* target, MovementPriority prio);
+
+    // Walk to `dest`, the room-clear stand spot in front of `pack`: skirt the
+    // room-aggro boss sphere first, then orbit `pack` at `packRadius` so the walk
+    // around it to the front never crosses its aggro. Same own-the-tick semantics
+    // as MoveToSkirtingRoomAggro.
+    bool MoveToStandSkirtingRoomAggro(Unit* pack, Position const& dest,
+                                      float packRadius, MovementPriority prio);
 
     // Drive an EscortCreature step (Wailing Caverns' Disciple of Naralex): START
     // its scripted escort via gossip, then each tick FOLLOW the escortee and
@@ -243,6 +256,7 @@ private:
 
     // Pre-route phases (boss snapshot only).
     Step TryEngageHold(AdvanceState const& st);
+    Step TryEngageWalkYield(AdvanceState const& st);
     Step TryLootYield(AdvanceState const& st);
     Step TryBetweenPullsRest(AdvanceState const& st);
     Step TryBossNotPresentStall(AdvanceState const& st);
@@ -948,6 +962,19 @@ class DungeonClearOculusRiderAction : public Action
 {
 public:
     DungeonClearOculusRiderAction(PlayerbotAI* botAI) : Action(botAI, "dungeon clear oc rider") {}
+    bool Execute(Event event) override;
+};
+
+// KARAZHAN ONLY, every member in the Gamesman's Hall, both engines: the chess seat
+// — take the assigned piece, keep it, stand on the sideline, fight nothing — and,
+// on the run owner, the conductor that plays the game. A PLAIN Action: it moves
+// its bot with its own point moves and must never be zeroed by a movement
+// multiplier. See Action/DcChessPieceAction.cpp. Driven by
+// DungeonClearKzChessTrigger.
+class DungeonClearKzChessAction : public Action
+{
+public:
+    DungeonClearKzChessAction(PlayerbotAI* botAI) : Action(botAI, "dungeon clear kz chess") {}
     bool Execute(Event event) override;
 };
 

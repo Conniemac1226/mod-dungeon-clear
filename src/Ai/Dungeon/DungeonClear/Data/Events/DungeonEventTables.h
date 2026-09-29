@@ -14,6 +14,8 @@
 
 class Player;
 class Creature;
+class Map;
+class PlayerbotAI;
 class AiObjectContext;
 struct BossRosterPatch;
 struct DungeonWingLayout;
@@ -5015,6 +5017,188 @@ namespace DcOculus
 // conditional flight driver. See OculusEvents.cpp.
 void RegisterOculusEvents(std::vector<DungeonEvent>& out);
 
+// Karazhan (map 532) — the numbers the roster, the event rows, the hooks and the
+// gtests share. The reasoning is in KarazhanEvents.cpp.
+//
+// TWO INDEX SPACES, and they disagree. `BIT_*` are DungeonEncounter.dbc bits (the
+// completion mask). `STATE_*` are karazhan.h DATA_* boss-state slots, which only
+// GetBossState reads. Opera is bit 3 but slot 4; Nightbane is bit 10 but slot 11.
+namespace DcKarazhan
+{
+    constexpr uint32 MAP = 532;
+
+    // Creature entries.
+    constexpr uint32 NPC_MIDNIGHT    = 16151;
+    constexpr uint32 NPC_MOROES      = 15687;
+    constexpr uint32 NPC_MAIDEN      = 16457;
+    constexpr uint32 NPC_BARNES      = 16812;
+    constexpr uint32 NPC_CURATOR     = 15691;
+    constexpr uint32 NPC_TERESTIAN   = 15688;
+    constexpr uint32 NPC_ARAN        = 16524;
+    constexpr uint32 NPC_NETHERSPITE = 15689;
+    constexpr uint32 NPC_CHESS       = 22520;
+    constexpr uint32 NPC_PRINCE      = 15690;
+    constexpr uint32 NPC_NIGHTBANE   = 17225;
+
+    // DungeonEncounter.dbc bits.
+    constexpr uint32 BIT_ATTUMEN   = 0;
+    constexpr uint32 BIT_OPERA     = 3;
+    constexpr uint32 BIT_NIGHTBANE = 10;
+
+    // karazhan.h boss-state slots.
+    constexpr int32 STATE_MOROES    = 1;
+    constexpr int32 STATE_OPERA     = 4;
+    constexpr int32 STATE_NIGHTBANE = 11;
+
+    // Clear order. Nightbane sits after Opera: the stage-to-terrace leg is the
+    // cheapest place to fit the urn (+249yd of navmesh walking against +693 for
+    // the next best slot).
+    constexpr int32 ORDER_ATTUMEN       = 0;
+    constexpr int32 ORDER_MOROES        = 1;
+    constexpr int32 ORDER_MAIDEN        = 2;
+    constexpr int32 ORDER_OPERA         = 3;
+    constexpr int32 ORDER_NIGHTBANE_URN = 4;
+    constexpr int32 ORDER_NIGHTBANE     = 5;
+    constexpr int32 ORDER_CURATOR       = 6;
+    constexpr int32 ORDER_TERESTIAN     = 7;
+    constexpr int32 ORDER_ARAN          = 8;
+    constexpr int32 ORDER_NETHERSPITE   = 9;
+    constexpr int32 ORDER_CHESS         = 10;
+    constexpr int32 ORDER_PRINCE        = 11;
+
+    // Midnight's spawn: the stables, and the Attumen anchor.
+    constexpr float MIDNIGHT_X = -11126.3f, MIDNIGHT_Y = -1929.1f, MIDNIGHT_Z = 49.3f;
+    // Where the Attumen route ends and the engage starts: 18yd due west of
+    // Midnight, in the mouth of his pen, the only side with a straight line in.
+    constexpr float WEST_STANDOFF_X = -11126.30f, WEST_STANDOFF_Y = -1911.10f, WEST_STANDOFF_Z = 49.76f;
+    // Moroes' spawn, at the north end of the Banquet Hall.
+    constexpr float MOROES_X = -10982.7f, MOROES_Y = -1877.93f, MOROES_Z = 81.81f;
+
+    // --- Opera ------------------------------------------------------------
+    constexpr uint32 EV_OPERA = 1;
+    // The first cast member the curtain summons, one per play (urand(1,3) per
+    // instance): Oz, Red Riding Hood, Romulo and Julianne.
+    constexpr uint32 NPC_DOROTHEE    = 17535;
+    constexpr uint32 NPC_GRANDMOTHER = 17603;
+    constexpr uint32 NPC_JULIANNE    = 17534;
+
+    // Barnes' spawn, backstage beside Stage Door Left: the Opera objective.
+    constexpr float BARNES_X = -10866.7f, BARNES_Y = -1781.0f, BARNES_Z = 90.6f;
+    // The party's spot on the front stage: 8.5yd clear disc, in front of the
+    // curtain (y -1772.1), 18yd from the cast line and 21.5yd from Stage Door
+    // Left. The stage has no way up from the audience; it is reached only
+    // through the stage doors, and Barnes shuts Stage Door Left behind the party
+    // at his waypoint 8, so the party must be here by then.
+    constexpr float STAGE_X = -10893.0f, STAGE_Y = -1776.0f, STAGE_Z = 90.6f;
+
+    // --- Nightbane --------------------------------------------------------
+    constexpr uint32 EV_NIGHTBANE = 2;
+    constexpr uint32 GO_BLACKENED_URN = 194092;
+    // mod-individual-progression's go_blackened_urn refuses a clicker without it.
+    constexpr uint32 ITEM_BLACKENED_URN = 24140;
+
+    // Where the intro path puts him down on the Master's Terrace.
+    constexpr float LANDING_X = -11142.7f, LANDING_Y = -1891.2f, LANDING_Z = 92.3f;
+    // The Blackened Urn (terrace floor, 1yd clear around it).
+    constexpr float URN_X = -11107.8f, URN_Y = -1879.4f, URN_Z = 91.8f;
+    // The urn objective is anchored ON the urn, inside the executor's 5yd use
+    // range, so the click step never walks the tank out of its own arrive ring.
+    // Anchored at the muster point (18.1yd off) the click step pulled the tank
+    // out, the at-objective trigger dropped and Advance hauled it back
+    // (tr-20260923-230203-1).
+    constexpr float URN_ARRIVE_RADIUS = 4.0f;
+    // The muster point: terrace floor with a 6yd clear disc, 18.8yd from the
+    // landing and 18.1yd from the urn. He evades 8s after landing unless a
+    // player is within 45yd of him, so the party holds here through the intro.
+    constexpr float NB_MUSTER_X = -11125.0f, NB_MUSTER_Y = -1885.0f, NB_MUSTER_Z = 91.9f;
+
+    // --- Chess (the Gamesman's Hall) --------------------------------------
+    //
+    // Plan: deployment-files/docs/mod-dungeon-clear_karazhan-chess_plan.md. The
+    // board, the pieces and the policy are the pure kernels Util/DcChessBoard.h
+    // and Util/DcChessDecision.h; the conductor and the member rung are
+    // Overrides/KarazhanChessDriver.cpp and Action/DcChessPieceAction.cpp.
+    constexpr uint32 EV_CHESS = 3;
+    constexpr uint32 OBJ_CHESS = 3;  // the chess objective's OBJ() sequence (roster entry 0x4F000003)
+    constexpr uint32 BIT_CHESS = 8;  // DBC encounter 660 — credits the Status Bar, which never dies
+    constexpr uint32 HOOK_KZ_CHESS_PLAY  = 42;
+    constexpr uint32 HOOK_KZ_CHESS_SETUP = 43;
+
+    // karazhan.h instance data. NOT boss-state slots: the script never calls
+    // SetBossState for chess, and none of it is saved.
+    constexpr uint32 DATA_CHESS_EVENT      = 9;   // NOT_STARTED 0 / IN_PROGRESS 1 / DONE 3 / SPECIAL 4
+    constexpr uint32 DATA_CHESS_TEAM       = 33;  // TeamId of the player who started it
+    constexpr uint32 DATA_CHESS_GAME_PHASE = 35;
+    constexpr uint32 CHESS_EVENT_DONE = 3;
+
+    // KarazhanChessGamePhase.
+    constexpr uint32 CHESS_PHASE_NOT_STARTED    = 0;
+    constexpr uint32 CHESS_PHASE_PVE_WARMUP     = 1;  // Medivh talked to, King not yet taken
+    constexpr uint32 CHESS_PHASE_INPROGRESS_PVE = 2;
+    constexpr uint32 CHESS_PHASE_FAILED         = 3;
+    constexpr uint32 CHESS_PHASE_PVE_FINISHED   = 4;  // won; Medivh's ordinal 0 is now PvP
+
+    constexpr uint32 NPC_ECHO_OF_MEDIVH = 16816;
+    constexpr uint32 GO_GAMESMAN_HALL_DOOR = 184276;       // the way in; lock-free, scriptless
+    constexpr uint32 GO_GAMESMAN_HALL_EXIT_DOOR = 184277;  // opens on DONE; the only way to Prince
+    constexpr uint32 GO_DUST_COVERED_CHEST = 185119;       // respawns on DONE; lock 57, loot 20712
+
+    constexpr float ECHO_X  = -11098.8f,  ECHO_Y  = -1853.56f, ECHO_Z  = 221.15f;
+    constexpr float CHEST_X = -11102.7f,  CHEST_Y = -1848.98f, CHEST_Z = 221.07f;
+    // Where OnCharmed(false) teleports a released controller: a balcony on the
+    // hall's west wall, board (3.45, -4.0) at z 229.6. It IS on the navmesh and
+    // it IS joined to the floor — a 53yd walk down the west stair
+    // (TestKarazhanChessProbe) — so a released bot walks back like anyone else.
+    constexpr float WAITING_X = -11106.92f, WAITING_Y = -1843.32f, WAITING_Z = 229.626f;
+
+    // The objective anchor, the event's first stand, the chess scenario's
+    // landing and the one point every bot waits and stands at: the open floor
+    // one cell off the col-0 edge, board (3.5, -1), level with Echo and ~4yd
+    // from him, ~9.6yd from every wall on the navmesh. Everything further off
+    // the board is a thin rim against the walls (the old anchor, board (2, -3),
+    // had 0.0yd and bots looped trying to reach it).
+    constexpr float HALL_X = -11096.19f, HALL_Y = -1856.44f, HALL_Z = 221.30f;
+
+    // How far from the board's centre a bot still counts as "at the game". The
+    // board's corner is 28yd from its centre and the waiting balcony 22yd; 60
+    // takes in the whole hall and nothing of the corridors outside it.
+    constexpr float CHESS_HALL_RADIUS = 60.0f;
+
+    // The sideline: where each controller stands while it plays — off the col-0
+    // edge, two columns of five, either side of Echo and the chest. Board
+    // coordinates, rows first; every slot is navmesh floor (the probe prints the
+    // whole edge). Nobody ever idles on a cell.
+    constexpr float SIDELINE_ROWS[5] = { 0.5f, 1.5f, 2.3f, 4.6f, 5.6f };
+    constexpr float SIDELINE_COLS[2] = { -2.4f, -3.4f };
+    constexpr uint32 SIDELINE_SLOTS = 10;
+
+    // The hall's floor is z 221 and its balconies reach z 238; another floor of
+    // the tower (the Master's Terrace, z 92) lies under the same x/y, so "in the
+    // hall" is a 3D test.
+    constexpr float HALL_Z_MIN = 210.0f;
+    constexpr float HALL_Z_MAX = 250.0f;
+
+    // --- the chess glue (Overrides/KarazhanChessDriver.cpp) ----------------
+    // Is a game on the board right now — phase WARMUP or INPROGRESS, read live?
+    bool KaraChessLive(Map* map);
+    // Is chess the raid's business right now: `bot` on map 532, and a game live
+    // or the run's conductor armed. The cheap gate the watchdogs stand down on
+    // (phantom combat, stranded recovery, the stall, the combat purge).
+    bool ChessIsOn(Player* bot);
+    // The member rung's trigger: ChessIsOn, `bot` alive and in the hall, and — in
+    // the conductor's Loot state — the run owner only.
+    bool ChessRungLive(Player* bot);
+    // Is `bot` held by the game (the multiplier clamp)? Reads the stamp the rung
+    // leaves on the bot's own run state, so it costs one compare per action.
+    bool ChessHoldsTheBot(Player* bot, PlayerbotAI* botAI);
+    // The member rung's action: the conductor (on the run owner) and this bot's
+    // own seat — take its piece, hold it, stand on the sideline, fight nothing.
+    // Returns whether it claims the tick.
+    bool ChessRungTick(Player* bot, PlayerbotAI* botAI);
+}
+
+void RegisterKarazhanEvents(std::vector<DungeonEvent>& out);
+
 // Is the Oculus flight driver due for `bot`'s map right now? Exposed for the rider
 // trigger, which runs on every member and must agree with the driver.
 bool OculusDriverDue(Player* bot);
@@ -5159,6 +5343,10 @@ void RegisterTrialOfTheChampionRoster(std::vector<BossRosterPatch>& t);
 // re-anchored onto the ground they are fought on; and the portal, the construct
 // islands and Urom's platforms are objectives the driver flies the party to.
 void RegisterOculusRoster(std::vector<BossRosterPatch>& t);
+// Karazhan (532) — adds Attumen (Midnight carries bit 0; the credit entry has no
+// spawn), skips Chess and Prince, and replaces Barnes and the Nightbane perch
+// with the event anchors that summon them. See KarazhanEvents.cpp.
+void RegisterKarazhanRoster(std::vector<BossRosterPatch>& t);
 
 // --- wing layouts (one appender per split map) ---------------------------
 // Records which boss credit-entries belong to which wing of a multi-wing map;
@@ -5167,6 +5355,11 @@ void RegisterOculusRoster(std::vector<BossRosterPatch>& t);
 void RegisterDireMaulWings(std::unordered_map<uint32, DungeonWingLayout>& store);
 void RegisterScarletMonasteryWings(std::unordered_map<uint32, DungeonWingLayout>& store);
 void RegisterMaraudonWings(std::unordered_map<uint32, DungeonWingLayout>& store);
+// Blackrock Spire (229) — LBRS / UBRS, chosen per run (WingSelect::Explicit).
+// No events or roster patch yet; lives in BlackrockSpireEvents.cpp.
+void RegisterBlackrockSpireWings(std::unordered_map<uint32, DungeonWingLayout>& store);
+// Blackrock Depths (230) — Detention Block / Upper City, chosen per run.
+void RegisterBlackrockDepthsWings(std::unordered_map<uint32, DungeonWingLayout>& store);
 
 // --- anchor routes (one appender per dungeon that hand-authors a route) ---
 // Waypoint anchors StridedPathfinder walks INSTEAD of asking the navmesh
@@ -5237,5 +5430,11 @@ void RegisterPitOfSaronRoute();
 // WILL BE STANDING when that leg begins
 // ([[dc-anchor-route-must-cover-where-the-party-stands]]).
 void RegisterHallsOfReflectionRoute();
+
+// Karazhan (532) — the entrance to Attumen (keyed on Midnight). The plain "walk
+// the leg" reason with a twist: the corridor routes fine, but it runs along the
+// back wall of Midnight's pen inside the at-boss handoff range, and the row is
+// what holds the engage until the party has come round to the pen's west mouth.
+void RegisterKarazhanRoute();
 
 #endif

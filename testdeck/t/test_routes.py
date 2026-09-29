@@ -30,7 +30,35 @@ CATALOGUE = {
          "raid": True, "sizeMin": 2, "sizeMax": 40,
          "sizePresets": [10, 25], "defaultSize": 10,
          "gear": [{"ilvl": 66, "label": "T1"}]},
+        {"token": "kara", "name": "Karazhan", "mapId": 532,
+         "level": 70, "heroicLevel": 0, "wing": "",
+         "raid": True, "sizeMin": 2, "sizeMax": 10,
+         "sizePresets": [10], "defaultSize": 10,
+         "gear": [{"ilvl": 115, "label": "T4"}]},
+        # A scenario row as WriteSidecar emits it (ScenarioSidecarFields).
+        {"token": "kara-chess", "name": "Karazhan: Chess", "mapId": 532,
+         "level": 70, "heroicLevel": 0, "wing": "",
+         "scenario": True, "scenarioOf": "kara", "focus": [22520],
+         "success": "instanceData(9)==3", "successGraceS": 60,
+         "overallTimeoutS": 1800, "noProgressS": 300,
+         "raid": True, "sizeMin": 2, "sizeMax": 10,
+         "sizePresets": [10], "defaultSize": 10,
+         "gear": [{"ilvl": 115, "label": "T4"}]},
+        # Two rows on one map (Blackrock Spire's wings), launched by token.
+        {"token": "lbrs", "name": "Lower Blackrock Spire", "mapId": 229,
+         "level": 58, "heroicLevel": 0, "wing": "LBRS",
+         "gear": [{"ilvl": 60, "label": "blue"}]},
+        {"token": "ubrs", "name": "Upper Blackrock Spire", "mapId": 229,
+         "level": 60, "heroicLevel": 0, "wing": "UBRS",
+         "gear": [{"ilvl": 60, "label": "blue"}]},
+        # A stale sidecar: the parent row is gone.
+        {"token": "orphan-scn", "name": "Orphan", "mapId": 999,
+         "level": 70, "heroicLevel": 0, "wing": "",
+         "scenario": True, "scenarioOf": "gone", "focus": [1],
+         "gear": []},
     ],
+    # Retired tokens -> replacements (WriteSidecar's "aliases").
+    "aliases": {"brs": "lbrs"},
 }
 
 
@@ -75,6 +103,21 @@ def test_run_start_builds_command(client, cfg):
     assert br.cmds == [".dc test start blackfathom level=24 seed=7 ilvl=25 quality=4"]
     body = r.json()
     assert body["pending"] is False and body["ok"] is True
+
+
+def test_retired_token_is_launched_as_its_replacement(client, cfg):
+    """`brs` predates the Blackrock Spire split: the deck forwards `lbrs`, so
+    what it launches and what the records say agree."""
+    write_catalogue(cfg)
+    br = use_bridge(["Test run started"])
+    r = client.post("/api/testruns/start", json={"dungeon": "brs"})
+    assert r.status_code == 200, r.text
+    r = client.post("/api/testplans/start", json={"dungeon": "brs", "total": 3})
+    assert r.status_code == 200, r.text
+    r = client.post("/api/testruns/start", json={"dungeon": "ubrs"})
+    assert r.status_code == 200, r.text
+    assert br.cmds == [".dc test start lbrs", ".dc test plan start lbrs total=3",
+                       ".dc test start ubrs"]
 
 
 def test_run_start_raid_size(client, cfg):
@@ -123,6 +166,34 @@ def test_run_start_refusals(client, cfg):
     ]
     for payload in bad:
         assert client.post("/api/testruns/start", json=payload).status_code == 400
+    assert br.cmds == []
+
+
+def test_scenario_rows_launch_by_token(client, cfg):
+    """A scenario is launched by its own token; the plan route takes it too."""
+    write_catalogue(cfg)
+    br = use_bridge(["Test run started"])
+    assert client.post("/api/testruns/start",
+                       json={"dungeon": "kara-chess"}).status_code == 200
+    assert client.post("/api/testruns/start",
+                       json={"dungeon": "kara-chess", "size": 10}).status_code == 200
+    assert client.post("/api/testplans/start",
+                       json={"dungeon": "kara-chess", "total": 20}).status_code == 200
+    assert br.cmds == [".dc test start kara-chess",
+                       ".dc test start kara-chess size=10",
+                       ".dc test plan start kara-chess total=20"]
+
+
+def test_scenario_refusals(client, cfg):
+    write_catalogue(cfg)
+    br = use_bridge()
+    bad = [
+        {"dungeon": "kara-chess", "heroic": True},   # scenarios have no heroic
+        {"dungeon": "kara-chess", "size": 5},        # size locked to the parent default
+        {"dungeon": "orphan-scn"},                   # parent missing from the catalogue
+    ]
+    for payload in bad:
+        assert client.post("/api/testruns/start", json=payload).status_code == 400, payload
     assert br.cmds == []
 
 

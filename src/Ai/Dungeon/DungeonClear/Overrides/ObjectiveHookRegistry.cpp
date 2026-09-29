@@ -6,6 +6,7 @@
 #include "ObjectiveHookRegistry.h"
 
 #include <atomic>
+#include <optional>
 #include <utility>
 
 #include "Creature.h"
@@ -30,9 +31,11 @@
 #include "Playerbots.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
 #include "Ai/Dungeon/DungeonClear/Data/Events/DungeonEventTables.h"
+#include "Ai/Dungeon/DungeonClear/DcValueKeys.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcFormGate.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcMovement.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcPlayerbotCompat.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcRaidMuster.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTargeting.h"
 
 namespace
@@ -569,6 +572,25 @@ namespace
     // without re-pathing every tick.
     constexpr uint32 DTK_REISSUE_MS = 1000;
 
+    // Hook 40 — see DC_HOOK_RAID_MUSTER.
+    ObjectiveArriveResult RaidMusterAtObjective(Player* bot, AiObjectContext* context,
+                                                DungeonBossInfo const& /*info*/)
+    {
+        PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+        if (!botAI)
+            return ObjectiveArriveResult::Done;
+        std::optional<DungeonBossInfo> const next =
+            context->GetValue<std::optional<DungeonBossInfo>>(DcKey::NextDungeonBoss)->Get();
+        if (!next)
+            return ObjectiveArriveResult::Done;
+        // The muster is keyed on the anchor's entry and is Boss-only; present the
+        // objective as the boss it is about to start.
+        DungeonBossInfo asBoss = *next;
+        asBoss.kind = DungeonAnchorKind::Boss;
+        return DcRaidMuster::Holds(bot, botAI, context, asBoss) ? ObjectiveArriveResult::Running
+                                                                : ObjectiveArriveResult::Done;
+    }
+
     ObjectiveArriveResult HoldNovosCamp(Player* bot, AiObjectContext* context,
                                         DungeonBossInfo const& /*info*/)
     {
@@ -808,6 +830,7 @@ namespace
             Reg::AddHook(t, 10, &SendGhazanToPlatform);  // The Underbog — send Ghaz'an up his ramp (AT 4302)
             Reg::AddHook(t, 13, &HadronoxHasWebbedTheDoors);  // Azjol-Nerub — hold until Hadronox webs the doors
             Reg::AddHook(t, 14, &HoldNovosCamp);         // Drak'Tharon Keep — hold the Novos camp through phase 1
+            Reg::AddHook(t, DC_HOOK_RAID_MUSTER, &RaidMusterAtObjective);  // generic — raid muster at an objective
 
             // Controllers, one TU each. Called explicitly (not self-registering)
             // because this module is a static lib: a TU whose only output is
@@ -824,6 +847,7 @@ namespace
             RegisterCullingOfStratholmeHooks(t);
             RegisterTrialOfTheChampionHooks(t);
             RegisterOculusHooks(t);
+            RegisterKarazhanChessHooks(t);
             return t;
         }();
         return kHooks;

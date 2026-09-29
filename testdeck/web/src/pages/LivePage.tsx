@@ -3,6 +3,7 @@
  * every 3s — the heartbeat itself rewrites every ~2s. */
 
 import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../api/client";
 import DungeonMap from "../components/DungeonMap";
 import { fmtDuration, usePoll } from "../api/hooks";
@@ -89,8 +90,49 @@ function StopAllButton() {
   );
 }
 
+/* A continuous session's plan: no total to count towards, and it is steered
+   from the Continuous page (stopping it here would leave the session thinking
+   the worldserver died). */
+function PoolPlanCard({ plan }: { plan: LivePlan }) {
+  const n = plan.pool?.length ?? 0;
+  return (
+    <Card>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <span className="mr-2 rounded bg-iris-500/15 px-2 py-0.5 text-xs font-medium text-iris-300">
+            CONTINUOUS
+          </span>
+          <span className="font-medium">
+            {n} dungeon{n === 1 ? "" : "s"}
+          </span>
+          <span className="ml-3 font-mono text-xs text-ink-500">{plan.planId}</span>{" "}
+          <CopyButton text={plan.planId} />
+        </div>
+        <div className="flex items-center gap-4 text-sm text-ink-400">
+          <span>{fmtDuration(plan.elapsedS)}</span>
+          <span className="text-emerald-300">{plan.succeeded ?? 0} ok</span>
+          <span className="text-red-300">{plan.failed ?? 0} failed</span>
+          <span>
+            {plan.active ?? 0}/{plan.concurrent ?? "?"} active
+          </span>
+          <Link
+            to="/continuous"
+            className="rounded-lg border border-ink-700 px-2.5 py-1 text-xs text-iris-300 hover:border-iris-500/50"
+          >
+            Open Continuous →
+          </Link>
+        </div>
+      </div>
+      {plan.state && plan.state !== "running" && (
+        <div className="mt-2 text-xs text-amber-300/90">{plan.state}</div>
+      )}
+    </Card>
+  );
+}
+
 function PlanCard({ plan }: { plan: LivePlan }) {
   const toast = useToast();
+  if (plan.endless || plan.dungeon === "pool") return <PoolPlanCard plan={plan} />;
   const done = (plan.succeeded ?? 0) + (plan.failed ?? 0);
   const total = plan.total ?? 0;
   const pct = total ? Math.round((done / total) * 100) : 0;

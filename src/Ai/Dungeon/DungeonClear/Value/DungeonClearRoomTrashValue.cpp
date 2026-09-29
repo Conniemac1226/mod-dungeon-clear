@@ -24,6 +24,7 @@
 #include "Ai/Dungeon/DungeonClear/Util/DcLeaderSignal.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcStatusPublisher.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTargeting.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcTickMemo.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearTuning.h"
 #include "Ai/Dungeon/DungeonClear/DcValueKeys.h"
 
@@ -73,8 +74,7 @@ GuidVector DungeonClearRoomTrashValue::Calculate()
     if (trackedBoss != room->bossEntry)
     {
         trackedBoss = room->bossEntry;
-        lastRemaining = 0;
-        lastProgressMs = getMSTime();
+        clock = {};
         gaveUp = false;
         noteSent = false;
     }
@@ -105,8 +105,7 @@ GuidVector DungeonClearRoomTrashValue::Calculate()
     // starts when clearing actually begins, not during the walk in.
     if (!DcEngageGeometry::TankReachedRoomByPath(bot, context, *next))
     {
-        lastRemaining = 0;
-        lastProgressMs = getMSTime();
+        clock = {};
         return out;
     }
 
@@ -323,18 +322,10 @@ GuidVector DungeonClearRoomTrashValue::Calculate()
     }
 
     // No-progress give-up valve: if the remaining count hasn't DROPPED within
-    // RoomClearTimeout seconds, stop holding the boss pull on an unreachable
-    // straggler / a respawn churn and let the run proceed. Progress (a smaller
-    // set, or first sighting) re-arms the clock.
-    uint32 const now = getMSTime();
-    uint32 const remaining = static_cast<uint32>(out.size());
-    if (remaining == 0)
-    {
-        lastRemaining = 0;
-        lastProgressMs = now;
-        return out;
-    }
-
+    // RoomClearTimeout seconds of READY time, stop holding the boss pull on an
+    // unreachable straggler / a respawn churn and let the run proceed. See
+    // DungeonClearMath::RoomClearGiveUpDue for what counts as ready time.
+    //
     // CRITICAL: the room-clear driver only engages trash once the tank is in the
     // room — while it's still walking the long path in, no trash is being engaged
     // and the count can't drop. So keep the clock RE-ARMED until the tank actually
@@ -344,23 +335,20 @@ GuidVector DungeonClearRoomTrashValue::Calculate()
     // the walk in. Use the same room-clear envelope the driver activates on
     // (WithinRoomClearWindow) — NOT the tight IsAtBossEngage standoff, which the
     // tank never reaches while clearing from out on the skirt orbit ring.
+    //
+    // And PAUSE it while the party is busy between pulls — fighting, resting,
+    // looting, or not yet set. Those are not stalls: a Karazhan Banquet Hall
+    // formation is eight or nine elites, and the full-mana rest after one outlasts
+    // 30s on its own. A give-up there pulls Moroes into the next formation.
+    uint32 const now = getMSTime();
+    uint32 const remaining = static_cast<uint32>(out.size());
     bool const inRoom =
-        DcEngageGeometry::WithinRoomClearWindow(bot, context, *next);
-    if (!inRoom)
-    {
-        lastRemaining = remaining;
-        lastProgressMs = now;
-        return out;
-    }
-
-    if (lastRemaining == 0 || remaining < lastRemaining)
-    {
-        lastRemaining = remaining;
-        lastProgressMs = now;
-    }
-
+        remaining && DcEngageGeometry::WithinRoomClearWindow(bot, context, *next);
+    bool const busy = remaining && inRoom &&
+        (bot->IsInCombat() ||
+         !DcTickMemoAccess::BetweenPullsReady(bot, context, /*requireNoLoot*/ true));
     uint32 const timeoutMs = DcSettings::GetUInt(bot, "RoomClearTimeout") * 1000u;
-    if (timeoutMs && (now - lastProgressMs) > timeoutMs)
+    if (DungeonClearMath::RoomClearGiveUpDue(clock, remaining, inRoom, busy, now, timeoutMs))
     {
         gaveUp = true;
         if (!noteSent && DcLeaderSignal::IsDungeonClearLeader(bot))

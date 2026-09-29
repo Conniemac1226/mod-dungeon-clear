@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <ctime>
+#include <limits>
 #include <optional>
 #include <set>
 
@@ -39,16 +40,18 @@
 #include "Random.h"
 
 #include "DcStrategyGate.h"
-#include "DungeonQueueFill/DcDungeonQueueFillManager.h"
 #include "Util/DcBotProvisioning.h"
 #include "Util/DcDungeonAccess.h"
+#include "Util/DcPoolBots.h"
 #include "Util/DcProvisionBudget.h"
 #include "Ai/Dungeon/DungeonClear/Action/DcActionShared.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
+#include "Ai/Dungeon/DungeonClear/Data/DungeonWingRegistry.h"
 #include "Ai/Dungeon/DungeonClear/DcPullContext.h"
 #include "Ai/Dungeon/DungeonClear/DcValueKeys.h"
 #include "Ai/Dungeon/DungeonClear/Settings/DcSettings.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcRun.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcRunWing.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTargeting.h"
 #include "TestRun/DcDiagSnapshot.h"
 #include "TestRun/DcTestComp.h"
@@ -191,8 +194,43 @@ void DcTestRunJob::InitIdentity(Player* gm, DcTestDungeonRegistry::Row const& ro
     _limits.stallGraceMs = DcSettings::GetUInt(ObjectGuid::Empty, "TestRun.StallGraceS") * 1000;
     _limits.noProgressMs = DcSettings::GetUInt(ObjectGuid::Empty, "TestRun.NoProgressS") * 1000;
     _limits.overallTimeoutMs = DcSettings::GetUInt(ObjectGuid::Empty, "TestRun.OverallTimeoutS") * 1000;
+    // A row may carry its own watchdog budget (a long scripted event — chess
+    // plays for up to half an hour with long quiet stretches); 0 keeps the
+    // global value. Resolved here so the record's `watchdog` block shows what
+    // the run was actually held to.
+    if (row.overallTimeoutS)
+        _limits.overallTimeoutMs = row.overallTimeoutS * 1000;
+    if (row.noProgressS)
+        _limits.noProgressMs = row.noProgressS * 1000;
+
+    // A map whose wing is picked per run (Blackrock Spire) takes it from the
+    // row: the wing whose token is the row's. Proximity maps (DM, SM) leave it
+    // to where the party lands, exactly as before.
+    _runWing.clear();
+    _wingMask = 0;
+    if (DungeonWingLayout const* layout = DungeonWingRegistry::Get(row.mapId);
+        layout && layout->isolated && layout->select == WingSelect::Explicit)
+        if (DungeonWing const* wing = DungeonWingRegistry::FindWing(*layout, row.token))
+        {
+            _runWing = wing->token;
+            _wingMask = wing->encounterMask;
+        }
+
+    _isScenario = DcTestDungeonRegistry::IsScenario(row);
+    _focus = row.focusEntries;
+    _success = row.success;
+    _successGraceMs = row.successGraceS * 1000;
+    _grace = DcTestRun::ScenarioGrace{};
+    _progressClock = DcTestRun::ProgressClock{};
 
     _record = DcTestRunRecord::Record{};
+    if (_isScenario)
+    {
+        _record.scenario = row.token;
+        _record.scenarioOf = row.scenarioOf;
+        _record.focus = row.focusEntries;
+    }
+    _record.successPredicate = DcTestDungeonRegistry::DescribePredicate(row.success);
     _record.runId = MakeRunId();
     _record.planId = planId;
     _record.dungeon = row.token;
@@ -290,11 +328,11 @@ std::unique_ptr<DcTestRunJob> DcTestRunJob::Create(Player* gm, DcTestDungeonRegi
                 continue;
             if (reservedGuids.find(guid) != reservedGuids.end())
                 continue;
-            // The RDF queue fill draws from this same pool. Its claim is
+            // The queue fills draw from this same pool. Their claims are
             // invisible here for the tick between picking a guid and
-            // AddPlayerBot landing, so ask it rather than relying on the
+            // AddPlayerBot landing, so ask them rather than relying on the
             // "already online" test below.
-            if (DcDungeonQueueFillManager::Instance().IsClaimed(guid))
+            if (DcPoolBots::IsClaimedByFill(guid))
                 continue;
             // (No botLoading check — it is protected on PlayerbotHolder;
             // AddPlayerBot itself no-ops on an in-flight load, and a char
@@ -353,7 +391,19 @@ std::unique_ptr<DcTestRunJob> DcTestRunJob::Create(Player* gm, DcTestDungeonRegi
         }
         slot.guid = guid;
         usedClasses.insert(slot.classId);
+        // Harness adds are exempt from AiPlayerbot.MaxAddedBots. That cap is
+        // playerbots' per-account limit on hand-added bots, and every run's
+        // party is added under the one issuing GM (usually the test driver),
+        // so it capped the whole harness — all concurrent runs together — at
+        // MaxAddedBots bots. AddPlayerBot reads the cap synchronously, so
+        // lifting it for this one call on the world thread leaves a player's
+        // own `.playerbot add` limit exactly as configured. What bounds the
+        // harness is the addclass pool (a launch without free characters
+        // backs off) and the machine.
+        int32 const addedCap = sPlayerbotAIConfig.maxAddedBots;
+        sPlayerbotAIConfig.maxAddedBots = std::numeric_limits<int32>::max();
         mgr->AddPlayerBot(slot.guid, gm->GetSession()->GetAccountId());
+        sPlayerbotAIConfig.maxAddedBots = addedCap;
     }
 
     LOG_INFO("playerbots.dungeonclear",
@@ -1287,13 +1337,22 @@ void DcTestRunJob::TickStarting()
 
     AiObjectContext* ctx = tankAI->GetAiObjectContext();
 
+    // Run wing first (idempotent; re-asserted each tick until `dc on` takes): it
+    // decides which boss list the roster read below — and the whole run — sees.
+    // Explicit beats the fallback a bot may already have computed at the portal.
+    if (!_runWing.empty())
+        if (DungeonWingLayout const* layout = DungeonWingRegistry::Get(_mapId))
+            if (DungeonWing const* wing = DungeonWingRegistry::FindWing(*layout, _runWing))
+                DcRunWing::Set(tank, *wing, DcRunWing::Source::Explicit);
+
     // A reused instance with dead bosses would flash an instant (false)
-    // all-clear — refuse it rather than record a fake success.
+    // all-clear — refuse it rather than record a fake success. A wing-scoped run
+    // only cares about its own wing's bits.
     if (InstanceScript* inst = DcTargeting::GetInstanceScript(tank))
-        if (inst->GetCompletedEncounterMask() != 0)
+        if (uint32 const done = inst->GetCompletedEncounterMask() & (_wingMask ? _wingMask : ~0u))
         {
             FailSetup("stale instance: encounters already completed (mask " +
-                      std::to_string(inst->GetCompletedEncounterMask()) + ")");
+                      std::to_string(done) + ")");
             return;
         }
 
@@ -1327,6 +1386,62 @@ void DcTestRunJob::TickStarting()
         }
         _record.bossesTotal = static_cast<uint32>(_roster.size());
 
+        // SCENARIO: the run is scoped to its focus. Every focus entry must be
+        // on this map's live roster — the registry gtest can only check the
+        // row's shape, not the roster BossSpawnIndex derives at runtime — and a
+        // focus the roster lacks would otherwise skip EVERYTHING and flash an
+        // instant all-cleared. Then the reported roster/total count the focus
+        // only, so a scenario's "1/1" means its objective, not 1/11 of the map.
+        if (_isScenario)
+        {
+            std::vector<uint32> rosterEntries;
+            for (BossRef const& ref : _roster)
+                rosterEntries.push_back(ref.entry);
+            std::vector<DcTestDungeonRegistry::Row> const& rows = DcTestDungeonRegistry::All();
+            if (DcTestDungeonRegistry::Row const* row = DcTestDungeonRegistry::Find(_dungeonToken, rows))
+            {
+                std::string const bad =
+                    DcTestDungeonRegistry::ValidateScenario(*row, rows, &rosterEntries);
+                if (!bad.empty())
+                {
+                    FailSetup("scenario '" + _dungeonToken + "': " + bad);
+                    return;
+                }
+            }
+            // A focus the roster marks skip-by-design (Karazhan's Chess and
+            // Prince are, until their events land) is never selected, so with
+            // everything else skipped the run would read ALL-CLEARED on its
+            // first tick — a fake success. Refuse it instead.
+            bool anyRunnable = false;
+            for (DungeonBossInfo const& b : bosses)
+                if (!b.skipByDesign &&
+                    std::find(_focus.begin(), _focus.end(), b.entry) != _focus.end())
+                    anyRunnable = true;
+            if (!anyRunnable)
+            {
+                FailSetup("scenario '" + _dungeonToken +
+                          "': every focus entry is skip-by-design on this map's roster — "
+                          "nothing to run");
+                return;
+            }
+            _record.bossRoster.clear();
+            uint32 focused = 0;
+            for (BossRef const& ref : _roster)
+                if (std::find(_focus.begin(), _focus.end(), ref.entry) != _focus.end())
+                {
+                    ++focused;
+                    // Focus objectives are named too: a scenario's roster IS its
+                    // objective list, even when that objective is not a boss.
+                    _record.bossRoster.push_back(ref.name);
+                }
+            _record.bossesTotal = focused;
+        }
+
+        // The event-telemetry block on the leader survives DcRunState::Reset()
+        // (see DcRunState) — so it has to be cleared HERE, before `dc on`, or a
+        // previous run's extras and progress count would leak into this one.
+        DcRun::Of(ctx).ClearTestTelemetry();
+
         // RAID runs lean on the playerbots raid strategies for the boss fights
         // (DC stands down during encounters), and those attach by mapId only
         // when AiPlayerbot.ApplyInstanceStrategies is on. A raid run with the
@@ -1350,6 +1465,24 @@ void DcTestRunJob::TickStarting()
     tankAI->DoSpecificAction("dc on", Event("dc", "", FindGm()), true);
     if (DcRun::Of(ctx).enabled)
     {
+        if (_isScenario)
+        {
+            // Take the run-instance transition NOW, before filling Skipped. It
+            // wipes Skipped, and left to itself it fires on the first
+            // NextDungeonBoss evaluation — i.e. just AFTER this fill, which would
+            // point the raid at the map's first boss until the next monitor tick
+            // re-asserted the scope. Taking it here (idempotent: it only acts on
+            // an instance change) makes the fill stick from the first AI tick.
+            DcTargeting::ResetCompletionLatchesForNewInstance(tank, ctx);
+            ApplyScenarioSkips(tank, ctx);
+            LOG_INFO("playerbots.dungeonclear",
+                     "TESTRUN {} scenario {} (of {}): focus {} of {} roster entries, success {}{}",
+                     _record.runId, _dungeonToken, _record.scenarioOf, _focus.size(),
+                     _roster.size(),
+                     _record.successPredicate.empty() ? "all-cleared" : _record.successPredicate,
+                     _success.IsSet() ? " + " + std::to_string(_successGraceMs / 1000) + "s grace"
+                                      : std::string());
+        }
         if (InstanceScript* inst = DcTargeting::GetInstanceScript(tank))
             _lastMask = inst->GetCompletedEncounterMask();
         _lastAnchors =
@@ -1368,6 +1501,29 @@ void DcTestRunJob::TickStarting()
 
     if (_stageMs >= START_TIMEOUT_MS)
         FailSetup("dc on did not take (look for 'DC command refused' in the DC log)");
+}
+
+void DcTestRunJob::ApplyScenarioSkips(Player* tank, AiObjectContext* ctx)
+{
+    if (!_isScenario || !tank || !ctx)
+        return;
+    std::unordered_set<uint32>& skipped =
+        ctx->GetValue<std::unordered_set<uint32>&>(DcKey::Skipped)->Get();
+    for (BossRef const& ref : _roster)
+        if (std::find(_focus.begin(), _focus.end(), ref.entry) == _focus.end())
+            skipped.insert(ref.entry);
+}
+
+void DcTestRunJob::CaptureExtras(Player* tank)
+{
+    PlayerbotAI* tankAI = tank ? GET_PLAYERBOT_AI(tank) : nullptr;
+    if (!tankAI)
+        return;
+    std::vector<DcTestExtra> const& live = DcRun::Of(tankAI->GetAiObjectContext()).testExtras;
+    _record.extras.clear();
+    _record.extras.reserve(live.size());
+    for (DcTestExtra const& e : live)
+        _record.extras.push_back({e.key, e.value, e.numeric});
 }
 
 // File a death for every member who went from standing to a corpse since the
@@ -1692,6 +1848,34 @@ void DcTestRunJob::TickMonitoring(uint32 dt)
         AiObjectContext* ctx = tankAI->GetAiObjectContext();
         DcRunState const& rs = DcRun::Of(ctx);
 
+        // Scenario scope + success. The skip fill is re-asserted every tick (see
+        // ApplyScenarioSkips); the predicate is read straight off the instance
+        // and latched by the pure grace clock, whose verdict the kernel folds in.
+        if (_isScenario)
+        {
+            ApplyScenarioSkips(tank, ctx);
+            // No predicate = all-cleared is the only success, as on any row.
+            if (_success.IsSet())
+            {
+                bool const wasHeld = _grace.held;
+                bool holds = wasHeld;  // latched: no need to re-read once met
+                if (!wasHeld)
+                    if (InstanceScript* inst = DcTargeting::GetInstanceScript(tank))
+                        holds = DcTestDungeonRegistry::PredicateHolds(
+                            _success, inst->GetData(_success.dataId));
+                _grace.Step(holds, dt, _totalMs);
+                if (!wasHeld && _grace.held)
+                    LOG_INFO("playerbots.dungeonclear",
+                             "TESTRUN {} scenario success predicate {} holds at {}s — {}s grace "
+                             "for the event's tail",
+                             _record.runId, _record.successPredicate, _totalMs / 1000,
+                             _successGraceMs / 1000);
+                obs.scenarioSuccess = _grace.held;
+                obs.graceExpired = _grace.Expired(_successGraceMs);
+            }
+        }
+        CaptureExtras(tank);
+
         // The disable funnel notifies OnRunDisabled; this catches any path
         // that somehow bypassed it (belt and braces — enabled off without a
         // callback still ends the run).
@@ -1715,7 +1899,9 @@ void DcTestRunJob::TickMonitoring(uint32 dt)
             ctx->GetValue<std::unordered_set<uint32>&>(DcKey::ClearedAnchors)->Get().size();
 
         bool progressed = false;
-        if (uint32 const fresh = mask & ~_lastMask)
+        // A wing-scoped run counts its own wing's bits only: the other wing's
+        // kills (a UBRS pack pulled from the shared hall) are not its progress.
+        if (uint32 const fresh = mask & ~_lastMask & (_wingMask ? _wingMask : ~0u))
         {
             for (uint32 bit = 0; bit < 32; ++bit)
             {
@@ -1736,8 +1922,8 @@ void DcTestRunJob::TickMonitoring(uint32 dt)
                 _record.bossTimeline.push_back(kill);
                 progressed = true;
             }
-            _lastMask = mask;
         }
+        _lastMask = mask;
         if (anchors > _lastAnchors)
         {
             for (std::size_t i = _lastAnchors; i < anchors; ++i)
@@ -1817,13 +2003,12 @@ void DcTestRunJob::TickMonitoring(uint32 dt)
             }
         }
 
-        if (progressed)
-        {
-            _sinceProgressMs = 0;
+        // The event progress sequence (DcRunState::eventProgressSeq) is the one
+        // signal the harness cannot derive itself: a long scripted event (chess)
+        // bumps it on its own headway, and a change counts like a kill.
+        if (_progressClock.Step(dt, progressed, rs.eventProgressSeq))
             _frozenDumpLogged = false;
-        }
-        else
-            _sinceProgressMs += dt;
+        _sinceProgressMs = _progressClock.sinceMs;
 
         // THE FREEZE DUMP. Fired once, halfway into the no-progress window, on a
         // run that is going to fail its watchdog unless something changes — and
@@ -1927,6 +2112,16 @@ void DcTestRunJob::TickMonitoring(uint32 dt)
     if (!DcTestRun::IsTerminal(verdict))
         return;
 
+    if (DcTestRun::IsSuccess(verdict))
+    {
+        _record.successBy = DcTestRun::SuccessBy(obs, verdict);
+        _record.tailPending = _record.successBy != "allCleared";
+        if (_isScenario)
+            LOG_INFO("playerbots.dungeonclear", "TESTRUN {} scenario success by {}{}",
+                     _record.runId, _record.successBy,
+                     _record.tailPending ? " (event tail still pending)" : "");
+    }
+
     std::string failReason;
     switch (verdict)
     {
@@ -2006,6 +2201,9 @@ void DcTestRunJob::Finish(DcTestRun::Verdict verdict, std::string const& failRea
 {
     _record.result = DcTestRun::VerdictName(verdict);
     _record.failReason = failReason;
+    // Last look at the event's extras: an event that published its final
+    // counters in the tick the run ended has not been sampled yet.
+    CaptureExtras(FindTank());
 
     // Wipe post-mortem. Also filled for a death bailout — the run ends as
     // "disabled" with a corpse in the party, and "what killed us" is the same

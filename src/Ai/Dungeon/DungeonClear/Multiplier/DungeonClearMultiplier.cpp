@@ -16,6 +16,7 @@
 #include "Ai/Dungeon/DungeonClear/DcPullContext.h"
 #include "Ai/Dungeon/DungeonClear/Settings/DcSettings.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcBossStandDown.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcEscapeLeap.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcFlightLeg.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcOculusPlan.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcSmartRest.h"
@@ -63,6 +64,27 @@ static float RazorgorePossessionClamp(Player* bot, std::string const& name)
         return 1.0f;
     return name == "dungeon clear razorgore orb" ? 1.0f : 0.0f;
 }
+}
+
+// KARAZHAN, the chess game: while this bot is held by the game, NOTHING but the
+// chess rung is worth doing — the Razorgore-possession shape, for the whole raid.
+//
+// The rung owns the tick at KzChess (64.25), but stock actions reach higher than
+// that — ACTION_EMERGENCY at 90, `drop target` at 99 — and a controller has lost
+// Game In Session, so its own rotation, a heal, a potion or a pet command could
+// all land on a piece. That is cheating and it breaks the game (H1, H5). So every
+// other action is zeroed on every bot the rung holds; the one carve-out is the
+// `dc ...` chat commands, so a human can still pause or stop the run.
+//
+// Free everywhere else, and cheap here: the map compare, then one stamp the rung
+// leaves on the bot's own run state (DcKarazhan::ChessHoldsTheBot).
+static float KaraChessClamp(Player* bot, PlayerbotAI* botAI, std::string const& name)
+{
+    if (bot->GetMapId() != DcKarazhan::MAP || !DcKarazhan::ChessHoldsTheBot(bot, botAI))
+        return 1.0f;
+    if (name == "dungeon clear kz chess" || name.rfind("dc ", 0) == 0)
+        return 1.0f;
+    return 0.0f;
 }
 
 // HALLS OF REFLECTION, the escape: BACKWARDS IS FATAL, so nothing may move
@@ -185,6 +207,9 @@ float DungeonClearMultiplier::GetValue(Action* action)
     if (float const clamp = RazorgorePossessionClamp(bot, name); clamp != 1.0f)
         return clamp;
 
+    if (float const clamp = KaraChessClamp(bot, botAI, name); clamp != 1.0f)
+        return clamp;
+
     // Halls of Reflection's escape: no backwards movement, ever. See
     // HorEscapeBackwardsBanned above.
     if (HorEscapeBackwardsBanned(bot, name))
@@ -245,6 +270,12 @@ float DungeonClearMultiplier::GetValue(Action* action)
         AI_VALUE(Player*, DcKey::PartyTank))
         return 0.0f;
 
+    // Blink / Disengage leap a fixed distance straight away from the bot's target
+    // and land it in whatever pack is behind — see DcEscapeLeap. Every member of an
+    // active run, same cross-bot gate as above.
+    if (DcEscapeLeap::IsBanned(name) && AI_VALUE(Player*, DcKey::PartyTank))
+        return 0.0f;
+
     // Wander-style autonomous navigation (grind / rpg / travel). This is what
     // drives the bot around the world on its own.
     bool const isWander =
@@ -281,6 +312,23 @@ float DungeonClearMultiplier::GetValue(Action* action)
         Position camp;
         bool passive = false;
         if (DcLeaderSignal::GetLeaderCampHold(bot, camp, passive))
+            return 0.0f;
+    }
+
+    // Stock group-target pickers while the camp hold is PASSIVE (the tank is
+    // tagging or dragging). "dps assist" / "tank assist" sit at relevance 50 in the
+    // non-combat engine — above hold-at-camp (28), where +passive does not apply —
+    // so they target the tank's attacker and flip the follower onto the combat
+    // engine before the hold can pin it. On a planned pull the +passive already on
+    // the combat engine caught that; on a scout aggro nothing did, and the casters
+    // opened on the pack at its spawn (tr-20260923-171623-1). The off-tank's
+    // "tank assist" is the same picker and ran it 27yd off camp. Only while
+    // passive: between pulls and at Engage the party must still defend itself.
+    if (name == "dps assist" || name == "tank assist")
+    {
+        Position camp;
+        bool passive = false;
+        if (DcLeaderSignal::GetLeaderCampHold(bot, camp, passive) && passive)
             return 0.0f;
     }
 
@@ -356,6 +404,11 @@ float DungeonClearCombatMultiplier::GetValue(Action* action)
     // The runner is IN COMBAT for most of its window (the adds are on it), so the
     // combat engine is where this actually has to bite.
     if (float const clamp = RazorgorePossessionClamp(bot, name); clamp != 1.0f)
+        return clamp;
+
+    // The chess clamp, for the same reason and in the same place: a controller is
+    // combat-flagged by its piece's fight half the time.
+    if (float const clamp = KaraChessClamp(bot, botAI, name); clamp != 1.0f)
         return clamp;
 
     // Halls of Reflection's escape: no backwards movement, ever. ABOVE the

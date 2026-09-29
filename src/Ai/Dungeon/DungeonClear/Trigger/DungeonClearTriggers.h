@@ -656,6 +656,17 @@ public:
     bool IsActive() override;
 };
 
+// KARAZHAN ONLY: active for a bot in the Gamesman's Hall while chess is the raid's
+// business — a game on the board, or the run's conductor armed and ticking. Free on
+// every other map — the first test is an integer compare on the map id. See
+// DcKarazhan::ChessRungLive.
+class DungeonClearKzChessTrigger : public Trigger
+{
+public:
+    DungeonClearKzChessTrigger(PlayerbotAI* botAI) : Trigger(botAI, "dungeon clear kz chess", 1) {}
+    bool IsActive() override;
+};
+
 // BLACKWING LAIR ONLY, and only for ONE member of the raid: the bot the leader's
 // Razorgore driver elected to take the Orb of Domination.
 //

@@ -16,7 +16,6 @@
 #include "Player.h"
 
 #include "Playerbots.h"
-#include "PlayerbotAIConfig.h"
 #include "PlayerbotMgr.h"
 
 #include "Ai/Dungeon/DungeonClear/Settings/DcSettings.h"
@@ -73,6 +72,15 @@ bool DcTestRunManager::Start(Player* gm, std::string const& dungeonToken,
         return fail(StartErr::UnknownDungeon,
                     "'" + std::string(row->token) + "' has no heroic mode (classic dungeons have none)");
 
+    // The instance's own player cap (Karazhan 10, Gruul 25): the core refuses
+    // entry past it, so an oversized run would strand the overflow at the door.
+    uint32 const runSize = size ? size : static_cast<uint32>(DcTestComp::kPartySize);
+    if (uint32 const cap = DcTestDungeonRegistry::MaxPlayers(*row);
+        !DcTestDungeonRegistry::SizeFits(runSize, cap))
+        return fail(StartErr::UnknownDungeon,
+                    "'" + std::string(row->token) + "' admits at most " + std::to_string(cap) +
+                    " players (size=" + std::to_string(runSize) + ")");
+
     if (!gm || !GET_PLAYERBOT_MGR(gm))
         return fail(StartErr::NoMgr, "no playerbot manager on this account");
 
@@ -83,18 +91,9 @@ bool DcTestRunManager::Start(Player* gm, std::string const& dungeonToken,
                     "max concurrent test runs reached (" + std::to_string(maxConcurrent) +
                     ") — .dc test stop <run> first");
 
-    // MaxAddedBots pre-check: the core enforces this silently inside
-    // AddPlayerBot, so without the pre-check a party over the cap surfaces only
-    // as a 60s spawn timeout. Name the knob instead.
-    uint32 const currentBots = GET_PLAYERBOT_MGR(gm)->GetPlayerbotsCount();
-    uint32 const runSize = size ? size : static_cast<uint32>(DcTestComp::kPartySize);
-    if (sPlayerbotAIConfig.maxAddedBots > 0 &&
-        currentBots + runSize > static_cast<uint32>(sPlayerbotAIConfig.maxAddedBots))
-        return fail(StartErr::BotBudget,
-                    "would exceed AiPlayerbot.MaxAddedBots (" +
-                    std::to_string(sPlayerbotAIConfig.maxAddedBots) + "; " +
-                    std::to_string(currentBots) + " bots already added, this run needs " +
-                    std::to_string(runSize) + ") — raise it or stop a run");
+    // No AiPlayerbot.MaxAddedBots check: the harness's own adds are exempt
+    // from it (see DcTestRunJob::Create), so it no longer bounds how many runs
+    // can be in flight.
 
     // Create picks slot guids skipping _reservedGuids (all synchronous on the
     // world thread — no TOCTOU with other runs).
@@ -158,13 +157,18 @@ bool DcTestRunManager::StartRoster(Player* gm, std::string const& dungeonToken,
                     "max concurrent test runs reached (" + std::to_string(maxConcurrent) +
                     ") — .dc test stop <run> first");
 
-    // No MaxAddedBots pre-check here: roster members log in masterless
-    // (AddPlayerBot with masterAccountId 0), and that cap is only applied to bots
-    // added against a master's account.
+    // Roster members log in masterless (AddPlayerBot with masterAccountId 0),
+    // which AiPlayerbot.MaxAddedBots never applied to in the first place.
 
     DcTestRoster::Result const parsed = DcTestRoster::Parse(partySpec);
     if (parsed.kind != DcTestRoster::Kind::Ok)
         return fail(StartErr::BadRoster, parsed.detail);
+
+    if (uint32 const cap = DcTestDungeonRegistry::MaxPlayers(*row);
+        !DcTestDungeonRegistry::SizeFits(parsed.members.size(), cap))
+        return fail(StartErr::BadRoster,
+                    "'" + std::string(row->token) + "' admits at most " + std::to_string(cap) +
+                    " players (the roster names " + std::to_string(parsed.members.size()) + ")");
 
     std::vector<DcTestRunJob::RosterEntry> roster;
     roster.reserve(parsed.members.size());

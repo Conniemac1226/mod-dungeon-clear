@@ -31,6 +31,7 @@
 #include "Ai/Dungeon/DungeonClear/DcRunState.h"
 #include "Ai/Dungeon/DungeonClear/DcValueKeys.h"
 #include "Ai/Dungeon/DungeonClear/Util/ChunkedPathfinder.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcAnchorDone.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcEngageGeometry.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcRun.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcStatusPublisher.h"
@@ -675,11 +676,11 @@ namespace DcDiag
                 done = true;
                 b.doneVia = "mask";
             }
-            else if (info.kind == DungeonAnchorKind::Boss && info.doneBossStateIndex >= 0 && inst &&
-                     inst->GetBossState(static_cast<uint32>(info.doneBossStateIndex)) == DONE)
+            else if (DcAnchorDoneVia const via = DcAnchorDoneByInstance(info, inst);
+                     via != DcAnchorDoneVia::None)
             {
                 done = true;
-                b.doneVia = "bossState";
+                b.doneVia = via == DcAnchorDoneVia::BossState ? "bossState" : "instanceData";
             }
 
             // Same ladder DcBossesAction paints the panel rows with, so the

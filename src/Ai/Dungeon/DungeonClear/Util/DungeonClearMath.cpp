@@ -208,6 +208,26 @@ bool DungeonClearMath::ShouldStandDownForPull(bool packIsPullsOwn, bool pullPhas
     return !pullPhaseIdle;    // in flight: never thrash the maneuver
 }
 
+bool DungeonClearMath::ShouldYieldToEngageWalk(bool walkStamped, bool targetAlive,
+                                               bool botMoving, std::uint32_t stampMs,
+                                               std::uint32_t now, std::uint32_t holdMs)
+{
+    if (!walkStamped || stampMs == 0 || !targetAlive || !botMoving)
+        return false;
+    // Unsigned difference, so a getMSTime() wrap between stamp and read still
+    // measures the true elapsed time.
+    return now - stampMs <= holdMs;
+}
+
+bool DungeonClearMath::ShouldDropTrashSticky(bool haveFresh, bool freshIsSticky,
+                                             bool stickyInCombat, float stickyDist,
+                                             float freshDist, float margin)
+{
+    if (!haveFresh || freshIsSticky || stickyInCombat)
+        return false;
+    return stickyDist > freshDist + margin;
+}
+
 bool DungeonClearMath::ShouldReleaseStandingPull(bool effectiveOn, bool standing,
                                                  bool partyInCombat, bool holdingPhase,
                                                  bool bossPullback)
@@ -218,6 +238,19 @@ bool DungeonClearMath::ShouldReleaseStandingPull(bool effectiveOn, bool standing
         return false;             // pull-back drags run with pull mode off by design
     // Never dismantle a maneuver in flight — nor a camp anyone is still fighting at.
     return !partyInCombat && !holdingPhase;
+}
+
+bool DungeonClearMath::ShouldAdvanceUnclassifiedAggro(bool inCombat, bool phaseIdle,
+                                                      bool modeOn, bool hasVerdict,
+                                                      bool sweepMap, bool bossInFight)
+{
+    if (!inCombat || !phaseIdle)
+        return false;             // not an aggro taken while scouting
+    if (modeOn || hasVerdict)
+        return false;             // the pull owns it / the classifier already chose
+    if (bossInFight)
+        return false;             // the at-boss path owns a boss engagement
+    return sweepMap;              // elsewhere an unplanned aggro is a lone patrol
 }
 
 bool DungeonClearMath::ShouldDropPullVerdict(bool targetPresent, std::uint32_t lostSince,
@@ -551,6 +584,68 @@ bool DungeonClearMath::PathCursorIsJoinable(std::vector<G3D::Vector3> const& rou
     // 3D, for the same reason PathProgressCursor is: a vertex a storey overhead
     // is not one this bot can be joined to, however near it looks in plan view.
     return dx * dx + dy * dy + dz * dz <= maxGap * maxGap;
+}
+
+float DungeonClearMath::DoorTravelRemaining(std::vector<G3D::Vector3> const& route,
+                                            float botX, float botY, float botZ,
+                                            float doorX, float doorY, float doorZ,
+                                            float band, float zBand,
+                                            float maxLookAhead, float behindSlack)
+{
+    if (route.empty())
+        return std::numeric_limits<float>::max();
+
+    // Pass 1: the bot's progress cursor over the WHOLE route. Picking it inside
+    // the band scan (as this used to) only ever considered vertices before the
+    // door, so the cursor could never read as past it and the behind-the-bot
+    // rule below never fired: a door already walked through read "0yd, at door".
+    std::size_t const cursor = PathProgressCursor(route, botX, botY, botZ);
+    float const joinGap = std::sqrt(
+        (route[cursor].x - botX) * (route[cursor].x - botX) +
+        (route[cursor].y - botY) * (route[cursor].y - botY) +
+        (route[cursor].z - botZ) * (route[cursor].z - botZ));
+
+    float cursorAccum = 0.0f;
+    for (std::size_t i = 1; i <= cursor; ++i)
+    {
+        float const dx = route[i].x - route[i - 1].x;
+        float const dy = route[i].y - route[i - 1].y;
+        cursorAccum += std::sqrt(dx * dx + dy * dy);
+    }
+
+    // Pass 2: the first leg that enters the door's band, from the route start.
+    float const bandSq = band * band;
+    float accumulated = 0.0f;
+    for (std::size_t i = 1; i < route.size(); ++i)
+    {
+        G3D::Vector3 const& a = route[i - 1];
+        G3D::Vector3 const& b = route[i];
+        // Only a leg on the door's floor can enter its band — a route passing
+        // over or under the door (a stacked deck, a ramp) otherwise registers a
+        // band entry far before the real doorway.
+        bool const onFloor = doorZ >= std::min(a.z, b.z) - zBand &&
+                             doorZ <= std::max(a.z, b.z) + zBand;
+        if (onFloor && DistSqToSegment2D(doorX, doorY, a.x, a.y, b.x, b.y) <= bandSq)
+        {
+            // A band entry well BEHIND the cursor is a door on the already-walked
+            // stretch, not a blocker ahead. The slack covers parking inside the
+            // hitting leg itself (the cursor legitimately runs a few yards past
+            // the entry while standing at the doorway).
+            if (accumulated + behindSlack < cursorAccum)
+                return std::numeric_limits<float>::max();
+            return joinGap + std::max(0.0f, accumulated - cursorAccum);
+        }
+
+        float const dx = b.x - a.x;
+        float const dy = b.y - a.y;
+        accumulated += std::sqrt(dx * dx + dy * dy);
+        // Look-ahead is measured from the bot's progress, not the route start:
+        // the cached route was built wherever Advance last rebuilt, often far
+        // behind the tank.
+        if (accumulated - cursorAccum >= maxLookAhead)
+            break;
+    }
+    return std::numeric_limits<float>::max();
 }
 
 std::size_t DungeonClearMath::FindTrailRejoin(std::vector<Position> const& crumbs,

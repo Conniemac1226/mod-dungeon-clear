@@ -52,6 +52,19 @@ namespace DcMovement
         ZeroLastMovementWait(bot);
     }
 
+    void ReleaseMoveLock(Player* bot)
+    {
+        if (!bot)
+            return;
+        if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
+            if (AiObjectContext* ctx = botAI->GetAiObjectContext())
+            {
+                LastMovement& last = ctx->GetValue<LastMovement&>(DcKey::Stock::LastMovement)->Get();
+                last.lastdelayTime = 0.0f;
+                last.msTime        = 0;
+            }
+    }
+
     void ResolveEscortConflict(Player* bot)
     {
         if (!bot)

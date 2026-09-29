@@ -5,6 +5,9 @@
 
 #include "Ai/Dungeon/DungeonClear/Data/Events/DungeonEventTables.h"
 #include "Ai/Dungeon/DungeonClear/Data/Events/DungeonRosterBuilders.h"
+#include "Ai/Dungeon/DungeonClear/Data/DungeonWingRegistry.h"
+
+#include <unordered_map>
 
 // --- Blackrock Depths (map 230) — the RING OF LAW, ANCHORED + PERSISTENT ---
 // A sealed arena gauntlet that gates the way between Houndmaster Grebmar and
@@ -219,6 +222,79 @@ void RegisterBlackrockDepthsRoster(std::vector<BossRosterPatch>& t)
                           615.61f, -49.78f, -59.82f, /*arriveRadius*/ 8.0f,
                           /*gateEntry*/ 0, /*hook*/ 0, /*eventId*/ 2),
         };
+        // --- Blackrock Depths — Stilgiss and Darkvire before Incendius ---
+        // DBC order runs Loregrain -> Incendius (bit 5) -> Stilgiss (6) ->
+        // Darkvire (7); the clear path takes Stilgiss and Darkvire first, then
+        // Incendius, then Bael'Gar. Rotate the three onto the same slots (5-7)
+        // so Loregrain (4) and Bael'Gar (8) keep theirs; the kill bits are
+        // untouched.
+        p.reorder = {
+            { 9041, 5 },   // Warder Stilgiss
+            { 9056, 6 },   // Fineous Darkvire
+            { 9017, 7 },   // Lord Incendius
+        };
         t.push_back(std::move(p));
     }
+}
+
+// --- wing layout ---------------------------------------------------------
+void RegisterBlackrockDepthsWings(std::unordered_map<uint32, DungeonWingLayout>& store)
+{
+    // --- Blackrock Depths (map 230) ------------------------------
+    // Two dungeons on one map, as the 3.3 dungeon finder lists them: the
+    // Detention Block (LFG 30 "Prison", High Interrogator Gerstahn -> Bael'Gar)
+    // and the Upper City (LFG 276, General Angerforge -> Emperor Dagran
+    // Thaurissan) — everything the Shadowforge Key opens. Both queue into the
+    // SAME entrance, and from it the nearest bosses are the Upper City's (the
+    // Shadowforge Lock 179yd, Angerforge 195yd; Gerstahn, the Detention Block's
+    // first, is 232yd). Nearest-boss detection would put a Detention Block party
+    // on the Upper City list at the door, so the wing is chosen per RUN
+    // (WingSelect::Explicit, see DcRunWing), defaulting to the Detention Block.
+    // There are no wing regions to fall back on: the Upper City's Phalanx and
+    // Grim Guzzler sit 50yd from the Detention Block's Incendius, so no box split
+    // holds — `dc on <wing>`, `dc wing` or a panel Go on the other wing's boss
+    // picks it.
+    //
+    // Encounter bits from DungeonEncounter.dbc (map 230, bits 0-18, in path
+    // order). The dungeon finder credits Gerstahn (bit 0) as the Prison's last
+    // encounter; the wing here ends at Bael'Gar instead, the last boss before
+    // the Shadowforge Lock.
+    //   Detention Block bits 0-8: Gerstahn, Roccor, Grebmar, Ring of Law
+    //     (credit Grimstone 10096, summoned — the OBJ(1) anchor stands in),
+    //     Loregrain, Incendius, Stilgiss, Darkvire, Bael'Gar (cleared in the
+    //     roster patch's order: Stilgiss and Darkvire before Incendius)
+    //   Upper City bits 9-18: Angerforge, Argelmach, Hurley, Phalanx, Ribbly,
+    //     Plugger, Flamelash, The Seven (credit Anger'rel), Magmus, Thaurissan
+    // The Shadowforge Lock objective (OBJ(2), event 2) opens the Upper City: it
+    // shares Angerforge's ordering index 9 and the objective-before-boss
+    // tie-break takes it first, so an Upper City run walks to the lever, then
+    // to Angerforge.
+    using DcRoster::OBJ;
+    store[230] = {true, {
+        {"Blackrock Depths (Detention Block)", {
+            9018,    // High Interrogator Gerstahn
+            9025,    // Lord Roccor
+            9319,    // Houndmaster Grebmar
+            10096,   // High Justice Grimstone (Ring of Law credit, summoned)
+            OBJ(1),  // Ring of Law arena objective (event 1)
+            9024,    // Pyromancer Loregrain
+            9017,    // Lord Incendius
+            9041,    // Warder Stilgiss
+            9056,    // Fineous Darkvire
+            9016,    // Bael'Gar
+        }, "brd-db", /*lfgDungeonId*/ 30, /*terminalBossEntry*/ 9016, /*encounterMask*/ 0x001FFu},
+        {"Blackrock Depths (Upper City)", {
+            OBJ(2),  // The Shadowforge Lock (event 2)
+            9033,    // General Angerforge
+            8983,    // Golem Lord Argelmach
+            9537,    // Hurley Blackbreath
+            9502,    // Phalanx
+            9543,    // Ribbly Screwspigot
+            9499,    // Plugger Spazzring
+            9156,    // Ambassador Flamelash
+            9035,    // Anger'rel (The Seven)
+            9938,    // Magmus
+            9019,    // Emperor Dagran Thaurissan
+        }, "brd-uc", /*lfgDungeonId*/ 276, /*terminalBossEntry*/ 9019, /*encounterMask*/ 0x7FE00u},
+    }, WingSelect::Explicit, /*defaultWing*/ "brd-db"};
 }

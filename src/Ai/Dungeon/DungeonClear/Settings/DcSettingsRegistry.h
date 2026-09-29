@@ -366,10 +366,10 @@ inline constexpr DcSettingDef kDcSettings[] =
     // stops holding and pulls the boss anyway, noting it in chat. The clock only
     // runs WHILE the tank is at the boss and actively clearing (it's re-armed
     // during the walk-in), so this measures a true stall — an unreachable
-    // straggler or respawn churn — not the time to clear. It must therefore
-    // tolerate a slow pack plus a between-pulls drink/rest, hence the generous
-    // default. 0 = never give up. Max 600s. (Old 30s default tripped before the
-    // tank even reached the room.)
+    // straggler or respawn churn — not the time to clear. It is also PAUSED while
+    // the party fights, rests, loots or regroups between pulls, so only ready
+    // time counts (DungeonClearMath::RoomClearGiveUpDue). 0 = never give up.
+    // Max 600s. (Old 30s default tripped before the tank even reached the room.)
     { "ClearRoomBeforeBoss",   DcType::Bool,   1,   0,    1,  true  },
     { "RoomClearTimeout",      DcType::UInt, 180,   0,  600,  true  },
     // Extra yards added to a room-aggro boss's avoid-sphere when the tank routes
@@ -810,8 +810,8 @@ inline constexpr DcSettingDef kDcSettings[] =
     // MaxConcurrent / MaxPlans / Plan.MaxTotal all take 0 = unlimited, hence the
     // 0 floor — and all three DEFAULT to 0. The harness deliberately imposes no
     // ceiling of its own: how many runs the box can field is a property of the
-    // box (AiPlayerbot.MaxAddedBots, the addclass pool, CPU), and those limits
-    // already refuse an over-budget start with a named message. A second,
+    // box (the addclass pool, CPU), and the pool already refuses an
+    // over-budget start with a named message. A second,
     // harness-local cap only ever refused starts the machine could have served.
     { "TestRun.MaxConcurrent",   DcType::UInt,      0,  0, 100000, false },
     { "TestRun.MaxPlans",        DcType::UInt,      0,  0, 100000, false },
@@ -822,6 +822,11 @@ inline constexpr DcSettingDef kDcSettings[] =
     { "TestRun.Plan.MaxTotal",   DcType::UInt,      0,  0, 100000, false },
     { "TestRun.Plan.BackoffMs",  DcType::UInt,   5000,  0, 600000, false },
     { "TestRun.Plan.DriverWaitMs", DcType::UInt, 120000, 0, 600000, false },
+    // Endless (pool=, total=0) plans: minutes between checkpoint summary lines
+    // (0 = none), and how long before the global instance reset heroic / raid
+    // pool entries stop launching (0 = no guard).
+    { "TestRun.Plan.CheckpointMin", DcType::UInt,  15,  0,   1440, false },
+    { "TestRun.Plan.ResetGuardMin", DcType::UInt,  45,  0,    720, false },
 
     // RDF instant queue fill (DungeonClear.DungeonQueueFill.*). Server policy,
     // not a per-run tunable: a player cannot ask for it from the addon, so
@@ -829,7 +834,7 @@ inline constexpr DcSettingDef kDcSettings[] =
     // manager, so it goes through DcSettings for the same anti-spam reason the
     // TestRun rows do.
     //
-    // The DungeonClear.BgQueueFill.* prefix is RESERVED for the battleground
+    // The DungeonClear.BgQueueFill.* rows below are the battleground
     // counterpart — a separate feature with a separate switch, because an
     // operator must be able to run dungeon fill without battleground fill.
     // Nothing is ever named plain QueueFill.
@@ -843,6 +848,23 @@ inline constexpr DcSettingDef kDcSettings[] =
     { "DungeonQueueFill.GearQuality",     DcType::UInt,   0,  0,      7, false },
     { "DungeonQueueFill.AutoClear",       DcType::Bool,   0,  0,      1, false },
     { "DungeonQueueFill.LogoutOnRelease", DcType::Bool,   1,  0,      1, false },
+
+    // Battleground instant queue fill (DungeonClear.BgQueueFill.*). Same
+    // server-policy / read-every-tick shape as the dungeon fill above, and a
+    // separate switch so either can run without the other.
+    { "BgQueueFill.Enable",          DcType::Bool,   0,  0,      1, false },
+    // Bounds the fills SETTING UP; a fill whose player is in the match does
+    // not count — see the conf.dist.
+    { "BgQueueFill.MaxConcurrent",   DcType::UInt,   2,  0,    100, false },
+    // 0 = auto: one healer per five seats of the battleground's maximum.
+    { "BgQueueFill.HealersPerSide",  DcType::UInt,   0,  0,     40, false },
+    { "BgQueueFill.LevelSpread",     DcType::UInt,   2,  0,     10, false },
+    { "BgQueueFill.MinPlayerLevel",  DcType::UInt,  10,  1,     80, false },
+    { "BgQueueFill.SetupTimeoutSec", DcType::UInt,  90, 10,    600, false },
+    { "BgQueueFill.MatchTimeoutSec", DcType::UInt, 180, 10,   1800, false },
+    { "BgQueueFill.GearIlvl",        DcType::UInt,   0,  0, 100000, false },
+    { "BgQueueFill.GearQuality",     DcType::UInt,   0,  0,      7, false },
+    { "BgQueueFill.LogoutOnRelease", DcType::Bool,   1,  0,      1, false },
 
     // Server-only (not overridable from the addon).
     { "AsyncPathfinding",      DcType::Bool,   1,   0,   1,  false },

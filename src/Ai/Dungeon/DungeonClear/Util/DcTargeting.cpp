@@ -30,6 +30,7 @@
 #include "CellImpl.h"
 #include "CombatManager.h"
 #include "Creature.h"
+#include "TemporarySummon.h"
 #include "CreatureGroups.h"
 #include "GameObject.h"
 #include "GridNotifiers.h"
@@ -237,6 +238,11 @@ namespace
             // this scan falls back to the stock `possible targets` value when
             // FarTargets is empty, so the check is repeated here.
             if (DcNeverTargetRegistry::IsNeverTarget(bot->GetMapId(), u->GetEntry()))
+                continue;
+            // Nor is an add a live boss summoned for his own encounter (Moroes'
+            // dinner guests on the dais): it comes with the boss, and pulling it
+            // pulls him (tr-20260926-174359-2 picked Baron Rafe Dreuger).
+            if (DcTargeting::IsBossSummon(u))
                 continue;
             // Nor is a creature the run is currently BARRED from engaging. The
             // exclusion registry reached the stock combat engine's target pickers
@@ -636,7 +642,8 @@ Unit* DcTargeting::FindEnRouteAggroPack(Player* bot, AiObjectContext* ctx,
                                          return true;
                                      if (DcNeverTargetRegistry::IsNeverTarget(mapId, u->GetEntry()))
                                          return true;
-                                     if (IsDungeonBossEntry(ctx, u->GetEntry()))
+                                     if (IsDungeonBossEntry(ctx, u->GetEntry()) ||
+                                         IsBossSummon(u))
                                          return true;
                                      return RoomAggroRegistry::Find(mapId, u->GetEntry()) != nullptr;
                                  }),
@@ -800,10 +807,10 @@ Unit* DcTargeting::FindPullTarget(PlayerbotAI* botAI, DungeonBossInfo const& nex
     // collection). Deliberately NOT applied to the FindBlockingTrash* scans:
     // in plain mode, walking in on a boss in the corridor band degenerates to
     // a normal engage, which is acceptable — only the camp-drag is wrong.
-    if (IsDungeonBossEntry(context, trash->GetEntry()))
+    if (IsDungeonBossEntry(context, trash->GetEntry()) || IsBossSummon(trash))
     {
-        DC_PULL_DEBUG("[DC:{}] pull target vetoed — {} ({}) is a dungeon boss, "
-                      "at-boss path owns it",
+        DC_PULL_DEBUG("[DC:{}] pull target vetoed — {} ({}) is a dungeon boss or "
+                      "his summoned add, at-boss path owns it",
                       bot->GetName(), trash->GetName(), trash->GetGUID().ToString());
         return nullptr;
     }
@@ -834,6 +841,19 @@ bool DcTargeting::IsDungeonBossEntry(AiObjectContext* ctx, uint32 entry)
         if (boss.entry == entry)
             return true;
     return false;
+}
+bool DcTargeting::IsBossSummon(Unit const* u)
+{
+    Creature const* c = u ? u->ToCreature() : nullptr;
+    if (!c || !c->IsSummon())
+        return false;
+    Unit* const summoner = c->ToTempSummon()->GetSummonerUnit();
+    Creature const* boss = summoner ? summoner->ToCreature() : nullptr;
+    if (!boss || !boss->IsAlive())
+        return false;
+    CreatureTemplate const* info = boss->GetCreatureTemplate();
+    return boss->IsDungeonBoss() || boss->isWorldBoss() ||
+           (info && info->rank == CREATURE_ELITE_WORLDBOSS);
 }
 Unit* DcTargeting::GetPullTarget(PlayerbotAI* botAI)
 {
@@ -878,7 +898,7 @@ bool DcTargeting::IsStickyPullTargetValid(Player* bot, AiObjectContext* ctx, Uni
     // Mirror the fresh scan's boss veto. The governor can only latch what the
     // scan returned, so a boss should never be sticky — but the invariant
     // (a boss is NEVER a pull target) is cheap to keep airtight locally.
-    if (IsDungeonBossEntry(ctx, u->GetEntry()))
+    if (IsDungeonBossEntry(ctx, u->GetEntry()) || IsBossSummon(u))
         return false;
 
     // A pack a prior pull gave up on is handed to the normal walk-in engage;
@@ -887,6 +907,11 @@ bool DcTargeting::IsStickyPullTargetValid(Player* bot, AiObjectContext* ctx, Uni
     DcPullContext const& pull =
         ctx->GetValue<DcPullContext&>(DcKey::PullContext)->Get();
     if (!pull.abortTarget.IsEmpty() && u->GetGUID() == pull.abortTarget)
+        return false;
+
+    // Same for a room-trash pack with no clean lane while a cleaner one is left:
+    // it is pulled last (see NearestRoomTrash), so the latch must let go of it.
+    if (IsRoomLaneRefused(bot, ctx, u->GetGUID()) && HasUnrefusedRoomTrash(bot, ctx, u))
         return false;
 
     if (bot->GetExactDist2d(u) > kPullLookAhead + kPullStickySlack)
@@ -980,7 +1005,8 @@ void DcTargeting::CollectCombatHolders(Unit* member, std::vector<Unit*>& out)
     collect(member->GetVictim());
 }
 
-Unit* DcTargeting::LeaderFightAnchor(Player* bot, Player* leader, Position& anchorPos)
+Unit* DcTargeting::LeaderFightAnchor(Player* bot, AiObjectContext* ctx, Player* leader,
+                                     Position& anchorPos)
 {
     if (!bot || !leader)
         return nullptr;
@@ -1002,11 +1028,16 @@ Unit* DcTargeting::LeaderFightAnchor(Player* bot, Player* leader, Position& anch
         if (!bot->IsValidAttackTarget(a))
             continue;
         float const d = bot->GetExactDist2d(a);
-        if (!target || d < bestDist)
-        {
-            target = a;
-            bestDist = d;
-        }
+        if (target && d >= bestDist)
+            continue;
+        // Cheapest last: only a candidate that would win the rank pays for the
+        // level probe (same-level answers without touching Detour).
+        if (!DungeonClearMath::IsRegroupAnchorCandidate(
+                bot->GetExactDist(a), DC_ENGAGEMENT_RADIUS,
+                DcTickMemoAccess::LevelReachable(bot, ctx, a)))
+            continue;
+        target = a;
+        bestDist = d;
     }
 
     anchorPos = target ? target->GetPosition() : leader->GetPosition();
@@ -1285,29 +1316,125 @@ float DcTargeting::ActiveRoomSkirt(Player* bot, AiObjectContext* ctx)
 
     return IsRoomClearActive(bot, ctx) ? skirt : 0.0f;
 }
+RoomAggroBoss const* DcTargeting::ActiveRoomCampBox(Player* bot, AiObjectContext* ctx)
+{
+    if (!bot || !ctx)
+        return nullptr;
+
+    // Same cheap-gates-first order as ActiveRoomSkirt.
+    std::optional<DungeonBossInfo> next =
+        ctx->GetValue<std::optional<DungeonBossInfo>>(DcKey::NextDungeonBoss)->Get();
+    if (!next.has_value())
+        return nullptr;
+    RoomAggroBoss const* room = RoomAggroRegistry::Find(bot->GetMapId(), next->entry);
+    if (!room || !room->hasCampBox)
+        return nullptr;
+
+    return IsRoomClearActive(bot, ctx) ? room : nullptr;
+}
+namespace
+{
+    // The live units of "dungeon clear room trash remaining", in list order.
+    std::vector<Unit*> LiveRoomTrash(Player* bot, AiObjectContext* ctx)
+    {
+        std::vector<Unit*> live;
+        for (ObjectGuid const guid :
+             ctx->GetValue<GuidVector>(DcKey::RoomTrashRemaining)->Get())
+        {
+            Unit* u = ObjectAccessor::GetUnit(*bot, guid);
+            if (u && u->IsAlive())
+                live.push_back(u);
+        }
+        return live;
+    }
+
+    // The refusal list was measured against the room as it stood; drop it once a
+    // kill has changed that room (DungeonClearMath::ShouldDropLaneRefusals).
+    DcPullContext& PrunedLaneRefusals(AiObjectContext* ctx, std::size_t liveNow)
+    {
+        DcPullContext& pull = ctx->GetValue<DcPullContext&>(DcKey::PullContext)->Get();
+        if (!pull.laneRefused.empty() &&
+            DungeonClearMath::ShouldDropLaneRefusals(static_cast<uint32>(liveNow),
+                                                     pull.laneRefusedLive))
+        {
+            pull.laneRefused.clear();
+            pull.laneRefusedLive = 0;
+        }
+        return pull;
+    }
+
+    bool InLaneRefused(DcPullContext const& pull, ObjectGuid guid)
+    {
+        return std::find(pull.laneRefused.begin(), pull.laneRefused.end(), guid) !=
+               pull.laneRefused.end();
+    }
+}
+
 Unit* DcTargeting::NearestRoomTrash(Player* bot, AiObjectContext* ctx)
 {
     if (!bot || !ctx)
         return nullptr;
 
-    GuidVector const& remaining =
-        ctx->GetValue<GuidVector>(DcKey::RoomTrashRemaining)->Get();
+    std::vector<Unit*> const live = LiveRoomTrash(bot, ctx);
+    DcPullContext const& pull = PrunedLaneRefusals(ctx, live.size());
 
-    Unit* best = nullptr;
-    float bestDist = std::numeric_limits<float>::max();
-    for (ObjectGuid const guid : remaining)
+    std::vector<float> dist;
+    std::vector<bool> refused;
+    dist.reserve(live.size());
+    refused.reserve(live.size());
+    for (Unit* u : live)
     {
-        Unit* u = ObjectAccessor::GetUnit(*bot, guid);
-        if (!u || !u->IsAlive())
-            continue;
-        float const d = bot->GetExactDist2d(u);
-        if (d < bestDist)
-        {
-            best = u;
-            bestDist = d;
-        }
+        dist.push_back(bot->GetExactDist2d(u));
+        refused.push_back(InLaneRefused(pull, u->GetGUID()));
     }
-    return best;
+    int const idx = DungeonClearMath::PickRoomTrashIndex(dist, refused);
+    return idx >= 0 ? live[static_cast<std::size_t>(idx)] : nullptr;
+}
+
+void DcTargeting::RefuseRoomLane(Player* bot, AiObjectContext* ctx, Unit* trash,
+                                 float packRadius)
+{
+    if (!bot || !ctx || !trash)
+        return;
+
+    std::vector<Unit*> const live = LiveRoomTrash(bot, ctx);
+    DcPullContext& pull = PrunedLaneRefusals(ctx, live.size());
+    auto refuse = [&](Unit* u)
+    {
+        if (!InLaneRefused(pull, u->GetGUID()))
+            pull.laneRefused.push_back(u->GetGUID());
+    };
+    refuse(trash);
+    for (Unit* u : live)
+        if (u->GetExactDist2d(trash) <= packRadius &&
+            std::fabs(u->GetPositionZ() - trash->GetPositionZ()) <= DC_Z_LEVEL_TOLERANCE)
+            refuse(u);
+    pull.laneRefusedLive = static_cast<uint32>(live.size());
+}
+
+bool DcTargeting::HasUnrefusedRoomTrash(Player* bot, AiObjectContext* ctx, Unit* except)
+{
+    if (!bot || !ctx)
+        return false;
+
+    std::vector<Unit*> const live = LiveRoomTrash(bot, ctx);
+    DcPullContext const& pull = PrunedLaneRefusals(ctx, live.size());
+    for (Unit* u : live)
+        if (u != except && !InLaneRefused(pull, u->GetGUID()))
+            return true;
+    return false;
+}
+
+bool DcTargeting::IsRoomLaneRefused(Player* bot, AiObjectContext* ctx, ObjectGuid guid)
+{
+    if (!bot || !ctx)
+        return false;
+
+    // Cheap common case first: nothing refused, no list walk.
+    if (ctx->GetValue<DcPullContext&>(DcKey::PullContext)->Get().laneRefused.empty())
+        return false;
+    DcPullContext const& pull = PrunedLaneRefusals(ctx, LiveRoomTrash(bot, ctx).size());
+    return InLaneRefused(pull, guid);
 }
 
 Unit* DcTargeting::NearestHostileNearPoint(Player* bot, AiObjectContext* ctx,
@@ -1353,7 +1480,7 @@ Unit* DcTargeting::NearestHostileNearPoint(Player* bot, AiObjectContext* ctx,
             continue;
         // Never treat an encounter boss or a room-aggro boss/partner as clearable
         // area trash — those belong to the dedicated boss/at-boss paths.
-        if (IsDungeonBossEntry(ctx, u->GetEntry()))
+        if (IsDungeonBossEntry(ctx, u->GetEntry()) || IsBossSummon(u))
             continue;
         if (RoomAggroRegistry::Find(bot->GetMapId(), u->GetEntry()))
             continue;

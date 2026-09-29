@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 #include "G3D/Vector3.h"
@@ -75,39 +76,41 @@ namespace DungeonClearMath
         return StandoffCandidates(target, bot, standoffRadius, ringPoints);
     }
 
-    // The heal-reposition FALLBACK point: where to stand when no ring candidate
-    // validated and the honest answer is "walk at them and let pathing round the
-    // corner". A point on the bot->target line, `minGap` short of the target, or
-    // the target itself when already inside that gap.
+    // The point `stopShort` yards before the END of a route polyline, measured
+    // ALONG the route — the close-on-a-unit fallback for the heal reposition and
+    // the combat regroup ("walk at them and let the corner give you sight").
     //
-    // ALL THREE COORDINATES INTERPOLATE. The z used to be left at the target's,
-    // which names a point that exists nowhere: the target's floor above the bot's
-    // own x/y. Within one storey that is slop the caller's ground-snap absorbs;
-    // across two it is a destination through a ceiling, which is the Blackwing
-    // Lair clip (tp-20260828-171530-1). Keeping the point ON the line is both the
-    // thing the fallback means and what holds the residual error inside the snap's
-    // correction window on ramps and stairs.
+    // It used to be a point on the straight bot->target line, and a straight line
+    // is not a walk. Across a wall that point is inside the wall or on its far
+    // side: Karazhan's Maiden hairpin, where the two legs of the corridor sit a few
+    // yards apart through a wall with no navmesh in it, had healers and DPS
+    // walking into that wall toward a groupmate on the other leg and dropping to
+    // the Servants' Quarters below (tr-20260927-184653-9, -190943-12). A point on
+    // the route is on the mesh by construction, and walking to it rounds the
+    // hairpin the way a player would.
     //
-    // Deliberately does NOT reject a cross-level target. That is not this
-    // function's call: it returns the honest point on the line, which for a
-    // target a storey up is itself a storey up, and the movement layer's retry
-    // gate (MayRetryExactWaypoint plus the reachability probe behind it) is what
-    // declines to force it.
-    inline Position HealCloseFallbackPoint(Position const& bot, Position const& target,
-                                           float minGap)
+    // A route no longer than `stopShort` returns its first point (already close
+    // enough — nothing to walk); an empty route returns the origin.
+    inline G3D::Vector3 PointShortOfPathEnd(std::vector<G3D::Vector3> const& path,
+                                            float stopShort)
     {
-        float const dx = target.GetPositionX() - bot.GetPositionX();
-        float const dy = target.GetPositionY() - bot.GetPositionY();
-        float const dist2d = std::sqrt(dx * dx + dy * dy);
-        if (!(dist2d > minGap))
-            return target;
-
-        float const frac = (dist2d - minGap) / dist2d;
-        return Position(bot.GetPositionX() + dx * frac,
-                        bot.GetPositionY() + dy * frac,
-                        bot.GetPositionZ() +
-                            (target.GetPositionZ() - bot.GetPositionZ()) * frac,
-                        target.GetOrientation());
+        if (path.empty())
+            return G3D::Vector3(0.0f, 0.0f, 0.0f);
+        float remaining = std::max(0.0f, stopShort);
+        for (std::size_t i = path.size() - 1; i > 0; --i)
+        {
+            G3D::Vector3 const& a = path[i - 1];
+            G3D::Vector3 const& b = path[i];
+            float const seg = (b - a).length();
+            if (seg >= remaining)
+            {
+                if (seg <= 0.0f)
+                    return b;
+                return b + (a - b) * (remaining / seg);
+            }
+            remaining -= seg;
+        }
+        return path.front();
     }
 
     // May DcMoveTo override a refused move by re-issuing it as an exact waypoint?
@@ -131,8 +134,7 @@ namespace DungeonClearMath
     // lines at the call site: leaving it at the anchor's height describes a point
     // that exists nowhere — the anchor's floor over the hold point's x/y. That is
     // flat-leg-only reasoning, and the legs this is used on are not all flat (the
-    // Suppression Rooms ramp climbs 5yd over one 20yd leg). Same defect, same fix,
-    // as HealCloseFallbackPoint above.
+    // Suppression Rooms ramp climbs 5yd over one 20yd leg).
     //
     // Clamped to `toward` when it is nearer than `distFromAnchor`, and returns
     // `anchor` unchanged when the two are stacked within `bearingFloor` (no
@@ -353,6 +355,35 @@ namespace DungeonClearMath
     // the trigger; this carries only the decision so it is unit-testable.
     bool ShouldStandDownForPull(bool packIsPullsOwn, bool pullPhaseIdle);
 
+    // Advance's yield to a live engage-trash walk-in (pure). Engage-trash (rel 25)
+    // and Advance (rel 15) share the tank's movement: when the blocking-trash
+    // trigger only holds on alternate ticks, each tick the winner replaces the
+    // other's move — engage's DcMoveTo cancels the escort glide, Advance reads the
+    // resulting POINT generator as "no glide running" and re-issues its spline —
+    // and every replacement starts with a stop, so the tank stands still
+    // (tr-20260924-081931-3, Karazhan Opera balcony stair). Returns true while a
+    // walk-in engage-trash stamped at `stampMs` is at most `holdMs` old, its
+    // target is still alive and the bot is still moving on it. Bounded both
+    // ways: engage going quiet for `holdMs`, or the walk no longer moving (a
+    // real wedge for Advance's stuck ladder), hands the tick back.
+    bool ShouldYieldToEngageWalk(bool walkStamped, bool targetAlive, bool botMoving,
+                                 std::uint32_t stampMs, std::uint32_t now,
+                                 std::uint32_t holdMs);
+
+    // Engage-trash sticky staleness (pure). The sticky pins a walk-in target so the
+    // pick does not bounce between two equidistant corridor mobs, and it never
+    // releases on distance. But the trigger fires on its OWN fresh pick: once the
+    // sticky is a pack an earlier scan found far down the route, the trigger keeps
+    // firing for the mob in front of the tank while the action walks back to the
+    // sticky, the walk carries that mob out of the band, the trigger drops, Advance
+    // climbs back, and it repeats (tr-20260927-201144-5, Karazhan ramp to
+    // Terestian: a Mana Feeder 90yd back vs an Arcane Protector patrolling ahead).
+    // Returns true to drop the sticky for the fresh pick: a different fresh pick
+    // exists, the sticky is out of combat, and the sticky is more than `margin`
+    // farther away than the fresh pick.
+    bool ShouldDropTrashSticky(bool haveFresh, bool freshIsSticky, bool stickyInCombat,
+                               float stickyDist, float freshDist, float margin);
+
     // Orphaned-pull release gate (pure). The effective pull mode can be forced
     // OFF while a pull is still standing — a PERSISTENT anchored event takes the
     // tank (DungeonClearPullModeCurrentValue), or a Dynamic verdict drops. The
@@ -385,6 +416,21 @@ namespace DungeonClearMath
     // within a few yards of an authored camp.
     bool ShouldReleaseStandingPull(bool effectiveOn, bool standing, bool partyInCombat,
                                    bool holdingPhase, bool bossPullback);
+
+    // Unclassified-aggro gate for the Dynamic governor (pure). Between packs the
+    // governor answers "no target" with the bool OFF, and with the bool off the pull
+    // action is not live — including its Idle-branch "unplanned aggro while scouting
+    // -> fresh camp" drag-back. An aggro the scan never sized therefore became a
+    // walk-in fought where it bit. On a sweep map (RouteSweepRegistry) that spot is
+    // inside a neighbour's reach by definition, so the answer is the safe direction:
+    // flip to ADVANCED and let the maneuver drag it home. `hasVerdict` is the whole
+    // discriminator — a standing LEEROY is a pack the classifier sized and chose to
+    // walk in on, and that choice stands; only an aggro nobody sized is answered.
+    // A boss (or his summoned add) among the attackers is never dragged: that is
+    // the at-boss path's engagement, and scripted bosses misbehave when camp-dragged.
+    // True only for: in combat, phase Idle, bool off, no verdict, sweep map, no boss.
+    bool ShouldAdvanceUnclassifiedAggro(bool inCombat, bool phaseIdle, bool modeOn,
+                                        bool hasVerdict, bool sweepMap, bool bossInFight);
 
     // Dynamic-verdict drop grace gate (pure). A standing Leeroy/Advanced verdict
     // must survive a TRANSIENT no-target read (door veto flicker, long-path cache
@@ -929,6 +975,65 @@ namespace DungeonClearMath
         return ChaseVerdict::Hold;
     }
 
+    // --- room-clear give-up clock ------------------------------------------
+    // State for the room-trash value's no-progress valve (RoomClearTimeout).
+    struct RoomClearClock
+    {
+        std::uint32_t lastRemaining = 0;  // count at the last progress (0 = none yet)
+        std::uint32_t idleMs = 0;         // observed ready time since that progress
+        std::uint32_t lastTickMs = 0;     // when the clock last ran (0 = never)
+    };
+
+    // The longest gap between two evaluations that still counts as observed. The
+    // value polls every 500ms while it is read; a longer gap means nobody read it —
+    // the at-boss gate stops reaching it while the party rests or loots — and
+    // time nobody watched must not be charged as "stalled".
+    inline constexpr std::uint32_t DC_ROOM_CLEAR_MAX_OBSERVED_GAP_MS = 2000;
+
+    // One tick of the no-progress valve (pure). True once the room-clear should be
+    // given up on: `idleMs` of READY time has passed with the remaining count never
+    // dropping.
+    //
+    // Only time the party could have been pulling counts. A `busy` tick (in combat,
+    // resting, looting, or not yet set) and an unobserved gap pause the clock
+    // instead of re-arming it, so a room whose packs each need a fight plus a
+    // full-mana rest (Karazhan's Banquet Hall: eight to nine elites per formation)
+    // does not read as stalled between formations, while a respawn churn that never
+    // lowers the count still adds up its ready gaps and gives up.
+    //
+    // Outside the room (`inRoom` false) the clock is held re-armed: the travel leg
+    // is not a stall. Progress (a smaller count, or the first sighting) re-arms it.
+    inline bool RoomClearGiveUpDue(RoomClearClock& c, std::uint32_t remaining, bool inRoom,
+                                   bool busy, std::uint32_t now, std::uint32_t timeoutMs)
+    {
+        std::uint32_t const prevTick = c.lastTickMs;
+        c.lastTickMs = now ? now : 1;
+
+        if (remaining == 0)
+        {
+            c.lastRemaining = 0;
+            c.idleMs = 0;
+            return false;
+        }
+        if (!inRoom || c.lastRemaining == 0 || remaining < c.lastRemaining)
+        {
+            c.lastRemaining = remaining;
+            c.idleMs = 0;
+            return false;
+        }
+        // A patroller walking into the radius raises the count. Track the new high
+        // so that killing it reads as progress, but leave the idle time alone.
+        if (remaining > c.lastRemaining)
+            c.lastRemaining = remaining;
+
+        // `now >= prevTick` guards the unsigned subtraction against a clock wrap.
+        std::uint32_t const elapsed = (prevTick && now >= prevTick) ? now - prevTick : 0;
+        if (!busy && elapsed <= DC_ROOM_CLEAR_MAX_OBSERVED_GAP_MS)
+            c.idleMs += elapsed;
+
+        return timeoutMs && c.idleMs > timeoutMs;
+    }
+
     // Engage-fizzle handoff latch (pure). An advanced-pull "camp fight" ended with
     // the tank out of combat but the pulled pack still ALIVE and IDLE — the drag
     // fizzled (a planted caster evaded home the moment the tank broke LOS at camp).
@@ -1028,6 +1133,31 @@ namespace DungeonClearMath
     bool PathCursorIsJoinable(std::vector<G3D::Vector3> const& route,
                               std::size_t cursor,
                               float px, float py, float pz, float maxGap);
+
+    // Travel still REMAINING from the bot to where `route` first enters the
+    // door band of (doorX,doorY,doorZ), or FLT_MAX when the route never does
+    // within `maxLookAhead` of the bot's progress cursor, or does so only well
+    // behind that cursor (more than `behindSlack` — a door already walked
+    // past). The pure body of
+    // DcEngageGeometry::DistAlongPathToClosedDoor; the door-blocked walk-in parks
+    // when this drops to DC_DOOR_STOP_DISTANCE.
+    //
+    // Remaining travel = the JOINING LEG (bot -> its progress-cursor vertex, 3D)
+    // + the along-route gap from that vertex to the band entry. The joining leg
+    // used to be left out, which measured from the route vertex nearest the bot
+    // as if the bot stood on it. Karazhan, tr-20260924-130027-4: engage-trash
+    // pulled the tank 28yd off its route beside the Strange Bookcase; the vertex
+    // nearest it still sat 7.4yd short of the doorway, so the walk-in read "at
+    // door" and parked 34yd from the door, outside click range. The blocked-door
+    // watchdog (which trusts the "at door" read) then auto-paused the run five
+    // seconds later without a single click. The blocking-door value, which
+    // flags the door in the first place, already chains the same bot -> cursor
+    // leg into its own look-ahead; this keeps the two measures consistent.
+    float DoorTravelRemaining(std::vector<G3D::Vector3> const& route,
+                              float botX, float botY, float botZ,
+                              float doorX, float doorY, float doorZ,
+                              float band, float zBand,
+                              float maxLookAhead, float behindSlack);
 
     // Index of the LATEST crumb within `rejoinRadius` (3D) of `cur`, or
     // TrailRejoinNone if none qualifies. Used by the breadcrumb recorder: on a
@@ -1176,6 +1306,257 @@ namespace DungeonClearMath
         v.haltStaleMove  = deviation > best + slack;
         v.bestDeviation  = v.haltStaleMove ? deviation : best;
         return v;
+    }
+
+    // The rejoin rung's progress yardstick: plan-view deviation plus any height
+    // gap to the hop beyond the one-storey tolerance. Route deviation alone is 2D,
+    // so on a spiral staircase a re-entry that walks the bot DOWN the helix under
+    // its route point reads as converging — 3.2 -> 0.0yd while the tank sank 33yd
+    // into Karazhan's Servants' Quarters stairwell below the Maiden route
+    // (tr-20260927-101342-8). Counting the excess height makes that descent a
+    // growing gap, which DecideRejoinRefusal halts. Within the tolerance (a ramp,
+    // a stair flight) it is exactly the 2D deviation, as before.
+    inline float RejoinGap(float deviation2d, float dz, float levelTolerance)
+    {
+        float const excess = std::max(0.0f, std::fabs(dz) - levelTolerance);
+        return std::sqrt(deviation2d * deviation2d + excess * excess);
+    }
+
+    // Whether a stalled rejoin should rebuild the route from where the bot stands.
+    // A bot that fell a storey off its route (Karazhan's Opera balcony onto the
+    // audience floor, chasing a floor mob mid-fight, tr-20260927-190943-12) sits
+    // under a hop 14yd overhead: 2.3yd in plan view, so the chunked re-entry's
+    // distance gate never opens, and every MoveTo to the hop is refused because no
+    // route arrives on its floor. A route built from the bot's position reaches the
+    // objective by the level it is actually on. Once per spell without progress, so
+    // a re-path that lands the bot off-level again falls through to the strike ladder.
+    inline bool ShouldRepathOffLevel(float dz, float levelTolerance, bool alreadySpent)
+    {
+        return !alreadySpent && std::fabs(dz) > levelTolerance;
+    }
+
+    struct RejoinProgressVerdict
+    {
+        bool  progressed = false;  // the gap set a new best: re-entry is working
+        bool  idle       = false;  // no new best this tick: counts toward the ladder
+        float best       = 0.0f;   // baseline to carry into the next tick
+    };
+
+    // The rejoin rung's LIVENESS test: is the gap back to the route actually
+    // closing? It used to count ticks whose MoveTo was refused, but on its own
+    // re-issued point stock refuses as a duplicate for a flat MaxWaitForMove (5s)
+    // — while the first move walks the bot in, and after loot or a drift halt
+    // stopped it short. Both read as "issued nothing", so the ladder struck out
+    // in ~10s on a flat floor with the route 6yd away (tp-20260927-114025-1, all
+    // 10 "Stuck off the route" stalls). Progress is the question the ladder asks.
+    //
+    // `best` only moves on progress, so slow steady closing accumulates until it
+    // clears `eps`. FLT_MAX (a fresh episode) makes this tick the baseline and
+    // neither progress nor idle — an off-path rebuild that restarts the episode
+    // every few ticks cannot reset the ladder with a free "progress" tick.
+    inline RejoinProgressVerdict TrackRejoinProgress(float gap, float best, float eps)
+    {
+        RejoinProgressVerdict v;
+        if (best == std::numeric_limits<float>::max())
+        {
+            v.best = gap;
+            return v;
+        }
+        v.progressed = gap < best - eps;
+        v.idle       = !v.progressed;
+        v.best       = v.progressed ? gap : best;
+        return v;
+    }
+
+    // May a follower's combat regroup anchor on this combat holder? Only one it can
+    // actually fight: inside the engagement radius every other combat read already
+    // bounds by, and reachable on its level. A holder that tagged the party and was
+    // then stranded on another floor keeps the tank combat-flagged indefinitely
+    // (instanced creatures never leash); anchoring on it walked Karazhan's whole
+    // raid 140yd back from the Opera balcony to the stage corridor, eight times, for
+    // nine minutes (tr-20260927-103044-10). Nothing qualifying -> the regroup falls
+    // back to the tank.
+    inline bool IsRegroupAnchorCandidate(float dist, float engagementRadius,
+                                         bool levelReachable)
+    {
+        return dist <= engagementRadius && levelReachable;
+    }
+    // --- Room-clear straight pull ---------------------------------------------
+    //
+    // A disc the pull lane must stay clear of: the room-aggro boss at its skirt,
+    // or another pack at the camp clearance.
+    struct LaneKeepAway
+    {
+        float x;
+        float y;
+        float radius;
+    };
+
+    // One candidate lane for a room-clear pull: the tank tags the pack from
+    // (standX, standY) and drags it straight back along the same bearing to
+    // (campX, campY).
+    struct StraightPullLane
+    {
+        float bearing = 0.0f;  // radians, pack -> stand
+        float standX = 0.0f;
+        float standY = 0.0f;
+        float campX = 0.0f;
+        float campY = 0.0f;
+        float margin = 0.0f;   // min over keep-aways of dist(lane) - radius
+        float walk = 0.0f;     // tank's straight-line distance to the stand spot
+        float score = 0.0f;    // margin, less a small charge for the walk
+    };
+
+    // 2D distance from (px,py) to the segment (ax,ay)-(bx,by).
+    inline float PointSegmentDist2d(float px, float py, float ax, float ay,
+                                    float bx, float by)
+    {
+        float const dx = bx - ax;
+        float const dy = by - ay;
+        float const len2 = dx * dx + dy * dy;
+        float t = 0.0f;
+        if (len2 > 1e-6f)
+            t = std::clamp(((px - ax) * dx + (py - ay) * dy) / len2, 0.0f, 1.0f);
+        float const cx = ax + t * dx - px;
+        float const cy = ay + t * dy - py;
+        return std::sqrt(cx * cx + cy * cy);
+    }
+
+    // Walk-distance charge per yard in the lane score: 20yd of extra walk is
+    // worth giving up 1yd of margin.
+    inline constexpr float StraightPullWalkCost = 0.05f;
+
+    // Clearance past this is as good as any more; the cap also keeps the walk
+    // charge meaningful when nothing is in the room.
+    inline constexpr float StraightPullMarginCap = 100.0f;
+
+    // Ranks the straight-pull lanes around a pack, best first.
+    //
+    // In a room pre-clear the tank used to close on the pack from wherever it
+    // stood and tag it at commit range, and the camp was the trail back the way
+    // it came. From the far side of a room that is a diagonal in front of the
+    // boss: the tag spot, the drag and every straggler's run all cross the
+    // boss's aggro (Moroes, tr-20260926-192642-3 — the lane ran 23yd from a
+    // dinner guest). A player walks up square in front of the pack and pulls it
+    // straight back instead.
+    //
+    // For each of `bearings` directions out of the pack: stand spot `standDist`
+    // out, camp straight on along the same line at the farthest drag in
+    // [minDrag, drag] that is inside the camp box (when there is one). The lane
+    // scored is stand -> camp, where the tank and the fight stand, AND the tank's
+    // walk out to the stand spot; its margin is the worst clearance over the
+    // keep-aways. Bearings with no in-box camp are dropped.
+    //
+    // The walk counts because that is where the second pack came from in
+    // tr-20260927-210901-8: the lane itself cleared everything, and the tank woke
+    // a Ghostly Steward and a whole Guest formation on its way to the stand spot.
+    // A keep-away the tank is already standing inside is left out of the walk
+    // term — every walk starts in it, so it would sink every lane equally and
+    // rank nothing.
+    inline std::vector<StraightPullLane> RankStraightPullLanes(
+        float packX, float packY, float tankX, float tankY, float standDist,
+        float drag, float minDrag, std::vector<LaneKeepAway> const& keepAways,
+        bool hasBox, float boxMinX, float boxMaxX, float boxMinY, float boxMaxY,
+        int bearings = 24)
+    {
+        std::vector<StraightPullLane> out;
+        if (bearings <= 0 || standDist <= 0.0f || drag <= 0.0f)
+            return out;
+        minDrag = std::clamp(minDrag, 0.0f, drag);
+        auto inBox = [&](float x, float y)
+        {
+            return !hasBox ||
+                   (x >= boxMinX && x <= boxMaxX && y >= boxMinY && y <= boxMaxY);
+        };
+
+        constexpr float kTwoPi = 6.28318530718f;
+        for (int i = 0; i < bearings; ++i)
+        {
+            float const a = kTwoPi * float(i) / float(bearings);
+            float const ux = std::cos(a);
+            float const uy = std::sin(a);
+
+            StraightPullLane lane;
+            lane.bearing = a;
+            lane.standX = packX + ux * standDist;
+            lane.standY = packY + uy * standDist;
+
+            bool found = false;
+            for (float d = drag; d >= minDrag - 1e-3f; d -= 1.0f)
+            {
+                float const cx = lane.standX + ux * d;
+                float const cy = lane.standY + uy * d;
+                if (inBox(cx, cy))
+                {
+                    lane.campX = cx;
+                    lane.campY = cy;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found)
+                continue;
+
+            lane.margin = StraightPullMarginCap;
+            for (LaneKeepAway const& k : keepAways)
+            {
+                lane.margin = std::min(
+                    lane.margin, PointSegmentDist2d(k.x, k.y, lane.standX, lane.standY,
+                                                    lane.campX, lane.campY) -
+                                     k.radius);
+                float const tdx = tankX - k.x;
+                float const tdy = tankY - k.y;
+                if (tdx * tdx + tdy * tdy >= k.radius * k.radius)
+                    lane.margin = std::min(
+                        lane.margin, PointSegmentDist2d(k.x, k.y, tankX, tankY,
+                                                        lane.standX, lane.standY) -
+                                         k.radius);
+            }
+            float const wx = lane.standX - tankX;
+            float const wy = lane.standY - tankY;
+            lane.walk = std::sqrt(wx * wx + wy * wy);
+            lane.score = lane.margin - StraightPullWalkCost * lane.walk;
+            out.push_back(lane);
+        }
+
+        std::stable_sort(out.begin(), out.end(),
+                         [](StraightPullLane const& l, StraightPullLane const& r)
+                         { return l.score > r.score; });
+        return out;
+    }
+
+    // Which room-trash unit a room clear pulls next: the nearest one whose lane has
+    // not been refused, else — everything left is refused — the nearest of all, so
+    // the clear can never stall on its own refusals. -1 when there is nothing.
+    //
+    // Refused = no clean straight lane (DcPullPlanner::ComputeRoomClearLane with
+    // requireClean). Nearest-first alone took a Guest pack 26.8yd from a dinner
+    // guest whose best lane's walk ran inside the next formation's reach
+    // (tr-20260927-210901-8); pulling the packs that CAN be taken cleanly first
+    // clears the room outside-in and opens lanes for the rest.
+    inline int PickRoomTrashIndex(std::vector<float> const& dist,
+                                  std::vector<bool> const& refused)
+    {
+        int best = -1;
+        int bestAny = -1;
+        for (std::size_t i = 0; i < dist.size(); ++i)
+        {
+            int const idx = static_cast<int>(i);
+            if (bestAny < 0 || dist[i] < dist[bestAny])
+                bestAny = idx;
+            bool const isRefused = i < refused.size() && refused[i];
+            if (!isRefused && (best < 0 || dist[i] < dist[best]))
+                best = idx;
+        }
+        return best >= 0 ? best : bestAny;
+    }
+
+    // Lane refusals were measured against the room as it stood; a kill since then
+    // (fewer live room-trash units than when the list was written) can open any of
+    // them, so the list is dropped and every pack is measured again.
+    inline bool ShouldDropLaneRefusals(uint32_t liveNow, uint32_t liveAtWrite)
+    {
+        return liveNow < liveAtWrite;
     }
 }
 

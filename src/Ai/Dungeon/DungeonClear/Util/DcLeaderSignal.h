@@ -164,8 +164,12 @@ public:
     // and the rest of it is still standing in a room the party must not enter.
     // Followers stay ANCHORED (not passive — they fight what comes to them) for
     // the duration. Drives DungeonClearHoldAtCampCombatTrigger and the camp-hold
-    // action's leash radius / movement priority.
+    // action's leash radius / movement priority. A boxed room-clear pull
+    // (DcPullContext::roomCampFight) counts as scripted here and below.
     static bool IsLeaderScriptedCampFight(Player* bot);
+
+    // The room-clear subset of IsLeaderScriptedCampFight (roomCampFight, Engage).
+    static bool IsLeaderRoomCampFight(Player* bot);
 
     // True while `bot`'s leader has ANY scripted-pull stage in flight — the tag leg
     // and the drag as well as the camp fight. Wider than IsLeaderScriptedCampFight
@@ -377,6 +381,28 @@ public:
     // point to camp at. Returns false whenever the transit is not driving, so one
     // call answers both "is there a pack to hold" and "hold it where".
     static bool GetTransitAnchor(Player* bot, Position& out);
+
+    // KARAZHAN, chess: the run's chess conductor, as the members read it.
+    //
+    // The conductor lives on the RUN OWNER (FindRunOwner — dead or alive, the bot
+    // whose run state is enabled), and every member's rung reads these three
+    // facts off it on its own tick. All three answer "nothing" unless the run is
+    // on, unpaused, armed, and the conductor has stamped within the freshness
+    // window — so a run switched off, paused, or finished releases every member
+    // within a tick or two, with no latch of its own to reset (the Razorgore
+    // shape).
+    //
+    // The piece the conductor gave `bot` (empty = none: hold at the sideline).
+    static ObjectGuid GetChessAssignment(Player* bot);
+    // Is the run's chess conductor armed and ticking? `stateOut` gets its
+    // DcChessConductor::State when it is.
+    static bool IsLeaderChessArmed(Player* bot, uint8* stateOut = nullptr);
+    // `bot`'s sideline slot, 0..9 — its index in the conductor's seat order, or a
+    // GUID-derived fallback before the conductor has seated anyone.
+    static uint32 GetChessSeat(Player* bot);
+    // A member gave up taking `piece` (the gossip never took): the conductor
+    // hands it something else on its next tick.
+    static void ReportChessRefusal(Player* bot, ObjectGuid piece);
 
     // The same read for a caller that has ALREADY resolved the leader. The wrapper
     // above is on two per-tick, per-bot paths and FindLeaderTank costs a

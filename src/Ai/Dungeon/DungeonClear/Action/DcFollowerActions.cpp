@@ -39,6 +39,7 @@
 #include "Ai/Dungeon/DungeonClear/DcApproachState.h"
 #include "Ai/Dungeon/DungeonClear/Data/DcEventDoorRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
+#include "Ai/Dungeon/DungeonClear/Data/HealLeashRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Data/Events/DungeonEventTables.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcEngageGeometry.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcHazard.h"
@@ -1036,7 +1037,10 @@ bool DungeonClearCampHoldActionBase::Execute(Event /*event*/)
         {
             DC_PULL_TRACE("[DC:{}] hold-at-camp: in bounds mid-fight ({:.1f}yd) -> "
                           "yielding to the rotation", bot->GetName(), toCamp);
-            context->GetValue<DcPullContext&>(DcKey::PullContext)->Get().campHoldBest = 0.0f;
+            DcPullContext& held = context->GetValue<DcPullContext&>(DcKey::PullContext)->Get();
+            held.campHoldBest = 0.0f;
+            held.campHoldClosest = 0.0f;
+            held.campHoldRunaway = false;
             return false;
         }
         DcMovement::StopBot(bot, DcMovement::Stop::Soft);
@@ -1045,8 +1049,12 @@ bool DungeonClearCampHoldActionBase::Execute(Event /*event*/)
         DcFaceIfNeeded(bot, DcLeaderSignal::FindLeaderTank(bot));
         DC_PULL_TRACE("[DC:{}] hold-at-camp: parked ({:.1f}yd, passive={})",
                       bot->GetName(), toCamp, passive);
-        // Settled: re-arm the losing-ground ratchet for the next recall.
-        context->GetValue<DcPullContext&>(DcKey::PullContext)->Get().campHoldBest = 0.0f;
+        // Settled: re-arm the losing-ground ratchet and the runaway latch for the
+        // next recall.
+        DcPullContext& settled = context->GetValue<DcPullContext&>(DcKey::PullContext)->Get();
+        settled.campHoldBest = 0.0f;
+        settled.campHoldClosest = 0.0f;
+        settled.campHoldRunaway = false;
         // During a holding phase (the tank is tagging) OWN the tick so nothing can
         // break the hold while the pull is live. While merely camped between pulls
         // (scout phase, passive==false) YIELD so the party can rest / loot at camp
@@ -1103,13 +1111,79 @@ bool DungeonClearCampHoldActionBase::Execute(Event /*event*/)
         return false;
     }
 
+    // A NEW CAMP IS A NEW RECALL. The advanced pull moves the camp as the tank
+    // closes, and every campHold* distance was measured against the old one.
+    if (std::hypot(camp.GetPositionX() - ownPull.campHoldKeyX,
+                   camp.GetPositionY() - ownPull.campHoldKeyY) > DC_PULL_SLOT_RADIUS)
+    {
+        ownPull.campHoldKeyX = camp.GetPositionX();
+        ownPull.campHoldKeyY = camp.GetPositionY();
+        ownPull.campHoldBest = 0.0f;
+        ownPull.campHoldClosest = 0.0f;
+        ownPull.campHoldRunaway = false;
+    }
+
+    // A RECALL THAT RUNS AWAY IS STOOD DOWN, NOT RE-ISSUED. See CampRecallRanAway:
+    // the ratchet below re-bases outward on every loss, so a recall whose own path
+    // leads away from the slot is re-issued onto that same path indefinitely.
+    if (!ownPull.campHoldRunaway)
+    {
+        if (ownPull.campHoldClosest <= 0.0f || toCamp < ownPull.campHoldClosest)
+            ownPull.campHoldClosest = toCamp;
+        else if (CampRecallRanAway(ownPull.campHoldClosest, toCamp))
+        {
+            ownPull.campHoldRunaway = true;
+            DcMovement::StopBot(bot, DcMovement::Stop::HardPin);
+            DcMovement::ClearMovementWait(bot);
+
+            // What was the recall actually walking? Never logged before, so the
+            // one live case (tr-20260927-184653-9) could not say why a 10yd recall
+            // went down a floor. One Detour query, on a latch that fires once.
+            PathGenerator probe(bot);
+            probe.CalculatePath(slot.GetPositionX(), slot.GetPositionY(), slot.GetPositionZ(),
+                                /*forceDest*/ false);
+            Movement::PointsArray const& pts = probe.GetPath();
+            float pathLen = 0.0f;
+            float lowZ = bot->GetPositionZ();
+            for (std::size_t i = 0; i < pts.size(); ++i)
+            {
+                lowZ = std::min(lowZ, pts[i].z);
+                if (i)
+                    pathLen += (pts[i] - pts[i - 1]).length();
+            }
+            LOG_INFO("playerbots.dungeonclear",
+                     "[DC:{}] hold-at-camp: recall RAN AWAY ({:.1f}yd from the slot, "
+                     "closest {:.1f}) -> stood down, holding here | bot ({:.1f},{:.1f},{:.1f}) "
+                     "slot ({:.1f},{:.1f},{:.1f}) camp ({:.1f},{:.1f},{:.1f}) | path type {} "
+                     "{} pts {:.1f}yd, lowest z {:.1f}",
+                     bot->GetName(), toCamp, ownPull.campHoldClosest, bot->GetPositionX(),
+                     bot->GetPositionY(), bot->GetPositionZ(), slot.GetPositionX(),
+                     slot.GetPositionY(), slot.GetPositionZ(), camp.GetPositionX(),
+                     camp.GetPositionY(), camp.GetPositionZ(),
+                     static_cast<uint32>(probe.GetPathType()), pts.size(), pathLen, lowZ);
+        }
+    }
+    if (ownPull.campHoldRunaway)
+    {
+        // Held where the runaway was caught — the same return as "parked": own the
+        // tick while the tank is tagging so nothing else drifts us, yield between
+        // pulls so rest, loot and the tank-follow (which walks the tank's own
+        // breadcrumbs, not a fresh path) carry on.
+        DC_PULL_TRACE("[DC:{}] hold-at-camp: recall stood down after a runaway "
+                      "({:.1f}yd out)", bot->GetName(), toCamp);
+        return passive;
+    }
+
     if (ScriptedPullLostGround(ownPull.campHoldBest, toCamp))
     {
         DcMovement::StopBot(bot, DcMovement::Stop::HardPin);
         DcMovement::ClearMovementWait(bot);
         DC_PULL_DEBUG("[DC:{}] hold-at-camp: losing ground ({:.1f}yd vs best {:.1f}) "
-                      "-> cancelled whatever is carrying us and re-issuing",
-                      bot->GetName(), toCamp, ownPull.campHoldBest);
+                      "-> cancelled whatever is carrying us and re-issuing | bot "
+                      "({:.1f},{:.1f},{:.1f}) slot ({:.1f},{:.1f},{:.1f})",
+                      bot->GetName(), toCamp, ownPull.campHoldBest, bot->GetPositionX(),
+                      bot->GetPositionY(), bot->GetPositionZ(), slot.GetPositionX(),
+                      slot.GetPositionY(), slot.GetPositionZ());
         ownPull.campHoldBest = toCamp;
     }
     else if (toCamp < ownPull.campHoldBest || ownPull.campHoldBest <= 0.0f)
@@ -1441,7 +1515,7 @@ bool DungeonClearRegroupCombatAction::Execute(Event /*event*/)
     if (isHealer)
         anchorPos = tank->GetPosition();
     else
-        anchorUnit = DcTargeting::LeaderFightAnchor(bot, tank, anchorPos);
+        anchorUnit = DcTargeting::LeaderFightAnchor(bot, context, tank, anchorPos);
 
     // Role-range standoff ring. Ranged DPS: 0.8x spell range (inside range so target
     // wobble doesn't drop it back out). Healer: max(5, 0.6x heal range) — the same
@@ -1470,28 +1544,30 @@ bool DungeonClearRegroupCombatAction::Execute(Event /*event*/)
     }
 
     // Fallback: no ring point validated (tight geometry, snap misses), or a melee.
-    // Close on the anchor with pathfinding, stopping attackRange short so a ranged
-    // class doesn't pile into the melee/AoE and a melee lands in swing range. The
-    // predicate clears the instant a mob comes into sight, so this only ever walks
-    // far enough to round the corner.
+    // Close on the anchor, stopping attackRange short so a ranged class doesn't
+    // pile into the melee/AoE and a melee lands in swing range. The predicate
+    // clears the instant a mob comes into sight, so this only ever walks far
+    // enough to round the corner.
+    //
+    // Along the ROUTE to the anchor, never the straight line: see the heal
+    // reposition's fallback and DcEngageGeometry::PathedCloseOn — the straight
+    // line is how DPS walked into the Maiden hairpin's wall. No route onto the
+    // anchor's floor -> hold.
     if (!sampled)
     {
-        float const ax = anchorPos.GetPositionX();
-        float const ay = anchorPos.GetPositionY();
-        float const az = anchorPos.GetPositionZ();
         float const attackRange = isMelee
             ? (bot->GetCombatReach() + (anchorUnit ? anchorUnit->GetCombatReach() : 0.0f) + 1.0f)
             : std::max(5.0f, botAI->GetRange("spell") - CONTACT_DISTANCE);
-        float const dist = bot->GetExactDist2d(ax, ay);
-        x = ax;
-        y = ay;
-        z = az;
-        if (dist > attackRange)
+        Position close;
+        if (!DcEngageGeometry::PathedCloseOn(bot, anchorPos, attackRange, close))
         {
-            float const frac = (dist - attackRange) / dist;
-            x = bot->GetPositionX() + (ax - bot->GetPositionX()) * frac;
-            y = bot->GetPositionY() + (ay - bot->GetPositionY()) * frac;
+            DC_PULL_TRACE("[DC:{}] regroup: no route onto the anchor's floor ({:.1f}yd) "
+                          "-> holding", bot->GetName(), bot->GetExactDist2d(&anchorPos));
+            return false;
         }
+        x = close.GetPositionX();
+        y = close.GetPositionY();
+        z = close.GetPositionZ();
     }
 
     // Re-issue guard: the trigger latches and re-fires every tick, but re-plotting a
@@ -1576,32 +1652,59 @@ bool DungeonClearHealRepositionAction::Execute(Event /*event*/)
 
     // First ring point around the target that snaps, sits within heal range, has
     // LOS, and is reachable (shared with the combat regroup — see FindStandoffPoint).
-    float dx = 0.0f, dy = 0.0f, dz = 0.0f;
-    bool const haveDest = FindStandoffPoint(map, targetPos, standoff, healRange, dx, dy, dz);
+    // Camp leash, on HealLeashRegistry maps only, and only while the healer is
+    // fighting at a standing pull camp (the trigger has already deferred to the
+    // passive holding phases). Everywhere else leashRadius stays 0 and nothing
+    // below changes.
+    Position camp;
+    bool campPassive = false;
+    float const leashRadius =
+        (bot->IsInCombat() && DcLeaderSignal::GetLeaderCampHold(bot, camp, campPassive))
+            ? HealLeashRegistry::Radius(map->GetId())
+            : 0.0f;
+    Position const* const leash = leashRadius > 0.0f ? &camp : nullptr;
 
-    // Fallback: no sampled point validated (tight geometry, snap misses). Close
-    // straight on the target with pathfinding — rounding corners is what regains
-    // LOS — stopping 5yd short, exactly the old regroup behaviour.
+    float dx = 0.0f, dy = 0.0f, dz = 0.0f;
+    bool const haveDest =
+        FindStandoffPoint(map, targetPos, standoff, healRange, dx, dy, dz, leash, leashRadius);
+
+    // Fallback: no sampled point validated (tight geometry, snap misses). Close on
+    // the target — rounding corners is what regains LOS — stopping 5yd short, at
+    // a point ALONG THE ROUTE to it (DcEngageGeometry::PathedCloseOn).
     //
-    // INTERPOLATE ALL THREE COORDINATES. x and y are walked back along the line to
-    // the target; z used to be left at the TARGET's height, which describes a point
-    // that exists nowhere — the target's floor over our own x/y. On one level that
-    // is a yard or two of slop DcMoveTo's ground-snap absorbs. Across two it is the
-    // Blackwing Lair ceiling clip: a healer standing in the hall at z 424 asking to
-    // move to hall x/y at z 449, 224 of 281 repositions in tr-20260828-171538-5
-    // taking this branch. Interpolating z keeps the destination ON the bot->target
-    // line, which is the thing the fallback actually means, and keeps the residual
-    // error inside the snap's 3yd correction window on ramps and stairs. A target
-    // genuinely a storey away now yields a destination a storey away — refused by
-    // the z-search and no longer overridden (see DcMoveTo's retry), so the healer
-    // stands still instead of walking through the floor.
+    // It used to be a point on the straight bot->target line. Across a wall that
+    // point is in the wall or behind it, and the walk to it goes through: the
+    // Maiden hairpin in Karazhan had healers walking into the wall toward a tank
+    // on the other leg and dropping to the Servants' Quarters below
+    // (tr-20260927-190943-12, "closing on heal target ... los=0, sampled=0"). With
+    // no complete route onto the target's floor there is nowhere honest to walk,
+    // so hold and let the stock heal stack work what is in sight.
     if (!haveDest)
     {
-        Position const close = DungeonClearMath::HealCloseFallbackPoint(
-            bot->GetPosition(), targetPos, /*minGap*/ 5.0f);
+        Position close;
+        if (!DcEngageGeometry::PathedCloseOn(bot, targetPos, /*stopShort*/ 5.0f, close))
+        {
+            DC_PULL_TRACE("[DC:{}] heal reposition: no route onto {}'s floor ({:.1f}yd, "
+                          "los=0) -> holding", bot->GetName(),
+                          target->GetGUID().ToString(), bot->GetExactDist2d(target));
+            return false;
+        }
         dx = close.GetPositionX();
         dy = close.GetPositionY();
         dz = close.GetPositionZ();
+
+        // A leashed healer never takes the close past its leash: that walk is
+        // exactly the one that carried it onto the Banquet Hall floor. Yield the
+        // tick so the stock heal stack works whatever is in sight from the camp.
+        if (leash && !HealLeashRegistry::WithinLeash(camp.GetPositionX(), camp.GetPositionY(),
+                                                     leashRadius, dx, dy))
+        {
+            DC_PULL_TRACE("[DC:{}] heal reposition: leashed to camp ({:.0f}yd) -> holding, "
+                          "heal target {} is {:.1f}yd out",
+                          bot->GetName(), leashRadius, target->GetGUID().ToString(),
+                          bot->GetExactDist2d(target));
+            return false;
+        }
     }
 
     // Band the priority like the assist/regroup actions: COMBAT only on the final

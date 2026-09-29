@@ -58,6 +58,18 @@ constexpr float DC_ENGAGE_RANGE = 22.0f;
 // improves the straight-line gap several times a second) never reaches it.
 constexpr uint32 DC_LONGROUTE_DEFER_LIMIT = 20;
 
+// How long Advance keeps its hands off the tank after engage-trash last drove a
+// walk-in (DungeonClearMath::ShouldYieldToEngageWalk). Several AI ticks (~150ms
+// apart) so an every-other-tick trigger cannot hand the move back, short enough
+// that a genuine stand-down returns the tick to Advance almost at once.
+constexpr uint32 DC_ENGAGE_WALK_YIELD_MS = 1000;
+
+// How much closer the fresh blocking-trash pick must be than a quiet engage-trash
+// sticky before the sticky is dropped for it (DungeonClearMath::ShouldDropTrashSticky).
+// Wide enough that two roughly equidistant corridor mobs keep the sticky and never
+// flip-flop; a sticky left ~90yd behind by an earlier scan is released.
+constexpr float DC_TRASH_STICKY_RETARGET_MARGIN = 15.0f;
+
 // Extra standoff added OUTSIDE a room-aggro boss's skirt sphere when computing
 // its (uncapped) boss-engage range — see DcEngageGeometry::BossEngageRange. The
 // engage hand-off for a room-aggro boss must trip while the tank is still clear
@@ -164,6 +176,14 @@ constexpr float DC_PULL_START_RANGE = 26.0f;
 // silence the run's driver forever.
 constexpr uint32 DC_PULL_ADVANCE_STANDDOWN_MAX_MS = 30000;
 
+// How long an unplanned aggro while scouting holds the party passive at camp
+// before the drag-back maneuver has taken the pull (DcPullContext::scoutAggroMs).
+// The maneuver normally flips Idle -> Returning within one leader tick (<1s), and
+// from then on the ordinary holding-phase rule applies; this only bounds the case
+// where it declines to drag, so the party is never left passive watching the
+// tank fight alone.
+constexpr uint32 DC_PULL_SCOUT_AGGRO_HOLD_MS = 2000;
+
 // How long a camp write by the pull machinery (prospective publish, commit,
 // dynamic seed, unplanned-aggro fresh camp) counts as "fresh". While fresh, the
 // pull action owns the camp and Advance's scout camp-trailing stands down; once
@@ -233,6 +253,12 @@ constexpr uint32 DC_NO_REZZER_HOLD_MAX_MS    = 60000;
 // shape this input takes is a whole-dungeon event (Violet Hold, the Black Morass)
 // where it will never lift and every second of holding is spent under fire.
 constexpr uint32 DC_REZ_BLOCKED_HOLD_MAX_MS = 20000;
+
+// How close an idle hostile has to stand to a corpse for the body to count as
+// unsafe to walk a rezzer to (DcRezDecision::Member::corpseUnsafe). 3D, so a pack
+// one floor below a corpse on the route does not count. Aggro reach for an elite
+// at party level is ~20yd, and the rezzer's walk ends at the body's side.
+constexpr float DC_REZ_CORPSE_HOSTILE_RADIUS = 20.0f;
 
 // Raid recovery budget scaling: extra out-of-combat clock granted per corpse
 // beyond the first (capped at twice the configured budget in the glue). Even

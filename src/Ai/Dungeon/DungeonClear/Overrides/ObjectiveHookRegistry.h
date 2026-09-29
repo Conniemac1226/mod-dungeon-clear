@@ -65,6 +65,17 @@ public:
     static bool Has(uint32 hookId);
 };
 
+// Generic hook 40: the RAID MUSTER, at an objective. DcRaidMuster (stage the
+// raid on the tank, top everyone off, run the rebuff round, bounded by its own
+// ceiling) normally gates only the engage of a BOSS anchor. An event that starts
+// a raid encounter itself — Karazhan's Blackened Urn summons Nightbane — needs
+// the same muster before its trigger step, and its anchor is an objective. The
+// hook runs the muster against the current objective as if it were the boss:
+// Running while it holds, Done once it releases. Raid maps only (Done
+// elsewhere, like the muster itself). The objective action yields rest ticks to
+// this step, so the tank can drink under the muster's 100/100 rest override.
+inline constexpr uint32 DC_HOOK_RAID_MUSTER = 40;
+
 // --- per-dungeon hook appenders ------------------------------------------
 // A dungeon gets its own hook TU only when its on-arrival behaviour is a
 // CONTROLLER rather than a one-shot action — i.e. when it re-decides from live
@@ -155,5 +166,12 @@ void RegisterTrialOfTheChampionHooks(ObjectiveHookRegistry::HookTable& out);
 // kernel Util/DcOculusDriverDecision.h; each member flies its own drake from the
 // rider rung (Action/DcOculusRiderAction.cpp).
 void RegisterOculusHooks(ObjectiveHookRegistry::HookTable& out);
+
+// Karazhan (map 532) — the chess event: arm the conductor (43) and report its
+// verdict back to the event (42). See KarazhanChessDriver.cpp. The game itself is
+// the conductor inside the member rung (Action/DcChessPieceAction.cpp); its
+// decisions are the pure kernels Util/DcChessBoard.h, Util/DcChessDecision.h and
+// Util/DcChessConductor.h.
+void RegisterKarazhanChessHooks(ObjectiveHookRegistry::HookTable& out);
 
 #endif

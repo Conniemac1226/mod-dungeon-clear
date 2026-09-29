@@ -74,6 +74,13 @@ namespace DcMovement
     // it": call it immediately before issuing the replacement move.
     void ClearMovementWait(Player* bot);
 
+    // ClearMovementWait plus the duplicate-destination guard: stock IsDuplicateMove
+    // refuses the SAME point for a flat MaxWaitForMove (5s) after it was issued,
+    // however short the leg and whether or not the bot is still walking it. For a
+    // standing bot re-issuing its own last point, that refusal guards nothing — the
+    // move it protects is over. Only call it for a bot that is not moving.
+    void ReleaseMoveLock(Player* bot);
+
     // Issue the upcoming polyline as ONE EscortMovementGenerator spline (the
     // continuous glide that replaces per-point stops). Absorbs the issuance
     // ritual that was hand-duplicated at the advance, swim, and pull-maneuver

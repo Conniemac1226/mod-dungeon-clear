@@ -81,6 +81,7 @@
 #include "WarlockAiObjectContext.h"
 #include "WarriorAiObjectContext.h"
 
+#include "BgQueueFill/DcBgQueueFillManager.h"
 #include "DungeonQueueFill/DcDungeonQueueFillManager.h"
 #include "Util/DcProvisionBudget.h"
 #include "Util/DcSpectator.h"
@@ -355,6 +356,26 @@ public:
     }
 };
 
+// A creature engaging a run member mid-fight. The player-side hook above only
+// fires on a player's 0->1 transition, so an add joining a running fight is
+// otherwise unrecorded. See DcFirstContact::OnCreatureEngage.
+class DungeonClearLateJoinerScript : public UnitScript
+{
+public:
+    DungeonClearLateJoinerScript()
+        : UnitScript("DungeonClearLateJoinerScript", true, {
+            UNITHOOK_ON_UNIT_ENTER_COMBAT
+        }) {}
+
+    void OnUnitEnterCombat(Unit* unit, Unit* victim) override
+    {
+        if (!DcModule::IsEnabled())
+            return;
+        if (Creature* creature = unit ? unit->ToCreature() : nullptr)
+            DcFirstContact::OnCreatureEngage(creature, victim);
+    }
+};
+
 // Spectator-camera teardown safety net. A leaked possession leaves the human
 // controlling nothing (their mover is a despawning/orphaned dummy), and only we
 // can clean it up — so every exit path below calls DcSpectator::Stop, which is
@@ -500,6 +521,12 @@ public:
         // on a background test plan. Cheap no-op (an empty vector test)
         // whenever nobody is queueing.
         DcDungeonQueueFillManager::Instance().Tick(diff);
+
+        // Battleground instant queue fill: same shape, same reasons for
+        // running ahead of the module gate — it too releases what it holds
+        // when switched off, and it too gets a live player's claim on the
+        // provisioning ration ahead of the test harness.
+        DcBgQueueFillManager::Instance().Tick(diff);
 
         if (!DcModule::IsEnabled())
             return;
@@ -679,6 +706,7 @@ void AddSC_dungeon_clear_module()
     new DungeonClearRegistrarWorldScript();
     new DungeonClearLoginPlayerScript();
     new DungeonClearPullBrakeScript();
+    new DungeonClearLateJoinerScript();
     // Opening half only — the End script registers on the first world tick so
     // it sorts after playerbots' AI-update hook (see the ordering contract).
     new DungeonClearSpectatorMoverBeginScript();

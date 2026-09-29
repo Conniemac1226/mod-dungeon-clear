@@ -118,6 +118,23 @@ struct DcPullContext
                                                  // suppressed — the plan says where
                                                  // the fight happens, so neither is
                                                  // free to move it.
+    bool        roomCampFight = false;           // this pull was taken during a
+                                                 // room-clear whose row carries a
+                                                 // camp box (Moroes' Banquet Hall).
+                                                 // Latched by the leader while the
+                                                 // pull is in flight, cleared the
+                                                 // moment the phase is back to Idle.
+                                                 // Its camp fight is ANCHORED like a
+                                                 // scripted stage's: the tank and
+                                                 // the party keep the camp leashes
+                                                 // through Engage instead of handing
+                                                 // the fight to stock chase — which
+                                                 // walked the off-tank and a rogue
+                                                 // 18yd toward the dais after a
+                                                 // Guest formation holding at range
+                                                 // and woke Moroes
+                                                 // (tr-20260927-210901-8). See
+                                                 // AnchoredCampFight.
     float       scriptedReturnBest = 0.0f;       // closest the tank has been to the
                                                  // camp on the CURRENT scripted
                                                  // drag-back. A ratchet: the drag
@@ -138,6 +155,24 @@ struct DcPullContext
                                                  // no-op, so only distance can tell
                                                  // us another generator has the
                                                  // bot. 0 = parked / no recall.
+    float       campHoldClosest = 0.0f;          // FOLLOWER-owned: the closest this
+                                                 // bot has EVER been to its slot on
+                                                 // the current recall. campHoldBest
+                                                 // re-bases outward on every loss so
+                                                 // the leg can be re-issued; this
+                                                 // never does, so a recall whose own
+                                                 // path keeps carrying the bot away
+                                                 // is visible (CampRecallRanAway).
+                                                 // 0 = parked / no recall.
+    bool        campHoldRunaway = false;         // FOLLOWER-owned: the recall ran
+                                                 // away and was stood down — hold
+                                                 // where we are, do not re-issue.
+    float       campHoldKeyX = 0.0f;             // FOLLOWER-owned: the camp the
+    float       campHoldKeyY = 0.0f;             // three campHold* fields above
+                                                 // were measured against. A camp
+                                                 // that moves is a fresh recall, and
+                                                 // all three reset — or the jump
+                                                 // itself reads as a runaway.
     bool        scriptedRecall = false;          // the scripted camp LEASH is
                                                  // currently walking the tank back
                                                  // (see DC_SCRIPTED_PULL_LEASH).
@@ -290,6 +325,25 @@ struct DcPullContext
                                                  // Advance's spline again the moment
                                                  // the tank closed a single yard
 
+    // --- room-clear straight pull -------------------------------------------
+    // The stand spot / camp line for the room-trash pack being pulled
+    // (DcPullPlanner::ComputeRoomClearLane). Computed once per pack and kept, so
+    // the tank walks to one fixed spot; recomputed when the pack changes or
+    // wanders off the spot it was measured from (pathing Waiters).
+    ObjectGuid  laneTarget;                      // pack the lane belongs to
+    bool        laneOk         = false;          // a lane was found for it
+    Position    laneAnchor;                      // pack position when measured
+    Position    laneStand;                       // tag from here
+    Position    laneCamp;                        // drag straight back to here
+    // Room trash with no CLEAN lane (every bearing's walk, tag spot or drag
+    // crosses another pack's clearance or the boss's). Pulled last: the room is
+    // cleared outside-in, and each kill can open a lane, so the list is dropped
+    // whenever the live room-trash count falls below `laneRefusedLive`. When
+    // everything left is refused the nearest is pulled on its best lane anyway.
+    std::vector<ObjectGuid> laneRefused;
+    uint32      laneRefusedLive = 0;             // live room trash when the list
+                                                 // was last written
+
     // --- CC-assist gate ---------------------------------------------------
     uint32      ccSince    = 0;                  // getMSTime() the tank's CURRENT
                                                  // continuous drag-ruining CC
@@ -384,6 +438,27 @@ struct DcPullContext
     uint32      predictedThirds    = 0;  // DcPullClassification::fullCount
     uint32      predictedCount     = 0;  // DcPullClassification::bodyCount
     uint32      predictedCeiling   = 0;  // DcPullClassification::ceiling
+
+    // --- scout-aggro hold ---------------------------------------------------
+    // getMSTime() the leader's combat flag went 0->1 while the FSM sat in Idle
+    // (an unplanned aggro while scouting), stamped by DcPullBrake from the
+    // enter-combat hook; 0 = never. Closes the gap between that flag and the
+    // maneuver's first combat tick flipping Idle -> Returning: with the phase
+    // still Idle the party read `passive=false`, so stock "dps assist" (rel 50,
+    // above hold-at-camp) grabbed the tank's new attacker and the casters nuked
+    // it at its spawn while the tank was turning to drag it home
+    // (tr-20260923-171623-1, 17:21:49 — Arcane Barrage + Corruption on a Waiter
+    // that never followed, then a 49yd assist walk that woke Moroes).
+    uint32      scoutAggroMs = 0;
+
+    // Is the party held by a fresh scout aggro? Idle only: once the maneuver
+    // takes the pull (Returning) the ordinary holding-phase rule owns the party,
+    // and the window bounds the case where the maneuver declines to drag at all.
+    bool ScoutAggroHolding(uint32 nowMs, uint32 windowMs) const
+    {
+        return phase == DcPullPhase::Idle && scoutAggroMs != 0 &&
+               nowMs - scoutAggroMs < windowMs;
+    }
 
     void Reset() { *this = DcPullContext{}; }
 
@@ -495,6 +570,11 @@ struct DcPullContext
         return camp.GetPositionX() != 0.0f || camp.GetPositionY() != 0.0f ||
                camp.GetPositionZ() != 0.0f;
     }
+
+    // A camp fight that stays ON the camp: a scripted stage, or a room-clear pull in
+    // a boxed room (roomCampFight). The tank's camp leash in Engage, the follower
+    // hold that survives Engage and the assist stand-downs all key on this.
+    bool AnchoredCampFight() const { return scriptedStage >= 0 || roomCampFight; }
 
     // Move the camp AND stamp pull-machinery ownership in one step: a camp write
     // can never forget the freshness stamp that keeps Advance's scout camp-

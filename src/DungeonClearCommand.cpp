@@ -35,6 +35,7 @@
 
 #include "DcModuleEnable.h"
 #include "DungeonClearDispatch.h"
+#include "BgQueueFill/DcBgQueueFillManager.h"
 #include "DungeonQueueFill/DcDungeonQueueFillManager.h"
 #include "TestRun/DcTestDriver.h"
 #include "TestRun/DcTestDungeonRegistry.h"
@@ -307,6 +308,9 @@ public:
             { "start",  HandleTestPlanStart,  SEC_GAMEMASTER, Console::Yes },
             { "status", HandleTestPlanStatus, SEC_GAMEMASTER, Console::Yes },
             { "stop",   HandleTestPlanStop,   SEC_GAMEMASTER, Console::Yes },
+            { "edit",   HandleTestPlanEdit,   SEC_GAMEMASTER, Console::Yes },
+            { "pause",  HandleTestPlanPause,  SEC_GAMEMASTER, Console::Yes },
+            { "resume", HandleTestPlanResume, SEC_GAMEMASTER, Console::Yes },
         };
         static ChatCommandTable dcTestTable =
         {
@@ -320,14 +324,21 @@ public:
             { "plan",   dcTestPlanTable },
         };
         // `.dc dungeonqueuefill` — the RDF instant fill. Named in full rather
-        // than abbreviated because a battleground counterpart
-        // (`.dc bgqueuefill`) is a separate feature with its own switch, and
-        // the two must never have to be disambiguated after the fact.
+        // than abbreviated because the battleground counterpart
+        // (`.dc bgqueuefill`, below) is a separate feature with its own
+        // switch, and the two must never have to be disambiguated.
         static ChatCommandTable dcQueueFillTable =
         {
             { "status", HandleQueueFillStatus, SEC_GAMEMASTER, Console::Yes },
             { "cancel", HandleQueueFillCancel, SEC_GAMEMASTER, Console::Yes },
             { "test",   HandleQueueFillTest,   SEC_GAMEMASTER, Console::Yes },
+        };
+        // `.dc bgqueuefill` — the battleground instant fill.
+        static ChatCommandTable dcBgQueueFillTable =
+        {
+            { "status", HandleBgQueueFillStatus, SEC_GAMEMASTER, Console::Yes },
+            { "cancel", HandleBgQueueFillCancel, SEC_GAMEMASTER, Console::Yes },
+            { "test",   HandleBgQueueFillTest,   SEC_GAMEMASTER, Console::Yes },
         };
         static ChatCommandTable dcTable =
         {
@@ -339,16 +350,21 @@ public:
             { "status", HandleStatus, SEC_PLAYER, Console::No },
             { "bosses", HandleBosses, SEC_PLAYER, Console::No },
             { "go",     HandleGo,     SEC_PLAYER, Console::No },
+            { "wing",   HandleWing,   SEC_PLAYER, Console::No },
             { "config", HandleConfig, SEC_PLAYER, Console::No },
             { "spectate", HandleSpectate, SEC_PLAYER, Console::No },
             { "test",   dcTestTable },
             { "dungeonqueuefill", dcQueueFillTable },
+            { "bgqueuefill", dcBgQueueFillTable },
         };
         static ChatCommandTable root = { { "dc", dcTable } };
         return root;
     }
 
-    static bool HandleOn(ChatHandler* handler)     { return RunDcCommand(handler, "dc on"); }
+    // `.dc on [wing]` — the optional wing (lbrs / ubrs, brd-db / brd-uc) picks the
+    // half of a map whose wings are chosen per run (Blackrock Spire/Depths).
+    // `.dc wing [wing]` shows or changes it without toggling the run.
+    static bool HandleOn(ChatHandler* handler, Optional<std::string> wing) { return RunDcCommand(handler, "dc on", wing ? *wing : ""); }
     static bool HandleOff(ChatHandler* handler)    { return RunDcCommand(handler, "dc off"); }
     static bool HandleSkip(ChatHandler* handler)   { return RunDcCommand(handler, "dc skip"); }
     static bool HandlePause(ChatHandler* handler)  { return RunDcCommand(handler, "dc pause"); }
@@ -356,6 +372,7 @@ public:
     static bool HandleStatus(ChatHandler* handler, Optional<std::string> param) { return RunDcCommand(handler, "dc status", param ? *param : ""); }
     static bool HandleBosses(ChatHandler* handler, Optional<std::string> param) { return RunDcCommand(handler, "dc bosses", param ? *param : ""); }
     static bool HandleGo(ChatHandler* handler, Tail targetBoss) { return RunDcCommand(handler, "dc go", std::string(targetBoss)); }
+    static bool HandleWing(ChatHandler* handler, Optional<std::string> wing) { return RunDcCommand(handler, "dc wing", wing ? *wing : ""); }
 
     // --- `.dc test` — the automated test-run harness ------------------------
     // These act on DcTestRunManager directly (never DispatchToTankBots: the
@@ -563,6 +580,68 @@ public:
 
         std::string msg;
         DcDungeonQueueFillManager::Instance().ForceFill(target, &msg);
+        handler->SendSysMessage(msg);
+        return true;
+    }
+
+    // --- `.dc bgqueuefill` — the battleground instant fill -----------------
+
+    // `.dc bgqueuefill status` — on/off, every fill in flight with its stage
+    // and per-side bot counts, deferred players, and released bots still
+    // waiting for somebody else's match to end.
+    static bool HandleBgQueueFillStatus(ChatHandler* handler)
+    {
+        if (DcDisabledNotice(handler))
+            return true;
+
+        handler->SendSysMessage(DcBgQueueFillManager::Instance().StatusText());
+        return true;
+    }
+
+    // `.dc bgqueuefill cancel <player>` — force-release one fill. The player
+    // keeps their place in the real queue (or their match, if they are in
+    // one: bots in a match a real player is still playing stay until it ends).
+    static bool HandleBgQueueFillCancel(ChatHandler* handler, Tail playerName)
+    {
+        if (DcDisabledNotice(handler))
+            return true;
+
+        std::string const name = std::string(playerName);
+        if (name.empty())
+        {
+            handler->SendSysMessage("Usage: .dc bgqueuefill cancel <player>");
+            return true;
+        }
+
+        std::string msg;
+        DcBgQueueFillManager::Instance().Cancel(name, &msg);
+        handler->SendSysMessage(msg);
+        return true;
+    }
+
+    // `.dc bgqueuefill test <player>` — open a fill for a player who is
+    // ALREADY waiting in a battleground queue, without them re-queueing.
+    static bool HandleBgQueueFillTest(ChatHandler* handler, Tail playerName)
+    {
+        if (DcDisabledNotice(handler))
+            return true;
+
+        std::string const name = std::string(playerName);
+        if (name.empty())
+        {
+            handler->SendSysMessage("Usage: .dc bgqueuefill test <player>");
+            return true;
+        }
+
+        Player* const target = ObjectAccessor::FindPlayerByName(name, false);
+        if (!target)
+        {
+            handler->PSendSysMessage("No player named '%s' is online.", name.c_str());
+            return true;
+        }
+
+        std::string msg;
+        DcBgQueueFillManager::Instance().ForceFill(target, &msg);
         handler->SendSysMessage(msg);
         return true;
     }
@@ -892,6 +971,49 @@ public:
         return true;
     }
 
+    // `.dc test plan edit <planId> [pool=…] [concurrent=N]` — retune a live
+    // plan without restarting it (live runs are never aborted).
+    static bool HandleTestPlanEdit(ChatHandler* handler, Tail args)
+    {
+        if (DcDisabledNotice(handler))
+            return true;
+
+        DcTestPlan::EditParse const parsed = DcTestPlan::ParseEditArgs(std::string(args));
+        if (!parsed.ok)
+        {
+            handler->SendSysMessage(parsed.err);
+            return true;
+        }
+        std::string msg;
+        DcTestPlanManager::Instance().Edit(parsed.edit, &msg);
+        handler->SendSysMessage(msg);
+        return true;
+    }
+
+    // `.dc test plan pause|resume [planId|all]` — stop / restart launching;
+    // runs already in flight play out.
+    static bool HandleTestPlanPause(ChatHandler* handler, Tail selector)
+    {
+        if (DcDisabledNotice(handler))
+            return true;
+
+        std::string msg;
+        DcTestPlanManager::Instance().SetPaused(std::string(selector), true, &msg);
+        handler->SendSysMessage(msg);
+        return true;
+    }
+
+    static bool HandleTestPlanResume(ChatHandler* handler, Tail selector)
+    {
+        if (DcDisabledNotice(handler))
+            return true;
+
+        std::string msg;
+        DcTestPlanManager::Instance().SetPaused(std::string(selector), false, &msg);
+        handler->SendSysMessage(msg);
+        return true;
+    }
+
     static bool HandleTestList(ChatHandler* handler)
     {
         if (DcDisabledNotice(handler))
@@ -900,10 +1022,13 @@ public:
         handler->SendSysMessage("Supported test dungeons (.dc test start <token> [heroic]):");
         for (DcTestDungeonRegistry::Row const& row : DcTestDungeonRegistry::All())
             handler->SendSysMessage(Acore::StringFormat(
-                "  {:<16} {} (map {}, level {}{})", row.token, row.name, row.mapId,
+                "  {:<16} {} (map {}, level {}{}{})", row.token, row.name, row.mapId,
                 row.recommendedLevel,
                 row.heroicLevel ? Acore::StringFormat(", heroic {}", row.heroicLevel)
-                                : std::string()));
+                                : std::string(),
+                DcTestDungeonRegistry::IsScenario(row)
+                    ? Acore::StringFormat(", scenario of {}", row.scenarioOf)
+                    : std::string()));
         return true;
     }
 
