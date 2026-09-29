@@ -95,6 +95,7 @@ if (BUILD_TESTING)
             "${MOD_PATH}/t/TestScenarioDriver.cpp"
             "${MOD_PATH}/t/TestRoomAggro.cpp"
             "${MOD_PATH}/t/TestNavPenalty.cpp"
+            "${MOD_PATH}/t/TestRunWing.cpp"
             "${MOD_PATH}/t/TestNeverTarget.cpp"
             "${MOD_PATH}/t/TestCombatPurge.cpp"
             "${MOD_PATH}/t/TestFactionEntrySwap.cpp"

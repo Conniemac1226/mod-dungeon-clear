@@ -16,8 +16,10 @@
 #include "InstanceScript.h"
 #include "Log.h"
 #include "Map.h"
+#include "Ai/Dungeon/DungeonClear/Data/DungeonWingRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcAnchorDone.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcBossOrdering.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcRunWing.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearUtil.h"
 #include "Ai/Dungeon/DungeonClear/Value/DungeonClearStateValues.h"
 #include "Playerbots.h"
@@ -124,6 +126,22 @@ std::optional<DungeonBossInfo> NextDungeonBossValue::Calculate()
     for (DungeonBossInfo const& info : bosses)
         wantedEntries.insert(info.entry);
     std::unordered_map<uint32, BossLiveState> const liveness = BuildLiveness(map, wantedEntries);
+
+    // TERMINAL BOSS = WING COMPLETE. A wing chosen per run (Blackrock Spire) ends
+    // at its last boss: once Overlord Wyrmthalak is down an LBRS run is finished,
+    // whatever else in the wing was skipped or never reachable — it must not go
+    // on looking for more. An empty result is the all-cleared contract, so the run
+    // disables with kReasonAllCleared exactly as a fully-cleared list would.
+    if (DungeonWing const* wing = DcRunWing::Resolve(bot); wing && wing->terminalBossEntry)
+    {
+        BossLiveState const terminal = LookupLive(liveness, wing->terminalBossEntry);
+        if (DcRunWing::TerminalDone(*wing, bosses, completedMask, terminal.present && !terminal.alive))
+        {
+            DcRun::Of(context).selectedBossEntry = 0u;
+            context->GetValue<uint32>(DcKey::StickyBoss)->Set(0u);
+            return std::nullopt;
+        }
+    }
 
     // Check if there is a manually selected boss target override
     uint32 const selectedEntry = DcRun::Of(context).selectedBossEntry;

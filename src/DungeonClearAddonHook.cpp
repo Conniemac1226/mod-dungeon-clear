@@ -304,6 +304,7 @@ public:
         else if (subCmd == "status") action = "dc status";
         else if (subCmd == "bosses") action = "dc bosses";
         else if (subCmd == "go")    action = "dc go";
+        else if (subCmd == "wing")  action = "dc wing";
         else
         {
             LOG_DEBUG("module", "mod-dungeon-clear: unknown addon subcommand '{}' from {}",

@@ -350,6 +350,7 @@ public:
             { "status", HandleStatus, SEC_PLAYER, Console::No },
             { "bosses", HandleBosses, SEC_PLAYER, Console::No },
             { "go",     HandleGo,     SEC_PLAYER, Console::No },
+            { "wing",   HandleWing,   SEC_PLAYER, Console::No },
             { "config", HandleConfig, SEC_PLAYER, Console::No },
             { "spectate", HandleSpectate, SEC_PLAYER, Console::No },
             { "test",   dcTestTable },
@@ -360,7 +361,10 @@ public:
         return root;
     }
 
-    static bool HandleOn(ChatHandler* handler)     { return RunDcCommand(handler, "dc on"); }
+    // `.dc on [wing]` — the optional wing (lbrs / ubrs) picks the half of a map
+    // whose wings are chosen per run (Blackrock Spire). `.dc wing [wing]` shows
+    // or changes it without toggling the run.
+    static bool HandleOn(ChatHandler* handler, Optional<std::string> wing) { return RunDcCommand(handler, "dc on", wing ? *wing : ""); }
     static bool HandleOff(ChatHandler* handler)    { return RunDcCommand(handler, "dc off"); }
     static bool HandleSkip(ChatHandler* handler)   { return RunDcCommand(handler, "dc skip"); }
     static bool HandlePause(ChatHandler* handler)  { return RunDcCommand(handler, "dc pause"); }
@@ -368,6 +372,7 @@ public:
     static bool HandleStatus(ChatHandler* handler, Optional<std::string> param) { return RunDcCommand(handler, "dc status", param ? *param : ""); }
     static bool HandleBosses(ChatHandler* handler, Optional<std::string> param) { return RunDcCommand(handler, "dc bosses", param ? *param : ""); }
     static bool HandleGo(ChatHandler* handler, Tail targetBoss) { return RunDcCommand(handler, "dc go", std::string(targetBoss)); }
+    static bool HandleWing(ChatHandler* handler, Optional<std::string> wing) { return RunDcCommand(handler, "dc wing", wing ? *wing : ""); }
 
     // --- `.dc test` — the automated test-run harness ------------------------
     // These act on DcTestRunManager directly (never DispatchToTankBots: the

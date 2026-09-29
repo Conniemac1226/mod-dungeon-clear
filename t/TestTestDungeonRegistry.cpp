@@ -131,6 +131,48 @@ TEST(DcTestDungeonRegistryTest, NumericLookupOnWingSplitMapIsRefused)
     EXPECT_EQ(Find("429"), nullptr);
     // 189 = Scarlet Monastery, four wings.
     EXPECT_EQ(Find("189"), nullptr);
+    // 229 = Blackrock Spire, LBRS + UBRS.
+    EXPECT_EQ(Find("229"), nullptr);
+}
+
+TEST(DcTestDungeonRegistryTest, BlackrockSpireRowsAreItsWings)
+{
+    Row const* lbrs = Find("lbrs");
+    ASSERT_NE(lbrs, nullptr);
+    EXPECT_EQ(lbrs->mapId, 229u);
+    EXPECT_STREQ(lbrs->wing, "LBRS");
+    EXPECT_EQ(lbrs->recommendedLevel, 58u);
+
+    Row const* ubrs = Find("ubrs");
+    ASSERT_NE(ubrs, nullptr);
+    EXPECT_EQ(ubrs->mapId, 229u);
+    EXPECT_STREQ(ubrs->wing, "UBRS");
+    EXPECT_EQ(ubrs->recommendedLevel, 60u);
+    // UBRS drops in the shared hall at the Dragonspine Door, not at the portal.
+    EXPECT_FALSE(ubrs->x == lbrs->x && ubrs->y == lbrs->y);
+}
+
+TEST(DcTestDungeonRegistryTest, RetiredBrsTokenAliasesToLbrs)
+{
+    EXPECT_STREQ(DcTestDungeonRegistry::AliasTarget("brs"), "lbrs");
+    EXPECT_EQ(DcTestDungeonRegistry::AliasTarget("lbrs"), nullptr);
+    Row const* row = Find("brs");
+    ASSERT_NE(row, nullptr);
+    EXPECT_STREQ(row->token, "lbrs");
+
+    // An alias whose target is not in the table resolves to nothing.
+    std::vector<Row> const noLbrs = {
+        { "deadmines", "The Deadmines", 36, -16.40f, -383.07f, 61.78f, 1.860f, 24, "" },
+    };
+    EXPECT_EQ(Find("brs", noLbrs), nullptr);
+
+    // Every alias points at a real row and never shadows a live token.
+    for (DcTestDungeonRegistry::Alias const& a : DcTestDungeonRegistry::Aliases())
+    {
+        EXPECT_NE(Find(a.to), nullptr) << a.from << " -> " << a.to;
+        for (Row const& r : All())
+            EXPECT_STRNE(r.token, a.from) << "alias '" << a.from << "' shadows a live row";
+    }
 }
 
 TEST(DcTestDungeonRegistryTest, WingSplitMapsHaveWingTokens)
@@ -154,6 +196,16 @@ TEST(DcTestDungeonRegistryTest, WingSplitMapsHaveWingTokens)
             EXPECT_STRNE(row.wing, "") << row.token;
         }
     EXPECT_EQ(smRows, 4);
+
+    // Blackrock Spire: two wing rows.
+    int brsRows = 0;
+    for (Row const& row : All())
+        if (row.mapId == 229)
+        {
+            ++brsRows;
+            EXPECT_STRNE(row.wing, "") << row.token;
+        }
+    EXPECT_EQ(brsRows, 2);
 
     // Maraudon's wings interconnect — one unlabelled row, findable by mapId.
     EXPECT_NE(Find("349"), nullptr);

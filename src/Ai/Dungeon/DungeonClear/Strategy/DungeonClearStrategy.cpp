@@ -453,6 +453,7 @@ void DungeonClearStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(new TriggerNode("dungeon clear pull keyword", { NextAction("dc pull", chatRel) }));
     triggers.push_back(new TriggerNode("dc status",         { NextAction("dc status", chatRel) }));
     triggers.push_back(new TriggerNode("dc bosses",         { NextAction("dc bosses", chatRel) }));
+    triggers.push_back(new TriggerNode("dc wing",           { NextAction("dc wing",   chatRel) }));
 }
 
 void DungeonClearStrategy::InitMultipliers(std::vector<Multiplier*>& multipliers)

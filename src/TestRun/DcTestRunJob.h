@@ -349,6 +349,15 @@ private:
     // The predicate's latch + grace clock (pure — DcTestRunVerdict.h).
     DcTestRun::ScenarioGrace _grace;
 
+    // --- run wing (Blackrock Spire: a map whose wing is chosen per run) -------
+    // The row's wing token when its map picks wings explicitly ("lbrs"/"ubrs"),
+    // "" otherwise. Latched on the tank before the roster is read, so the roster,
+    // bossesTotal and the run all see only that wing. `_wingMask` is the wing's
+    // DungeonEncounter bits (0 = count every bit): it scopes the kill count and
+    // the stale-instance guard, so an LBRS run never counts UBRS kills.
+    std::string _runWing;
+    uint32 _wingMask = 0;
+
     // --- stage bookkeeping --------------------------------------------------
     uint32 _stageMs = 0;      // time in current stage (stage timeouts)
     uint32 _totalMs = 0;      // time since Create (timeline t offsets)

@@ -1016,3 +1016,13 @@ AC_ADD_CONFIG_FILE("${CMAKE_CURRENT_LIST_DIR}/conf/mod_dungeon_clear.conf.dist")
 #    (DcRel::HorStayAhead, 56) is a new per-bot survival rung that moves FORWARD
 #    rather than radially away — the generic hazard vacate's away-from-emitter
 #    bearing is the one direction that makes the zap rule worse.)
+
+# New files added: Data/Events/BlackrockSpireEvents.cpp, Util/DcRunWing.{h,cpp},
+#   t/TestRunWing.cpp
+#   (Blackrock Spire, map 229, split into LBRS and UBRS. The wing is a per-RUN
+#    choice latched on the run owner — test row, `.dc on <wing>` / `.dc wing`,
+#    the LFG dungeon, else the wing region the party stands in, else LBRS —
+#    because the two wings share one portal and proximity picks UBRS there. The
+#    wing's terminal boss completes the run, the test harness counts only the
+#    wing's encounter bits, and wing-tagged DcNavPenaltyRegistry rows keep each
+#    wing's routes out of the other.)

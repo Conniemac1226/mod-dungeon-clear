@@ -12,6 +12,7 @@
 #include <sstream>
 
 #include "DBCStores.h"
+#include "Log.h"
 #include "PlayerbotAIConfig.h"
 
 #include "Ai/Dungeon/DungeonClear/Data/Events/DungeonEventTables.h"
@@ -57,7 +58,12 @@ namespace DcTestDungeonRegistry
             { "maraudon",        "Maraudon",                      349,  1019.69f,  -458.31f,  -43.43f, 0.310f, 48, "" },
             { "st",              "The Temple of Atal'Hakkar",     109,  -319.24f,    99.90f, -131.85f, 3.190f, 52, "" },
             { "brd",             "Blackrock Depths",              230,   456.93f,    34.09f,  -68.09f, 4.712f, 54, "" },
-            { "brs",             "Blackrock Spire",               229,    78.51f,  -225.04f,   49.84f, 5.100f, 58, "" },
+            // Blackrock Spire is two dungeons on one map (see BlackrockSpireEvents).
+            // LBRS enters at the shared portal; UBRS drops the party inside the
+            // shared hall facing the Dragonspine Door (GO 164725), where a UBRS
+            // run starts in practice. The retired `brs` token aliases to `lbrs`.
+            { "lbrs",            "Lower Blackrock Spire",         229,    78.51f,  -225.04f,   49.84f, 5.100f, 58, "LBRS" },
+            { "ubrs",            "Upper Blackrock Spire",         229,   105.00f,  -320.00f,   65.50f, 0.041f, 60, "UBRS" },
             { "dm-east",         "Dire Maul: East",               429,    44.45f,  -154.82f,   -2.71f, 0.000f, 58, "East" },
             { "dm-west",         "Dire Maul: West",               429,   -62.97f,   159.87f,   -3.46f, 3.148f, 60, "West" },
             { "dm-north",        "Dire Maul: North",              429,   255.25f,   -16.06f,   -2.59f, 4.700f, 60, "North" },
@@ -161,6 +167,22 @@ namespace DcTestDungeonRegistry
         return rows;
     }
 
+    std::vector<Alias> const& Aliases()
+    {
+        static std::vector<Alias> const aliases = {
+            { "brs", "lbrs" },   // Blackrock Spire before the LBRS/UBRS split
+        };
+        return aliases;
+    }
+
+    char const* AliasTarget(std::string const& token)
+    {
+        for (Alias const& a : Aliases())
+            if (token == a.from)
+                return a.to;
+        return nullptr;
+    }
+
     Row const* Find(std::string const& tokenOrMapId)
     {
         return Find(tokenOrMapId, All());
@@ -174,6 +196,19 @@ namespace DcTestDungeonRegistry
         for (Row const& row : rows)
             if (tokenOrMapId == row.token)
                 return &row;
+
+        if (char const* target = AliasTarget(tokenOrMapId))
+        {
+            for (Row const& row : rows)
+                if (std::string(target) == row.token)
+                {
+                    LOG_INFO("playerbots.dungeonclear",
+                             "[dc-test] dungeon token '{}' is retired — resolving it as '{}'",
+                             tokenOrMapId, target);
+                    return &row;
+                }
+            return nullptr;
+        }
 
         // Numeric fallback — only unambiguous for maps with a single row.
         char* end = nullptr;
@@ -366,7 +401,14 @@ namespace DcTestDungeonRegistry
         for (std::uint32_t q = 1; q <= 5; ++q)
             s << (q > 1 ? "," : "") << "{\"v\":" << q << ",\"label\":\""
               << DcTestGearTiers::QualityName(q) << "\"}";
-        s << "],\"dungeons\":[";
+        // Retired tokens -> their replacements, so the Deck and streamcast can
+        // normalise stored tokens (soak pools, queued requests) instead of
+        // rejecting them.
+        s << "],\"aliases\":{";
+        for (std::size_t i = 0; i < Aliases().size(); ++i)
+            s << (i ? "," : "") << '"' << EscapeJson(Aliases()[i].from) << "\":\""
+              << EscapeJson(Aliases()[i].to) << '"';
+        s << "},\"dungeons\":[";
         bool first = true;
         for (Row const& row : All())
         {

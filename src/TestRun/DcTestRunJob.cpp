@@ -46,10 +46,12 @@
 #include "Util/DcProvisionBudget.h"
 #include "Ai/Dungeon/DungeonClear/Action/DcActionShared.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
+#include "Ai/Dungeon/DungeonClear/Data/DungeonWingRegistry.h"
 #include "Ai/Dungeon/DungeonClear/DcPullContext.h"
 #include "Ai/Dungeon/DungeonClear/DcValueKeys.h"
 #include "Ai/Dungeon/DungeonClear/Settings/DcSettings.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcRun.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcRunWing.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTargeting.h"
 #include "TestRun/DcDiagSnapshot.h"
 #include "TestRun/DcTestComp.h"
@@ -200,6 +202,19 @@ void DcTestRunJob::InitIdentity(Player* gm, DcTestDungeonRegistry::Row const& ro
         _limits.overallTimeoutMs = row.overallTimeoutS * 1000;
     if (row.noProgressS)
         _limits.noProgressMs = row.noProgressS * 1000;
+
+    // A map whose wing is picked per run (Blackrock Spire) takes it from the
+    // row: the wing whose token is the row's. Proximity maps (DM, SM) leave it
+    // to where the party lands, exactly as before.
+    _runWing.clear();
+    _wingMask = 0;
+    if (DungeonWingLayout const* layout = DungeonWingRegistry::Get(row.mapId);
+        layout && layout->isolated && layout->select == WingSelect::Explicit)
+        if (DungeonWing const* wing = DungeonWingRegistry::FindWing(*layout, row.token))
+        {
+            _runWing = wing->token;
+            _wingMask = wing->encounterMask;
+        }
 
     _isScenario = DcTestDungeonRegistry::IsScenario(row);
     _focus = row.focusEntries;
@@ -1322,13 +1337,22 @@ void DcTestRunJob::TickStarting()
 
     AiObjectContext* ctx = tankAI->GetAiObjectContext();
 
+    // Run wing first (idempotent; re-asserted each tick until `dc on` takes): it
+    // decides which boss list the roster read below — and the whole run — sees.
+    // Explicit beats the fallback a bot may already have computed at the portal.
+    if (!_runWing.empty())
+        if (DungeonWingLayout const* layout = DungeonWingRegistry::Get(_mapId))
+            if (DungeonWing const* wing = DungeonWingRegistry::FindWing(*layout, _runWing))
+                DcRunWing::Set(tank, *wing, DcRunWing::Source::Explicit);
+
     // A reused instance with dead bosses would flash an instant (false)
-    // all-clear — refuse it rather than record a fake success.
+    // all-clear — refuse it rather than record a fake success. A wing-scoped run
+    // only cares about its own wing's bits.
     if (InstanceScript* inst = DcTargeting::GetInstanceScript(tank))
-        if (inst->GetCompletedEncounterMask() != 0)
+        if (uint32 const done = inst->GetCompletedEncounterMask() & (_wingMask ? _wingMask : ~0u))
         {
             FailSetup("stale instance: encounters already completed (mask " +
-                      std::to_string(inst->GetCompletedEncounterMask()) + ")");
+                      std::to_string(done) + ")");
             return;
         }
 
@@ -1875,7 +1899,9 @@ void DcTestRunJob::TickMonitoring(uint32 dt)
             ctx->GetValue<std::unordered_set<uint32>&>(DcKey::ClearedAnchors)->Get().size();
 
         bool progressed = false;
-        if (uint32 const fresh = mask & ~_lastMask)
+        // A wing-scoped run counts its own wing's bits only: the other wing's
+        // kills (a UBRS pack pulled from the shared hall) are not its progress.
+        if (uint32 const fresh = mask & ~_lastMask & (_wingMask ? _wingMask : ~0u))
         {
             for (uint32 bit = 0; bit < 32; ++bit)
             {
@@ -1896,8 +1922,8 @@ void DcTestRunJob::TickMonitoring(uint32 dt)
                 _record.bossTimeline.push_back(kill);
                 progressed = true;
             }
-            _lastMask = mask;
         }
+        _lastMask = mask;
         if (anchors > _lastAnchors)
         {
             for (std::size_t i = _lastAnchors; i < anchors; ++i)

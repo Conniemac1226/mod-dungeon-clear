@@ -67,6 +67,7 @@ public:
         creators["dc skip"] = &DungeonClearTriggerContext::dc_skip;
         creators["dc status"] = &DungeonClearTriggerContext::dc_status;
         creators["dc bosses"] = &DungeonClearTriggerContext::dc_bosses;
+        creators["dc wing"] = &DungeonClearTriggerContext::dc_wing;
         creators["dc pause"] = &DungeonClearTriggerContext::dc_pause;
         creators["dungeon clear pause"] = &DungeonClearTriggerContext::dungeon_clear_pause;
         creators["dc pull"] = &DungeonClearTriggerContext::dc_pull;
@@ -124,6 +125,7 @@ private:
     static Trigger* dc_skip(PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "dc skip"); }
     static Trigger* dc_status(PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "dc status"); }
     static Trigger* dc_bosses(PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "dc bosses"); }
+    static Trigger* dc_wing(PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "dc wing"); }
     static Trigger* dc_pause(PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "dc pause"); }
     static Trigger* dungeon_clear_pause(PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "dungeon clear pause"); }
     static Trigger* dc_pull(PlayerbotAI* ai) { return new ChatCommandTrigger(ai, "dc pull"); }

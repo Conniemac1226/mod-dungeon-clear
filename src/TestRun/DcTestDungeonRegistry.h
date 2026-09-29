@@ -14,9 +14,11 @@
 // Hand-authored catalogue of the dungeons the `.dc test` harness can run:
 // every map with a curated clear definition (roster patch / event file), one
 // row per *enterable unit*. Split-wing maps whose wings are physically
-// isolated (Dire Maul, Scarlet Monastery) get one row per wing — the wing a
-// run covers is decided by where the party stands, so each wing needs its own
-// token and entrance. Maraudon's wings interconnect, so it stays one row.
+// isolated (Dire Maul, Scarlet Monastery, Blackrock Spire) get one row per wing,
+// so each wing has its own token and entrance. On DM/SM the wing a run covers is
+// decided by where the party stands; on Blackrock Spire (one shared portal) the
+// row's token IS the run wing (DungeonWing::token, latched by the harness).
+// Maraudon's wings interconnect, so it stays one row.
 //
 // Entrance coordinates are the world-DB areatrigger_teleport targets (the
 // point just inside the instance portal) — safely on the navmesh, where a
@@ -136,7 +138,22 @@ namespace DcTestDungeonRegistry
     Row const* Find(std::string const& tokenOrMapId);
 
     // Same lookup over an explicit table (gtest fixtures; Find() passes All()).
+    // A retired token that has an alias (Aliases()) resolves to its target row.
     Row const* Find(std::string const& tokenOrMapId, std::vector<Row> const& rows);
+
+    // Retired tokens that still resolve, so old commands, saved soak pools, test
+    // plans and queued streamcast requests keep working: `brs` (Blackrock Spire
+    // before the LBRS/UBRS split) -> `lbrs`. Published in the sidecar as
+    // "aliases" so the Test Deck and streamcast can normalise stored tokens.
+    struct Alias
+    {
+        char const* from;
+        char const* to;
+    };
+    std::vector<Alias> const& Aliases();
+
+    // The alias target for `token`, or nullptr when it is not a retired token.
+    char const* AliasTarget(std::string const& token);
 
     std::vector<Row> const& All();
 

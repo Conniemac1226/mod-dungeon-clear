@@ -30,7 +30,9 @@
 
 #include "DcStrategyGate.h"
 
+#include "Ai/Dungeon/DungeonClear/Data/DungeonWingRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Settings/DcSettings.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcRunWing.h"
 #include "DungeonQueueFill/DcDungeonQueueFillManager.h"
 #include "TestRun/DcTestDungeonRegistry.h"
 #include "TestRun/DcTestGearTiers.h"
@@ -1156,6 +1158,18 @@ void DcDungeonQueueFillJob::TickFormed()
                 break;
 
             DcStrategyGate::Reconcile(tank);
+            // A map whose wing is chosen per run (Blackrock Spire) takes it from
+            // the dungeon the group was actually formed for: LFG 32 is LBRS, 44
+            // UBRS. Latched before `dc on` so the run clears that wing.
+            uint32 const lfgDungeon = sLFGMgr->GetDungeon(_formedGroupGuid);
+            if (DungeonWing const* wing =
+                    DungeonWingRegistry::WingForLfgDungeon(tank->GetMapId(), lfgDungeon))
+            {
+                DcRunWing::Set(tank, *wing, DcRunWing::Source::Lfg);
+                LOG_INFO("playerbots.dungeonclear",
+                         "QUEUEFILL {} AutoClear: LFG dungeon {} -> run wing '{}'", _id,
+                         lfgDungeon, wing->token);
+            }
             tankAI->DoSpecificAction("dc on", Event("dc", "", player), true);
             _autoClearIssued = true;
             LOG_INFO("playerbots.dungeonclear", "QUEUEFILL {} AutoClear: issued `dc on` to {}",

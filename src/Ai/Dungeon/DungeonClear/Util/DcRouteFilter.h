@@ -6,6 +6,8 @@
 #ifndef _PLAYERBOT_DCROUTEFILTER_H
 #define _PLAYERBOT_DCROUTEFILTER_H
 
+#include <string>
+
 #include "Define.h"
 #include "DetourExtended.h"   // dtQueryFilterExt
 
@@ -49,8 +51,11 @@ class DcRouteFilter : public dtQueryFilterExt
 public:
     // `startX/Y/Z` is where the route begins (the bot's position). Passing it is
     // mandatory: it is what lets a party that is standing inside a fence route
-    // out of one. See the "must never trap" note above.
-    DcRouteFilter(uint32 mapId, float startX, float startY, float startZ);
+    // out of one. See the "must never trap" note above. `runWing` is the run's
+    // wing (DcRunWing::FenceWing; "" = none): it switches on the wing-tagged rows
+    // that keep this run out of the OTHER wing of a split map (Blackrock Spire).
+    DcRouteFilter(uint32 mapId, float startX, float startY, float startZ,
+                  std::string runWing = {});
 
     float getCost(float const* pa, float const* pb,
         dtPolyRef prevRef, dtMeshTile const* prevTile, dtPoly const* prevPoly,
@@ -65,6 +70,7 @@ public:
 
 private:
     uint32 _mapId;
+    std::string _runWing;
     // Map has a no-go region AND the route does not start inside one — i.e. the
     // fence applies to this query. Also the per-edge region-test gate, so a map
     // with no rows pays nothing.

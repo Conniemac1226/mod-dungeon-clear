@@ -60,6 +60,7 @@
 #include "Ai/Dungeon/DungeonClear/Util/DcDoorPolicy.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcMovement.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcPathWorker.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcRunWing.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcSocialQuarantine.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTargeting.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTickMemo.h"
@@ -663,7 +664,7 @@ namespace DcActionShared
         pendingJob = DcPathWorker::Instance().Submit(
             bot->GetMapId(), target.entry, bot->GetGUID(), std::move(meshRef),
             bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
-            target.x, target.y, target.z);
+            target.x, target.y, target.z, DcRunWing::FenceWing(bot));
         pendingSince = now;
         appr.pendingPathStartPos = bot->GetPosition();  // drain-time start-drift baseline
 

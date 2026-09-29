@@ -18,6 +18,7 @@
 
 #include "Ai/Dungeon/DungeonClear/Util/DcChessConductor.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcRunProgress.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcRunWing.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcThrottle.h"
 
 // The authoritative, leader-owned state of one dungeon-clear RUN — the run's
@@ -566,6 +567,14 @@ struct DcRunState
         testExtras.clear();
     }
 
+    // --- the RUN WING (Explicit-select split maps: Blackrock Spire) ----------
+    // Which wing this run clears, latched per instance (see Util/DcRunWing.h for
+    // the resolution order). Carried across Reset() like the telemetry block: it
+    // is a fact of the INSTANCE, not of one `dc on` session, so `dc off` / a wipe
+    // / all-cleared must not forget that the party chose UBRS. Keyed by instance
+    // id, so a new instance reads it as unset without anyone clearing it.
+    DcRunWing::Latch runWing;
+
     // --- per-bot throttles (see Util/DcThrottle.h) --------------------------
 
     DcThrottleSlot throttles[kDcThrottleCount]{};
@@ -761,15 +770,18 @@ struct DcRunState
     // Full run teardown: every session + signal field. Used on dc on / dc off /
     // death / all-cleared. (The pull preference/bool are NOT here — see the header
     // note; they are reset explicitly by ApplyPullSetting / DisableDungeonClear.)
-    // The test-harness telemetry block is the one exception, carried across —
-    // see its comment for why; ClearTestTelemetry() is its own reset.
+    // The test-harness telemetry block and the run wing are the exceptions,
+    // carried across — see their comments for why; ClearTestTelemetry() is the
+    // telemetry's own reset, and the wing is instance-keyed.
     void Reset()
     {
         uint32 const seq = eventProgressSeq;
         std::vector<DcTestExtra> extras = std::move(testExtras);
+        DcRunWing::Latch wing = std::move(runWing);
         *this = DcRunState{};
         eventProgressSeq = seq;
         testExtras = std::move(extras);
+        runWing = std::move(wing);
     }
 
     // Pause-cluster teardown — the resume path (manual `dc pause` resume AND the

@@ -13,6 +13,7 @@
 #include "Ai/Dungeon/DungeonClear/Util/DcCombatFlag.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcLeaderSignal.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcRun.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcRunWing.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcStatusPublisher.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTargeting.h"
 #include "Ai/Dungeon/DungeonClear/DcApproachState.h"
@@ -666,14 +667,27 @@ namespace DcRezRecovery
         // The entrance teleport target comes from the dungeon catalogue (its
         // rows carry the world-DB areatrigger targets). No row -> the caller
         // falls back to the classic disable.
+        //
+        // On a split map the row is the RUN's wing's (row token == wing token):
+        // a wiped UBRS party regroups at the UBRS entrance, a Scarlet Monastery
+        // Library party at the Library's — not at whichever wing's row happens to
+        // come first in the table. Any other map (or no wing resolved) takes the
+        // first non-scenario row for the map, as before.
+        std::string const wingToken = DcRunWing::ActiveWingToken(owner);
         DcTestDungeonRegistry::Row const* row = nullptr;
         for (DcTestDungeonRegistry::Row const& r : DcTestDungeonRegistry::All())
+        {
             // A scenario's drop point is mid-instance, never the entrance.
-            if (r.mapId == map->GetId() && !DcTestDungeonRegistry::IsScenario(r))
+            if (r.mapId != map->GetId() || DcTestDungeonRegistry::IsScenario(r))
+                continue;
+            if (!wingToken.empty() && wingToken == r.token)
             {
                 row = &r;
                 break;
             }
+            if (!row)
+                row = &r;
+        }
         if (!row)
             return false;
 

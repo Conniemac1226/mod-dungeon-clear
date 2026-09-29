@@ -65,6 +65,7 @@ public:
         creators["dc pull"] = &DungeonClearActionContext::dc_pull;
         creators["dc status"] = &DungeonClearActionContext::dc_status;
         creators["dc bosses"] = &DungeonClearActionContext::dc_bosses;
+        creators["dc wing"] = &DungeonClearActionContext::dc_wing;
         creators["dc go"] = &DungeonClearActionContext::dc_go;
 
         // Override mod-playerbots' "loot roll": a bot in "bot self" mode does
@@ -133,6 +134,7 @@ private:
     static Action* dc_pull(PlayerbotAI* ai) { return new DcPullAction(ai); }
     static Action* dc_status(PlayerbotAI* ai) { return new DcStatusAction(ai); }
     static Action* dc_bosses(PlayerbotAI* ai) { return new DcBossesAction(ai); }
+    static Action* dc_wing(PlayerbotAI* ai) { return new DcWingAction(ai); }
     static Action* dc_go(PlayerbotAI* ai) { return new DcGoAction(ai); }
 
     static Action* better_loot_roll(PlayerbotAI* ai) { return new DungeonClearBetterLootRollAction(ai); }
