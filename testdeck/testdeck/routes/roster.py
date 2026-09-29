@@ -25,7 +25,7 @@ from ..context import ctx
 from ..mysql import (bot_account_prefix, mysql_query, parse_db_creds, sql_ident,
                      sql_in, sql_int, sql_str)
 from ..util import conf_int
-from .plans import catalogue_rows, check_dungeon
+from .plans import catalogue_rows, check_dungeon, resolve_alias
 from .runs import audit
 
 router = APIRouter()
@@ -505,7 +505,8 @@ async def api_testruns_start_roster(req: RosterStartRequest, request: Request):
     start` is typeable by hand)."""
     validate_member_names(req.members)
 
-    _cat, rows = await catalogue_rows()
+    cat, rows = await catalogue_rows()
+    req.dungeon = resolve_alias(cat, req.dungeon)
     check_dungeon(rows, req.dungeon, req.heroic)
 
     auth_db = auth_db_ident()

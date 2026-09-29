@@ -72,6 +72,14 @@ class PlanStopRequest(BaseModel):
     planId: str
 
 
+def resolve_alias(cat, token):
+    """A retired dungeon token (the catalogue's "aliases": brs -> lbrs after the
+    Blackrock Spire split) as the token that replaced it; any other unchanged."""
+    aliases = cat.get("aliases") or {}
+    target = aliases.get(token)
+    return target if isinstance(target, str) and target else token
+
+
 async def catalogue_rows():
     """{token: row} from the catalogue, refusing early if it is not there yet."""
     cat = await api_testdungeons()
@@ -146,6 +154,7 @@ def check_gear(rows, token, heroic, ilvl, quality):
 @router.post("/api/testplans/start")
 async def api_testplans_start(req: PlanStartRequest, request: Request):
     cat, rows = await catalogue_rows()
+    req.dungeon = resolve_alias(cat, req.dungeon)
     check_dungeon(rows, req.dungeon, req.heroic)
     # planMaxTotal 0/absent = unlimited (the module's default). Only mirror a
     # positive cap — inventing a local one here just refused plans the

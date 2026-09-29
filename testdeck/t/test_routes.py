@@ -44,12 +44,21 @@ CATALOGUE = {
          "raid": True, "sizeMin": 2, "sizeMax": 10,
          "sizePresets": [10], "defaultSize": 10,
          "gear": [{"ilvl": 115, "label": "T4"}]},
+        # Two rows on one map (Blackrock Spire's wings), launched by token.
+        {"token": "lbrs", "name": "Lower Blackrock Spire", "mapId": 229,
+         "level": 58, "heroicLevel": 0, "wing": "LBRS",
+         "gear": [{"ilvl": 60, "label": "blue"}]},
+        {"token": "ubrs", "name": "Upper Blackrock Spire", "mapId": 229,
+         "level": 60, "heroicLevel": 0, "wing": "UBRS",
+         "gear": [{"ilvl": 60, "label": "blue"}]},
         # A stale sidecar: the parent row is gone.
         {"token": "orphan-scn", "name": "Orphan", "mapId": 999,
          "level": 70, "heroicLevel": 0, "wing": "",
          "scenario": True, "scenarioOf": "gone", "focus": [1],
          "gear": []},
     ],
+    # Retired tokens -> replacements (WriteSidecar's "aliases").
+    "aliases": {"brs": "lbrs"},
 }
 
 
@@ -94,6 +103,21 @@ def test_run_start_builds_command(client, cfg):
     assert br.cmds == [".dc test start blackfathom level=24 seed=7 ilvl=25 quality=4"]
     body = r.json()
     assert body["pending"] is False and body["ok"] is True
+
+
+def test_retired_token_is_launched_as_its_replacement(client, cfg):
+    """`brs` predates the Blackrock Spire split: the deck forwards `lbrs`, so
+    what it launches and what the records say agree."""
+    write_catalogue(cfg)
+    br = use_bridge(["Test run started"])
+    r = client.post("/api/testruns/start", json={"dungeon": "brs"})
+    assert r.status_code == 200, r.text
+    r = client.post("/api/testplans/start", json={"dungeon": "brs", "total": 3})
+    assert r.status_code == 200, r.text
+    r = client.post("/api/testruns/start", json={"dungeon": "ubrs"})
+    assert r.status_code == 200, r.text
+    assert br.cmds == [".dc test start lbrs", ".dc test plan start lbrs total=3",
+                       ".dc test start ubrs"]
 
 
 def test_run_start_raid_size(client, cfg):

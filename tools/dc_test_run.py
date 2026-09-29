@@ -1286,8 +1286,16 @@ def cluster_reason(reason):
     return s[:120] or "(no reason)"
 
 
+# Retired dungeon tokens -> their replacements, mirroring
+# DcTestDungeonRegistry::Aliases (the sidecar's "aliases"). Applied at read time
+# so pre-split `brs` history joins `lbrs` in the soak tables; the records
+# themselves are never rewritten.
+TOKEN_ALIASES = {"brs": "lbrs"}
+
+
 def entry_key(rec):
-    return (rec.get("dungeon") or "?") + (":heroic" if rec.get("heroic") else "")
+    token = rec.get("dungeon") or "?"
+    return TOKEN_ALIASES.get(token, token) + (":heroic" if rec.get("heroic") else "")
 
 
 def cmd_soak(soak_dir, limit):
@@ -1297,7 +1305,8 @@ def cmd_soak(soak_dir, limit):
         die(f"cannot read {soak_dir / 'state.json'}: {exc}")
     ledger = list(iter_jsonl(soak_dir / "ledger.jsonl"))
     cfg = state.get("config") or {}
-    pool = ", ".join((e.get("token") or "?") + (":heroic" if e.get("heroic") else "")
+    pool = ", ".join(TOKEN_ALIASES.get(e.get("token") or "?", e.get("token") or "?")
+                     + (":heroic" if e.get("heroic") else "")
                      for e in cfg.get("pool") or [])
     ok = sum(1 for r in ledger if r.get("result") == "success")
     fails = [r for r in ledger if r.get("result") != "success"]

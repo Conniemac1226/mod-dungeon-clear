@@ -90,6 +90,37 @@ def row_key(row):
     return entry_key(row.get("dungeon") or "?", bool(row.get("heroic")))
 
 
+def catalogue_aliases(path):
+    """Retired dungeon token -> its replacement, from the catalogue's "aliases"
+    (the module keeps e.g. brs -> lbrs after the Blackrock Spire split). {} when
+    the catalogue is missing or predates aliases."""
+    try:
+        cat = json.loads(Path(path).read_text(encoding="utf-8", errors="replace"))
+    except (OSError, ValueError):
+        return {}
+    aliases = cat.get("aliases") if isinstance(cat, dict) else None
+    return {k: v for k, v in (aliases or {}).items()
+            if isinstance(k, str) and isinstance(v, str)}
+
+
+def normalize_pool(pool, aliases):
+    """`pool` with retired tokens replaced by their targets, dropping an entry
+    that then duplicates an earlier one (a pool holding both brs and lbrs).
+    Returns (pool, changed)."""
+    out, seen, changed = [], set(), False
+    for e in pool or []:
+        token = aliases.get(e.get("token"), e.get("token"))
+        if token != e.get("token"):
+            changed = True
+        key = entry_key(token, e.get("heroic"))
+        if key in seen:
+            changed = True
+            continue
+        seen.add(key)
+        out.append(dict(e, token=token))
+    return out, changed
+
+
 # Failure reasons embed names, numbers and coordinates; strip them so one
 # failure mode groups across runs. tools/dc_test_run.py (sk- view) uses the same
 # rule.
@@ -414,6 +445,13 @@ class SoakSupervisor:
             s.load()
         except (OSError, ValueError):
             return None
+        # A session saved before a dungeon token was retired (brs, before the
+        # Blackrock Spire split) would reconcile against a plan that reports the
+        # new token forever, so its pool is read through the catalogue aliases.
+        config = s.state.get("config") or {}
+        if config.get("pool"):
+            config["pool"], _changed = normalize_pool(
+                config["pool"], catalogue_aliases(self.cfg.testdungeons_file))
         self._cache[soak_id] = s
         return s
 

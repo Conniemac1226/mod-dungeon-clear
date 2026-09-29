@@ -173,9 +173,10 @@ async def api_testruns_start(req: RunStartRequest, request: Request):
     in — the start did NOT happen and the reply carries pending=true; the
     frontend retries, or falls back to a plan of total=1 (plans wait the
     driver out server-side)."""
-    from .plans import catalogue_rows, check_dungeon, check_gear, check_size
+    from .plans import catalogue_rows, check_dungeon, check_gear, check_size, resolve_alias
 
-    _cat, rows = await catalogue_rows()
+    cat, rows = await catalogue_rows()
+    req.dungeon = resolve_alias(cat, req.dungeon)
     check_dungeon(rows, req.dungeon, req.heroic)
     if not 0 <= req.level <= 80:
         raise HTTPException(400, "level must be 0..80")

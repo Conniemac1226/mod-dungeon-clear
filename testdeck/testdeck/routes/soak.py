@@ -18,7 +18,7 @@ from ..context import ctx
 from ..mysql import addclass_pool_size
 from ..soak import (PLAN_ID_RE, RUN_ID_RE, TOKEN_RE, cluster_reason, entry_key,
                     row_key)
-from .plans import api_testdungeons, catalogue_rows, check_dungeon
+from .plans import api_testdungeons, catalogue_rows, check_dungeon, resolve_alias
 from .runs import audit
 
 router = APIRouter()
@@ -90,7 +90,7 @@ class SoakStopRequest(BaseModel):
     mode: str = "drain"
 
 
-def validate_pool(rows, pool):
+def validate_pool(rows, pool, cat=None):
     if not pool:
         raise HTTPException(400, "pick at least one dungeon")
     if len(pool) > MAX_POOL:
@@ -99,12 +99,15 @@ def validate_pool(rows, pool):
     for e in pool:
         if not TOKEN_RE.fullmatch(e.token or ""):
             raise HTTPException(400, f"bad dungeon token '{e.token}'")
-        check_dungeon(rows, e.token, e.heroic)
-        key = entry_key(e.token, e.heroic)
+        # A retired token (brs) is stored as its replacement (lbrs), so the
+        # pool's keys match the plan's and the run records'.
+        token = resolve_alias(cat or {}, e.token)
+        check_dungeon(rows, token, e.heroic)
+        key = entry_key(token, e.heroic)
         if key in seen:
             raise HTTPException(400, f"'{key}' is in the pool twice")
         seen.add(key)
-        out.append({"token": e.token, "heroic": bool(e.heroic)})
+        out.append({"token": token, "heroic": bool(e.heroic)})
     return out
 
 
@@ -170,8 +173,8 @@ async def api_soak_one(soak_id: str):
 async def api_soak_start(req: SoakStartRequest, request: Request):
     sv = sup()
     await require_pool_support()
-    _cat, rows = await catalogue_rows()
-    pool = validate_pool(rows, req.pool)
+    cat, rows = await catalogue_rows()
+    pool = validate_pool(rows, req.pool, cat)
     validate_concurrent(req.concurrent)
     if req.pick not in ("bag", "random"):
         raise HTTPException(400, "pick must be bag or random")
@@ -210,8 +213,8 @@ async def api_soak_edit(soak_id: str, req: SoakEditRequest, request: Request):
         raise HTTPException(409, "this session is not running")
     pool = None
     if req.pool is not None:
-        _cat, rows = await catalogue_rows()
-        pool = validate_pool(rows, req.pool)
+        cat, rows = await catalogue_rows()
+        pool = validate_pool(rows, req.pool, cat)
     if req.concurrent is not None:
         validate_concurrent(req.concurrent)
     if pool is None and req.concurrent is None:
@@ -416,8 +419,8 @@ async def api_preset_save(req: PresetSaveRequest, request: Request):
     name = (req.name or "").strip()
     if not 1 <= len(name) <= 60 or any(c in name for c in "\r\n\t"):
         raise HTTPException(400, "a preset name is 1-60 characters")
-    _cat, rows = await catalogue_rows()
-    pool = validate_pool(rows, req.pool)
+    cat, rows = await catalogue_rows()
+    pool = validate_pool(rows, req.pool, cat)
     presets = load_presets()
     existing = presets.get(name)
     who = me(request)

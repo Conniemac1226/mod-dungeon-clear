@@ -528,6 +528,43 @@ def test_route_start_validates_and_refuses_a_second_session(cfg, soak_client):
     assert got["active"]["stats"]["runs"] == 0
 
 
+def test_route_pool_stores_a_retired_token_as_its_replacement(cfg, soak_client):
+    write_catalogue(cfg)
+    c = soak_client()
+    use_bridge()
+    # brs and lbrs are the same dungeon now.
+    r = c.post("/api/soak/start", json={"pool": [{"token": "brs"}, {"token": "lbrs"}]})
+    assert r.status_code == 400 and "twice" in r.json()["detail"]
+    r = c.post("/api/soak/start", json={"pool": [{"token": "brs"}, {"token": "ubrs"}]})
+    assert r.status_code == 200, r.text
+    s = ctx.soak.get(r.json()["soakId"])
+    assert [e["token"] for e in s.state["config"]["pool"]] == ["lbrs", "ubrs"]
+
+
+def test_normalize_pool_rewrites_and_dedupes():
+    aliases = {"brs": "lbrs"}
+    pool = [{"token": "brs", "heroic": False}, {"token": "lbrs", "heroic": False},
+            {"token": "ubrs", "heroic": False}]
+    out, changed = S.normalize_pool(pool, aliases)
+    assert changed
+    assert out == [{"token": "lbrs", "heroic": False}, {"token": "ubrs", "heroic": False}]
+    same, changed = S.normalize_pool(out, aliases)
+    assert same == out and not changed
+
+
+def test_a_saved_session_with_a_retired_token_reads_it_as_the_replacement(cfg):
+    write_catalogue(cfg)
+    s = S.Soak(cfg.data_dir / "soaks", "sk-20260101-000000")
+    s.state = {"config": dict(CONFIG, pool=[{"token": "brs", "heroic": False}]),
+               "status": "stopped"}
+    s.save()
+    got = S.SoakSupervisor(cfg, lambda: None).get("sk-20260101-000000")
+    assert got is not None
+    assert got.state["config"]["pool"] == [{"token": "lbrs", "heroic": False}]
+    assert S.catalogue_aliases(cfg.testdungeons_file) == {"brs": "lbrs"}
+    assert S.catalogue_aliases(cfg.testdungeons_file.parent / "missing.json") == {}
+
+
 def test_route_start_refuses_a_server_without_pool_plans(cfg, soak_client):
     write_catalogue(cfg, pool_support=False)
     c = soak_client()
