@@ -28,9 +28,11 @@
 #include "Ai/Dungeon/DungeonClear/Util/ChunkedPathfinder.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcPlayerbotCompat.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcRezRecovery.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcRunWing.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearUtil.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonEventExecutor.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonPathFollower.h"
+#include "Ai/Dungeon/DungeonClear/Value/DungeonBossesValue.h"
 #include "Ai/Dungeon/DungeonClear/Value/DungeonClearStateValues.h"
 #include "Playerbots.h"
 #include "Ai/Dungeon/DungeonClear/DcValueKeys.h"
@@ -218,6 +220,59 @@ namespace
     }
 }
 
+namespace
+{
+    // "lbrs, ubrs" — the wing tokens a player can name on `layout`.
+    std::string WingTokens(DungeonWingLayout const& layout)
+    {
+        std::string out;
+        for (DungeonWing const& w : layout.wings)
+            if (!w.token.empty())
+                out += (out.empty() ? "" : ", ") + w.token;
+        return out;
+    }
+
+    DungeonWingLayout const* ExplicitWingLayout(Player* bot)
+    {
+        DungeonWingLayout const* layout = DungeonWingRegistry::Get(bot->GetMapId());
+        return layout && layout->isolated && layout->select == WingSelect::Explicit ? layout
+                                                                                    : nullptr;
+    }
+
+    // Pick the run wing for `dc on [wing]` on an Explicit-select map (Blackrock
+    // Spire): a named wing latches Explicit; a bare `dc on` re-reads where the
+    // party stands (dropping any older fallback) and latches that, keeping an
+    // Explicit/LFG choice already made for this instance. `out` is the wing the
+    // run will clear, nullptr off such maps. False (after refusing) only for a
+    // name that is not a wing of this map.
+    bool PickRunWing(PlayerbotAI* botAI, Player* bot, std::string const& param,
+                     DungeonWing const*& out)
+    {
+        out = nullptr;
+        DungeonWingLayout const* layout = ExplicitWingLayout(bot);
+        if (!layout)
+            return true;  // a stray argument on an ordinary map changes nothing
+        if (!param.empty())
+        {
+            DungeonWing const* wing = DungeonWingRegistry::FindWing(*layout, param);
+            if (!wing)
+            {
+                DcRefuse(botAI, bot, "'" + param + "' is not a wing of this dungeon — use one of: " +
+                                         WingTokens(*layout) + ".");
+                return false;
+            }
+            DcRunWing::Set(bot, *wing, DcRunWing::Source::Explicit);
+            out = wing;
+            return true;
+        }
+        DcRunWing::ClearFallback(bot);
+        out = DcRunWing::Resolve(bot);
+        if (out)
+            DcRunWing::Set(bot, *out, DcRunWing::Source::Fallback);
+        return true;
+    }
+}
+
 bool DcOnAction::Execute(Event event)
 {
     if (!IsAuthorized(bot, event))
@@ -249,6 +304,12 @@ bool DcOnAction::Execute(Event event)
         DcRefuse(botAI, bot, "Not in a dungeon.");
         return false;
     }
+
+    // Wing choice first: on Blackrock Spire it decides which boss list the
+    // emptiness check below (and the whole run) sees.
+    DungeonWing const* runWing = nullptr;
+    if (!PickRunWing(botAI, bot, event.getParam(), runWing))
+        return false;
 
     auto const& bosses = AI_VALUE(std::vector<DungeonBossInfo>, DcKey::DungeonBosses);
     if (bosses.empty())
@@ -327,7 +388,11 @@ bool DcOnAction::Execute(Event event)
 
     std::optional<DungeonBossInfo> next = AI_VALUE(std::optional<DungeonBossInfo>, DcKey::NextDungeonBoss);
     std::string const target = next.has_value() ? next->name : "the next boss";
-    DcStatusPublisher::SendAddonMessage(botAI, "CHAT\tDungeon clear enabled. Heading to " + target + ".");
+    // Say which wing was picked: a bare `dc on` at the shared Blackrock Spire
+    // portal means LBRS, and `dc on ubrs` is the way to the other half.
+    std::string const wingNote = runWing ? " — " + runWing->name : "";
+    DcStatusPublisher::SendAddonMessage(botAI, "CHAT\tDungeon clear enabled" + wingNote +
+                                                   ". Heading to " + target + ".");
 
     // Trigger instant status addon message update
     botAI->DoSpecificAction("dc status", event, true);
@@ -496,6 +561,47 @@ bool DcStatusAction::Execute(Event event)
     return true;
 }
 
+// `dc wing [wing]` — show or choose the run wing on a map whose wings are picked
+// per run (Blackrock Spire: lbrs / ubrs). Choosing one mid-run retargets the
+// clear at once; it is also what `dc on <wing>` does before enabling.
+bool DcWingAction::Execute(Event event)
+{
+    if (!DcLeaderSignal::IsDungeonClearLeader(bot))
+        return true;
+    if (!IsAuthorized(bot, event))
+    {
+        DcRefuse(botAI, bot, "Not authorized to change the dungeon clear wing");
+        return false;
+    }
+    DungeonWingLayout const* layout = bot->GetMap() ? ExplicitWingLayout(bot) : nullptr;
+    if (!layout)
+    {
+        DcRefuse(botAI, bot, "This dungeon has no wing to choose.");
+        return false;
+    }
+
+    std::string const param = event.getParam();
+    if (!param.empty())
+    {
+        DungeonWing const* wing = DungeonWingRegistry::FindWing(*layout, param);
+        if (!wing)
+        {
+            DcRefuse(botAI, bot, "'" + param + "' is not a wing of this dungeon — use one of: " +
+                                     WingTokens(*layout) + ".");
+            return false;
+        }
+        DcRunWing::Set(bot, *wing, DcRunWing::Source::Explicit);
+    }
+
+    DungeonWing const* current = DcRunWing::Resolve(bot);
+    std::string msg = "Dungeon clear wing: " + (current ? current->name + " (" + current->token + ")"
+                                                        : std::string("none")) +
+                      ". Wings: " + WingTokens(*layout) + ".";
+    DcStatusPublisher::SendAddonMessage(botAI, "CHAT\t" + msg);
+    botAI->DoSpecificAction("dc status", Event("dc", "silent", const_cast<Event&>(event).getOwner()), true);
+    return true;
+}
+
 bool DcBossesAction::Execute(Event event)
 {
     // Only the leader answers the boss-list request — the addon tracks the
@@ -642,7 +748,23 @@ bool DcBossesAction::Execute(Event event)
         foldedEventIds.insert(ev->id);
     }
 
-    for (DungeonBossInfo const& info : bosses)
+    // On a map whose wing is chosen per run (Blackrock Spire) the panel also lists
+    // the OTHER wing's bosses, labelled with their wing, so a party that came in
+    // for LBRS can see UBRS and `Go` there (DcGoAction switches the run wing).
+    // They are display rows only: the run itself — next boss, all-cleared, the
+    // terminal boss — still reads the wing-filtered `bosses`.
+    std::vector<DungeonBossInfo> panelRows = bosses;
+    if (ExplicitWingLayout(bot))
+    {
+        std::unordered_set<uint32> listed;
+        for (DungeonBossInfo const& info : bosses)
+            listed.insert(info.entry);
+        for (DungeonBossInfo const& info : DungeonBossesValue::AllWings(bot))
+            if (!listed.count(info.entry))
+                panelRows.push_back(info);
+    }
+
+    for (DungeonBossInfo const& info : panelRows)
     {
         // Travel objectives (BossRosterRegistry) are not creatures and carry no
         // kill-bit — their completion is the cleared-anchor latch. Report them
@@ -885,12 +1007,6 @@ bool DcGoAction::Execute(Event event)
     // stay quiet (the command/addon path already targets only the leader).
     if (!DcLeaderSignal::IsDungeonClearLeader(bot))
         return true;
-    if (!DcRun::Of(context).enabled)
-    {
-        DcRefuse(botAI, bot, "Dungeon clear is not enabled. Please enable it first.");
-        return false;
-    }
-
     std::string const param = event.getParam();
     if (param.empty())
     {
@@ -898,37 +1014,70 @@ bool DcGoAction::Execute(Event event)
         return false;
     }
 
-    auto const& bosses = AI_VALUE(std::vector<DungeonBossInfo>, DcKey::DungeonBosses);
-    DungeonBossInfo const* matched = nullptr;
-
     bool isNumeric = !param.empty() && std::all_of(param.begin(), param.end(), ::isdigit);
-    if (isNumeric)
-    {
-        uint32 entry = std::stoul(param);
-        for (auto const& info : bosses)
-        {
-            if (info.entry == entry)
-            {
-                matched = &info;
-                break;
-            }
-        }
-    }
+    std::string query = param;
+    std::transform(query.begin(), query.end(), query.begin(), ::tolower);
 
-    if (!matched)
+    // Entry match first, then a case-insensitive name substring.
+    auto const findIn = [&](std::vector<DungeonBossInfo> const& list) -> DungeonBossInfo const*
     {
-        std::string query = param;
-        std::transform(query.begin(), query.end(), query.begin(), ::tolower);
-        for (auto const& info : bosses)
+        if (isNumeric)
+        {
+            uint32 const entry = std::stoul(param);
+            for (auto const& info : list)
+                if (info.entry == entry)
+                    return &info;
+        }
+        for (auto const& info : list)
         {
             std::string name = info.name;
             std::transform(name.begin(), name.end(), name.begin(), ::tolower);
             if (name.find(query) != std::string::npos)
-            {
-                matched = &info;
-                break;
-            }
+                return &info;
         }
+        return nullptr;
+    };
+
+    std::vector<DungeonBossInfo> bosses = AI_VALUE(std::vector<DungeonBossInfo>, DcKey::DungeonBosses);
+    DungeonBossInfo const* matched = findIn(bosses);
+
+    // ANOTHER WING'S BOSS (Blackrock Spire: the panel lists UBRS during an LBRS
+    // run). Going there switches the run wing — an explicit choice, so it beats
+    // the LFG/fallback latch — and starts the clear if it is not running (an LBRS
+    // run that already ended at Wyrmthalak). From then on the run is a UBRS run:
+    // its list, its next boss and its terminal boss (Drakkisath) are UBRS's.
+    bool switchedWing = false;
+    if (!matched && ExplicitWingLayout(bot))
+    {
+        std::vector<DungeonBossInfo> const all = DungeonBossesValue::AllWings(bot);
+        if (DungeonBossInfo const* other = findIn(all))
+            if (DungeonWing const* wing = DungeonWingRegistry::WingOf(bot->GetMapId(), other->entry))
+            {
+                uint32 const entry = other->entry;
+                if (!DcRunWing::Set(bot, *wing, DcRunWing::Source::Explicit))
+                {
+                    DcRefuse(botAI, bot, "Could not switch the run to " + wing->name + ".");
+                    return false;
+                }
+                switchedWing = true;
+                DcStatusPublisher::SendAddonMessage(botAI, "CHAT\tSwitching the run to " + wing->name + ".");
+                if (!DcRun::Of(context).enabled)
+                    botAI->DoSpecificAction("dc on", Event("dc", "", const_cast<Event&>(event).getOwner()), true);
+                bosses = AI_VALUE(std::vector<DungeonBossInfo>, DcKey::DungeonBosses);
+                matched = nullptr;
+                for (auto const& info : bosses)
+                    if (info.entry == entry)
+                    {
+                        matched = &info;
+                        break;
+                    }
+            }
+    }
+
+    if (!DcRun::Of(context).enabled)
+    {
+        DcRefuse(botAI, bot, "Dungeon clear is not enabled. Please enable it first.");
+        return false;
     }
 
     // Still no match? It may be a conditional EVENT, which isn't in the boss
@@ -938,10 +1087,8 @@ bool DcGoAction::Execute(Event event)
     // event gates a boss, redirect the drive there (passing it fires the event);
     // otherwise it's an off-path gate that triggers automatically — say so
     // plainly instead of the misleading "boss doesn't exist".
-    if (!matched)
+    if (!matched && !switchedWing)
     {
-        std::string query = param;
-        std::transform(query.begin(), query.end(), query.begin(), ::tolower);
         DcDiffKey const goDifficulty = DcDifficulty::Of(bot->GetMap());
         for (DungeonEvent const* ev : DungeonEventRegistry::Conditional(bot->GetMapId(), goDifficulty))
         {

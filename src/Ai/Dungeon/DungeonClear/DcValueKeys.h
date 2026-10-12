@@ -53,6 +53,10 @@ namespace DcKey
     inline constexpr char const* PartyTank               = "dungeon clear party tank";
     inline constexpr char const* LongPath                = "dungeon clear long path";
     inline constexpr char const* CurrentHop              = "dungeon clear current hop";
+    // Endpoint of the last escort glide DC itself issued (DcMovement::SplinePath),
+    // so the stop helpers can tell DC's glide from anyone else's ESCORT generator.
+    // See DcMovement::DcGlideRecord.
+    inline constexpr char const* GlideRecord             = "dungeon clear glide record";
     // Diagnostic heartbeat, 0 == never. Written only by DcTickHeartbeat, read
     // only by the teardown snapshot; nothing steers off it. See DcTickMemo.h.
     inline constexpr char const* LastTickMs              = "dungeon clear last tick ms";

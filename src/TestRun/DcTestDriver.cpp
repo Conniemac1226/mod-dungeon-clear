@@ -18,6 +18,7 @@
 #include "Player.h"
 #include "Random.h"
 #include "Timer.h"
+#include "Util/DcPlayerbotsConfig.h"
 #include "WorldSession.h"
 
 #include "Playerbots.h"
@@ -178,11 +179,11 @@ namespace DcTestDriver
             // The rotation logs its own accounts' characters in and out on its
             // own schedule, which would pull the driver out from under a live
             // run. Refuse rather than produce an intermittently broken harness.
-            auto const& rnd = sPlayerbotAIConfig.randomBotAccounts;
+            auto const& rnd = DC_PB_CONFIG(RandomBotAccounts, randomBotAccounts);
             if (std::find(rnd.begin(), rnd.end(), accountId) != rnd.end())
             {
                 *why = "test driver account '" + account +
-                       "' is one of AiPlayerbot.RandomBotAccounts — the bot rotation "
+                       "' is one of Playerbots.RandomBotAccounts — the bot rotation "
                        "would log the driver out mid-run. Point "
                        "DungeonClear.TestRun.DriverAccount at a plain account";
                 return false;

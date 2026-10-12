@@ -48,7 +48,7 @@ namespace DcBotProvisioning
     // DcProvisionBudget::Take() for this tick before calling.
     //
     // `quality` and `gearScoreLimit` are the resolved ceiling (0 on either =
-    // inherit the AiPlayerbot.AutoGear* server settings, which is what the
+    // inherit the Playerbots.AutoGear* server settings, which is what the
     // factory itself does with a 0).
     void Roll(Player* bot, std::uint32_t level, std::uint32_t quality,
               std::uint32_t gearScoreLimit, int specNo);

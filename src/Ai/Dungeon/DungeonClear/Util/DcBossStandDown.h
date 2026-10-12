@@ -133,6 +133,14 @@ namespace DcBossStandDown
         if (name == "dungeon clear oc rider")
             return ActionVerdict::Stock;
 
+        // The Karazhan chess seat and conductor. Chess sets no boss state, so the
+        // stand-down should never hold during it; if another encounter's ever
+        // does (an add pulled in from the corridor), the game must still be
+        // played, and a silenced rung would hand every bot's tick back to a stock
+        // engine that attacks pieces. Its own trigger's first test is map 532.
+        if (name == "dungeon clear kz chess")
+            return ActionVerdict::Stock;
+
         // THE OUT-OF-LOS ASSIST, exempt as a PAIR with `drop target` below —
         // either half alone is inert, so both or neither.
         //

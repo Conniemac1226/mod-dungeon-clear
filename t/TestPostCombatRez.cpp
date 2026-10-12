@@ -564,3 +564,94 @@ TEST(DcRezDecisionTest, TheBlockedBranchIsInertWhenNothingIsBlocked)
     EXPECT_EQ(r.reason, Reason::Recovering);
     EXPECT_EQ(r.rezzerIdx, 1);
 }
+
+// ---- a corpse among idle hostiles is not walked to --------------------------------
+//
+// tr-20260927-184653-9 (Karazhan): a healer died among the Servants' Quarters
+// Shadowbats under the Maiden corridor; the second healer walked down to raise her
+// and died, then the tank and the enhancement shaman walked down after them both.
+
+TEST(DcRezDecisionTest, EveryCorpseUnsafeStandsDownShortHanded)
+{
+    auto party = BaseParty();
+    party[1].isDead = true;          // the healer, among the bats
+    party[1].corpseUnsafe = true;
+    Result const r = Decide(BaseInputs(), party);
+    // Neither hold (nobody walks) nor disable (the party is alive).
+    EXPECT_EQ(r.outcome, Outcome::None);
+    EXPECT_EQ(r.reason, Reason::UnsafeStandDown);
+    EXPECT_EQ(r.rezzerIdx, -1);
+    EXPECT_TRUE(r.pairs.empty());
+    // Named, for the announcement.
+    EXPECT_EQ(r.targetIdx, 1);
+}
+
+TEST(DcRezDecisionTest, AnUnsafeCorpseIsSkippedForASafeOne)
+{
+    // Healer corpse unsafe, mage corpse safe: the tank raises the mage, and the
+    // healer — normally first in line — waits for a body that is safe to reach.
+    auto party = BaseParty();
+    party[1].isDead = true;
+    party[1].corpseUnsafe = true;
+    party[2].isDead = true;
+    Result const r = Decide(BaseInputs(), party);
+    EXPECT_EQ(r.outcome, Outcome::Hold);
+    EXPECT_EQ(r.reason, Reason::Recovering);
+    EXPECT_EQ(r.rezzerIdx, 0);
+    EXPECT_EQ(r.targetIdx, 2);
+    ASSERT_EQ(r.pairs.size(), 1u);
+    EXPECT_EQ(r.pairs[0], std::make_pair(0, 2));
+}
+
+TEST(DcRezDecisionTest, TheCorpseComesBackIntoPlayOnceItIsSafe)
+{
+    // Nothing latches: the same corpse, its pack cleared, is an ordinary recovery.
+    auto party = BaseParty();
+    party[2].isDead = true;
+    party[2].corpseUnsafe = true;
+    EXPECT_EQ(Decide(BaseInputs(), party).reason, Reason::UnsafeStandDown);
+    party[2].corpseUnsafe = false;
+    Result const r = Decide(BaseInputs(), party);
+    EXPECT_EQ(r.outcome, Outcome::Hold);
+    EXPECT_EQ(r.reason, Reason::Recovering);
+    EXPECT_EQ(r.targetIdx, 2);
+}
+
+TEST(DcRezDecisionTest, AnUnsafeCorpseDoesNotSaveARunWithNoRezzer)
+{
+    // Both rez classes dead: the classic NoRezzer disable, unsafe or not.
+    auto party = BaseParty();
+    party[0].isDead = true;
+    party[1].isDead = true;
+    party[1].corpseUnsafe = true;
+    Result const r = Decide(BaseInputs(), party);
+    EXPECT_EQ(r.outcome, Outcome::Disable);
+    EXPECT_EQ(r.reason, Reason::NoRezzer);
+}
+
+TEST(DcRezDecisionTest, AnUnsafeCorpseIsLeftToAHumanRezzer)
+{
+    // Only a human can rez: it is their walk to judge, so the hold is unchanged.
+    auto party = BaseParty();
+    party[0].isDead = true;
+    party[1].isDead = true;
+    party[1].corpseUnsafe = true;
+    party[4].canRezClass = true;
+    Result const r = Decide(BaseInputs(), party);
+    EXPECT_EQ(r.outcome, Outcome::Hold);
+    EXPECT_EQ(r.reason, Reason::WaitingOnHuman);
+    EXPECT_EQ(r.rezzerIdx, 4);
+}
+
+TEST(DcRezDecisionTest, AnUnsafeFullWipeIsStillAWipe)
+{
+    auto party = BaseParty();
+    for (Member& m : party)
+    {
+        m.isDead = true;
+        m.corpseUnsafe = true;
+    }
+    Result const r = Decide(BaseInputs(), party);
+    EXPECT_EQ(r.outcome, Outcome::Disable);
+    EXPECT_EQ(r.reason, Reason::Wipe);
+}

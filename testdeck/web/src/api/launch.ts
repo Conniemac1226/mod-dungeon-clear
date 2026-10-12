@@ -78,7 +78,7 @@ export async function startRosterRun(
  * applied", which the API writes as -1 (0 there means "inherit the conf").
  *
  * The API also only accepts an item level that is on this dungeon's curated
- * ladder, so a ceiling that came from AiPlayerbot.AutoGearScoreLimit — never
+ * ladder, so a ceiling that came from Playerbots.AutoGearScoreLimit — never
  * on the ladder — falls back to "server default" and resolves the same way
  * again. The confirm text shows whatever this returns, so a fallback is
  * visible before anything launches.

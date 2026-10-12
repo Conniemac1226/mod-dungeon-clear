@@ -71,6 +71,25 @@ public:
     // back to `staticRange` when the boss isn't loaded yet or the dynamic-aggro
     // config is off. The trigger ladder and the advance action MUST both read
     // this so they agree on "are we at the boss".
+    // Is an anchored hop still ahead of the route cursor and out of reach? The
+    // last segment is the boss anchor itself and never counts. Three rungs must
+    // agree on this: the at-boss trigger and TryEngageHold (both gate the engage
+    // on it) and direct pursuit, which must not bee-line past an anchored route —
+    // it did at Attumen, parking the tank on Midnight's spawn with segments 7-9
+    // (the west mouth) pending, so neither the engage nor the route could run
+    // (tr-20260923-235223-3).
+    template <typename DistFn>
+    static bool AnchoredHopsPendingWith(std::vector<PathSegment> const& segments,
+                                        size_t cursor, DistFn distTo)
+    {
+        for (size_t i = cursor; i + 1 < segments.size(); ++i)
+            if (segments[i].anchored && distTo(segments[i]) > segments[i].arriveRadius)
+                return true;
+        return false;
+    }
+    static bool AnchoredHopsPending(WorldObject const* bot,
+                                    ChunkedPathfinder::Result const& path, size_t cursor);
+
     static float BossEngageRange(Player* bot, AiObjectContext* ctx,
                                  DungeonBossInfo const& boss, float staticRange);
 
@@ -157,6 +176,11 @@ public:
     };
     static std::optional<Position> AggroSafeApproachPoint(
         Player* bot, float bx, float by, float bz, float safeRadius, Unit* target,
+        int8* orbitDir = nullptr,
+        OrbitProfile profile = OrbitProfile::RoomAggroBoss);
+    // Same orbit toward a destination POINT (gx, gy) rather than a unit.
+    static std::optional<Position> AggroSafeApproachPoint(
+        Player* bot, float bx, float by, float bz, float safeRadius, float gx, float gy,
         int8* orbitDir = nullptr,
         OrbitProfile profile = OrbitProfile::RoomAggroBoss);
 
@@ -510,6 +534,9 @@ public:
     // another deck or in a parallel corridor and vetoing a valid near-side pull.
     // `from` is any world object (usually the bot, but the dynamic-pull chain gate
     // passes the PACK so the door test is independent of where the tank stands).
+    // Implemented as a GameObject-LOS ray, corroborated by a closed DcDoorIndex
+    // door near the chord: a ray blocked by furniture (Karazhan's banquet chairs)
+    // is not a door.
     static bool ClosedDoorBetween(WorldObject* from, float tx, float ty, float tz,
                                   float corridorWidth = 8.0f);
 
@@ -549,9 +576,11 @@ public:
     static bool ClosedDoorNear(WorldObject* ref, float x, float y, float z,
                                float radius = 8.0f);
 
-    // Distance TRAVELLED ALONG the long-path (from the bot) to where the route
-    // first comes within the door band of the door at (doorX,doorY), or FLT_MAX
-    // if it never does within `maxLookAhead`. The door-blocked handler parks the
+    // Distance still to TRAVEL from the bot to where the long-path first comes
+    // within the door band of the door at (doorX,doorY) — the bot's joining leg
+    // onto its progress vertex plus the along-route gap from there — or FLT_MAX
+    // if it never does within `maxLookAhead` (see
+    // DungeonClearMath::DoorTravelRemaining). The door-blocked handler parks the
     // tank a short stand-off before this so it stops on the NEAR side of the
     // doorway. Measured along the path on purpose: GetExactDist to a door's GO
     // origin (hinge/jamb) is unreliable — the origin can sit past the doorway
@@ -605,6 +634,15 @@ public:
     // One Detour query. Call it from refusal/verification paths, never from
     // per-candidate ranking.
     static bool IsPointLevelReachable(Player* bot, float x, float y, float z);
+
+    // Where to walk to close on `target` until it is in sight: the point
+    // `stopShort` yards before it ALONG the real mmap route (see
+    // DungeonClearMath::PointShortOfPathEnd). False — and the caller holds — when
+    // no complete route arrives on the target's floor, which is exactly the case
+    // where the old straight-line point walked the bot through a wall or a floor.
+    // One Detour query.
+    static bool PathedCloseOn(Player* bot, Position const& target, float stopShort,
+                              Position& out);
 
     // STRICT variant of IsLevelReachable with NO same-level fast path — always
     // runs the PathGenerator probe. Requires a complete PATHFIND_NORMAL route

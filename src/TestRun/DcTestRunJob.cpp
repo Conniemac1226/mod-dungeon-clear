@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <ctime>
+#include <limits>
 #include <optional>
 #include <set>
 
@@ -26,6 +27,7 @@
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "StringFormat.h"
+#include "Util/DcPlayerbotsConfig.h"
 #include "World.h"
 
 #include "AiFactory.h"
@@ -39,19 +41,24 @@
 #include "Random.h"
 
 #include "DcStrategyGate.h"
-#include "DungeonQueueFill/DcDungeonQueueFillManager.h"
 #include "Util/DcBotProvisioning.h"
 #include "Util/DcDungeonAccess.h"
+#include "Util/DcPoolBots.h"
 #include "Util/DcProvisionBudget.h"
 #include "Ai/Dungeon/DungeonClear/Action/DcActionShared.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
+#include "Ai/Dungeon/DungeonClear/Data/DungeonWingRegistry.h"
 #include "Ai/Dungeon/DungeonClear/DcPullContext.h"
 #include "Ai/Dungeon/DungeonClear/DcValueKeys.h"
 #include "Ai/Dungeon/DungeonClear/Settings/DcSettings.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcRun.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcRunWing.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTargeting.h"
 #include "TestRun/DcDiagSnapshot.h"
 #include "TestRun/DcTestComp.h"
+#include "Lab/DcLabOracles.h"
+#include "Lab/DcLabPaths.h"
+#include "Lab/DcLabRecorder.h"
 
 namespace
 {
@@ -95,6 +102,46 @@ namespace
 
 }
 
+DcTestRunJob::~DcTestRunJob() = default;
+
+void DcTestRunJob::ArmTrace(Player* tank, AiObjectContext* ctx)
+{
+    if (!_traceRequested || _trace || !tank || !ctx)
+        return;
+    DcLab::Header h;
+    h.runId = _record.runId;
+    h.seed = _record.compSeed;
+    h.mapId = _mapId;
+    h.instanceId = tank->GetInstanceId();
+    h.pullSetting = ctx->GetValue<uint32>(DcKey::PullSetting)->Get();
+    h.releaseDelayMs = static_cast<uint32>(DcSettings::GetFloat(_tankGuid, "PullPlayerReleaseDelay") * 1000.0f);
+    _trace = std::make_unique<DcLabRecorder>(std::move(h));
+    for (std::size_t i = 0; i < _slots.size(); ++i)
+        if (Player* bot = ObjectAccessor::FindPlayer(_slots[i].guid))
+            _trace->AddMember(bot, _slots[i].role, false, i == 0, "fast");
+    _trace->Arm();
+    LOG_INFO("playerbots.dungeonclear", "TESTRUN {} trace armed (Pull Lab recorder, {} members)",
+             _record.runId, _slots.size());
+}
+
+void DcTestRunJob::FinishTrace()
+{
+    if (!_trace)
+        return;
+    _trace->End(_record.result.empty() ? std::string("teardown") : _record.result);
+    DcLab::Trace& tr = _trace->TraceRef();
+    tr.oracles = DcLabOracles::Evaluate(tr, DcLabOracles::OracleConfig{});
+    _record.oracles = DcLabOracles::Summary(tr.oracles);
+    _record.traceFile = _trace->WriteFile(DcLabPaths::TraceDir());
+    LOG_INFO("playerbots.dungeonclear", "TESTRUN TRACE {} {} -> {}", _record.runId, _record.oracles,
+             _record.traceFile);
+    for (DcLab::OracleResult const& o : tr.oracles)
+        if (o.verdict == DcLab::Verdict::Fail)
+            LOG_INFO("playerbots.dungeonclear", "TESTRUN TRACE {} {} {} @{}ms: {}", _record.runId, o.id, o.name,
+                     o.firstMs, o.detail);
+    _trace.reset();
+}
+
 char const* DcTestRunJob::StageName(Stage s)
 {
     switch (s)
@@ -105,6 +152,7 @@ char const* DcTestRunJob::StageName(Stage s)
         case Stage::Teleporting:  return "teleporting";
         case Stage::Starting:     return "starting";
         case Stage::Monitoring:   return "monitoring";
+        case Stage::Lab:          return "lab";
         case Stage::TearingDown:  return "tearing_down";
     }
     return "?";
@@ -191,8 +239,43 @@ void DcTestRunJob::InitIdentity(Player* gm, DcTestDungeonRegistry::Row const& ro
     _limits.stallGraceMs = DcSettings::GetUInt(ObjectGuid::Empty, "TestRun.StallGraceS") * 1000;
     _limits.noProgressMs = DcSettings::GetUInt(ObjectGuid::Empty, "TestRun.NoProgressS") * 1000;
     _limits.overallTimeoutMs = DcSettings::GetUInt(ObjectGuid::Empty, "TestRun.OverallTimeoutS") * 1000;
+    // A row may carry its own watchdog budget (a long scripted event — chess
+    // plays for up to half an hour with long quiet stretches); 0 keeps the
+    // global value. Resolved here so the record's `watchdog` block shows what
+    // the run was actually held to.
+    if (row.overallTimeoutS)
+        _limits.overallTimeoutMs = row.overallTimeoutS * 1000;
+    if (row.noProgressS)
+        _limits.noProgressMs = row.noProgressS * 1000;
+
+    // A map whose wing is picked per run (Blackrock Spire) takes it from the
+    // row: the wing whose token is the row's. Proximity maps (DM, SM) leave it
+    // to where the party lands, exactly as before.
+    _runWing.clear();
+    _wingMask = 0;
+    if (DungeonWingLayout const* layout = DungeonWingRegistry::Get(row.mapId);
+        layout && layout->isolated && layout->select == WingSelect::Explicit)
+        if (DungeonWing const* wing = DungeonWingRegistry::FindWing(*layout, row.token))
+        {
+            _runWing = wing->token;
+            _wingMask = wing->encounterMask;
+        }
+
+    _isScenario = DcTestDungeonRegistry::IsScenario(row);
+    _focus = row.focusEntries;
+    _success = row.success;
+    _successGraceMs = row.successGraceS * 1000;
+    _grace = DcTestRun::ScenarioGrace{};
+    _progressClock = DcTestRun::ProgressClock{};
 
     _record = DcTestRunRecord::Record{};
+    if (_isScenario)
+    {
+        _record.scenario = row.token;
+        _record.scenarioOf = row.scenarioOf;
+        _record.focus = row.focusEntries;
+    }
+    _record.successPredicate = DcTestDungeonRegistry::DescribePredicate(row.success);
     _record.runId = MakeRunId();
     _record.planId = planId;
     _record.dungeon = row.token;
@@ -219,7 +302,6 @@ std::unique_ptr<DcTestRunJob> DcTestRunJob::Create(Player* gm, DcTestDungeonRegi
     // Caller (DcTestRunManager::Start) has already validated the registry row
     // (including that heroic is only requested where heroicLevel is set) and
     // that gm has a playerbot manager.
-    std::unique_ptr<DcTestRunJob> job(new DcTestRunJob());
 
     // seed 0 = "roll one" — pick a nonzero seed so the comp varies per run yet
     // is recorded for exact replay via `.dc test start <d> seed=N`.
@@ -228,25 +310,12 @@ std::unique_ptr<DcTestRunJob> DcTestRunJob::Create(Player* gm, DcTestDungeonRegi
 
     uint32 const level = levelOverride ? std::min<uint32>(levelOverride, 80u)
                                        : (heroic ? row.heroicLevel : row.recommendedLevel);
-    job->InitIdentity(gm, row, level, heroic, seed, planId);
-
-    // Resolve the gear ceiling against the conf once, here: a run that took 40
-    // minutes must be reproducible from its record even if somebody reloaded
-    // the config while it was in the dungeon.
-    job->_gear = DcTestGearTiers::Resolve(gear, sPlayerbotAIConfig.autoGearScoreLimit,
-                                          sPlayerbotAIConfig.autoGearQualityLimit);
-    job->_record.gearIlvl = job->_gear.ilvl;
-    job->_record.gearQuality = job->_gear.quality;
 
     // Death knights are a Wrath class whose kit starts at 55, so they are on
     // the table only for a WotLK row — and only when the run's LEVEL actually
     // reaches the floor, because `level=N` can drop a WotLK run under it and
     // the factory levels every test bot to whatever the run asked for.
-    DcTestComp::Roster const roster =
-        DcTestDungeonRegistry::ExpansionOf(row) >= DcTestDungeonRegistry::kExpansionWrath &&
-                level >= DcTestComp::kDeathKnightMinLevel
-            ? DcTestComp::Roster::WithDeathKnights
-            : DcTestComp::Roster::NoDeathKnights;
+    DcTestComp::Roster const roster = RosterFor(row, level);
 
     // size 0 keeps the classic 5-man draw (distinct classes) bit-for-bit; a
     // requested size uses the quota'd raid comp (duplicates spread evenly).
@@ -258,6 +327,36 @@ std::unique_ptr<DcTestRunJob> DcTestRunJob::Create(Player* gm, DcTestDungeonRegi
     }
     else
         comp = DcTestComp::BuildComp(seed, size, roster);
+    return CreateWithComp(gm, row, level, seed, heroic, gear, comp, reservedGuids, planId, err);
+}
+
+DcTestComp::Roster DcTestRunJob::RosterFor(DcTestDungeonRegistry::Row const& row, uint32 level)
+{
+    return DcTestDungeonRegistry::ExpansionOf(row) >= DcTestDungeonRegistry::kExpansionWrath &&
+                   level >= DcTestComp::kDeathKnightMinLevel
+               ? DcTestComp::Roster::WithDeathKnights
+               : DcTestComp::Roster::NoDeathKnights;
+}
+
+std::unique_ptr<DcTestRunJob> DcTestRunJob::CreateWithComp(Player* gm, DcTestDungeonRegistry::Row const& row,
+                                                           uint32 level, uint32 seed, bool heroic,
+                                                           DcTestGearTiers::Spec const& gear,
+                                                           std::vector<DcTestComp::Slot> const& comp,
+                                                           std::unordered_set<ObjectGuid> const& reservedGuids,
+                                                           std::string const& planId, std::string* err)
+{
+    std::unique_ptr<DcTestRunJob> job(new DcTestRunJob());
+    job->InitIdentity(gm, row, level, heroic, seed, planId);
+
+    // Resolve the gear ceiling against the conf once, here: a run that took 40
+    // minutes must be reproducible from its record even if somebody reloaded
+    // the config while it was in the dungeon.
+    job->_gear = DcTestGearTiers::Resolve(gear, DC_PB_CONFIG(AutoGearScoreLimit, autoGearScoreLimit),
+                                          DC_PB_CONFIG(AutoGearQualityLimit, autoGearQualityLimit));
+    job->_record.gearIlvl = job->_gear.ilvl;
+    job->_record.gearQuality = job->_gear.quality;
+    DcTestComp::Roster const roster = RosterFor(row, level);
+
     job->_record.size = static_cast<uint32>(comp.size());
     for (DcTestComp::Slot const& c : comp)
     {
@@ -290,11 +389,11 @@ std::unique_ptr<DcTestRunJob> DcTestRunJob::Create(Player* gm, DcTestDungeonRegi
                 continue;
             if (reservedGuids.find(guid) != reservedGuids.end())
                 continue;
-            // The RDF queue fill draws from this same pool. Its claim is
+            // The queue fills draw from this same pool. Their claims are
             // invisible here for the tick between picking a guid and
-            // AddPlayerBot landing, so ask it rather than relying on the
+            // AddPlayerBot landing, so ask them rather than relying on the
             // "already online" test below.
-            if (DcDungeonQueueFillManager::Instance().IsClaimed(guid))
+            if (DcPoolBots::IsClaimedByFill(guid))
                 continue;
             // (No botLoading check — it is protected on PlayerbotHolder;
             // AddPlayerBot itself no-ops on an in-flight load, and a char
@@ -353,7 +452,19 @@ std::unique_ptr<DcTestRunJob> DcTestRunJob::Create(Player* gm, DcTestDungeonRegi
         }
         slot.guid = guid;
         usedClasses.insert(slot.classId);
+        // Harness adds are exempt from Playerbots.MaxAddedBots. That cap is
+        // playerbots' per-account limit on hand-added bots, and every run's
+        // party is added under the one issuing GM (usually the test driver),
+        // so it capped the whole harness — all concurrent runs together — at
+        // MaxAddedBots bots. AddPlayerBot reads the cap synchronously, so
+        // lifting it for this one call on the world thread leaves a player's
+        // own `.playerbot add` limit exactly as configured. What bounds the
+        // harness is the addclass pool (a launch without free characters
+        // backs off) and the machine.
+        int32 const addedCap = DC_PB_CONFIG(MaxAddedBots, maxAddedBots);
+        DC_PB_CONFIG(MaxAddedBots, maxAddedBots) = std::numeric_limits<int32>::max();
         mgr->AddPlayerBot(slot.guid, gm->GetSession()->GetAccountId());
+        DC_PB_CONFIG(MaxAddedBots, maxAddedBots) = addedCap;
     }
 
     LOG_INFO("playerbots.dungeonclear",
@@ -363,6 +474,66 @@ std::unique_ptr<DcTestRunJob> DcTestRunJob::Create(Player* gm, DcTestDungeonRegi
 
     job->EnterStage(Stage::SpawningBots);
     return job;
+}
+
+std::unique_ptr<DcTestRunJob> DcTestRunJob::CreateLab(Player* gm, DcTestDungeonRegistry::Row const& row,
+                                                      uint32 level, uint32 seed, bool heroic,
+                                                      DcTestGearTiers::Spec const& gear,
+                                                      std::vector<DcTestComp::Slot> const& comp,
+                                                      std::shared_ptr<LabDriver> driver,
+                                                      std::unordered_set<ObjectGuid> const& reservedGuids,
+                                                      std::string* err)
+{
+    if (!driver)
+    {
+        if (err)
+            *err = "no lab driver";
+        return nullptr;
+    }
+    std::unique_ptr<DcTestRunJob> job =
+        CreateWithComp(gm, row, level, seed ? seed : 1u, heroic, gear, comp, reservedGuids, "", err);
+    if (job)
+        job->_lab = std::move(driver);
+    return job;
+}
+
+DcTestRunJob::LabParty DcTestRunJob::MakeLabParty() const
+{
+    LabParty p;
+    p.gm = _gmGuid;
+    for (Slot const& slot : _slots)
+    {
+        p.members.push_back(slot.guid);
+        p.roles.push_back(slot.role);
+    }
+    p.mapId = _mapId;
+    p.instanceId = _destInstanceId;
+    p.runId = _record.runId;
+    return p;
+}
+
+void DcTestRunJob::TickLab(uint32 diff)
+{
+    {
+        std::lock_guard<std::mutex> lock(_obsMutex);
+        if (_abortRequested)
+        {
+            _record.result = "aborted";
+            _record.failReason = _abortReason;
+        }
+    }
+    if (_record.result == "aborted")
+    {
+        Teardown();
+        return;
+    }
+    if (_lab->KeepGmMaster())
+        ReassertMaster();
+    if (!_lab->Tick(MakeLabParty(), diff))
+    {
+        _record.result = "lab_done";
+        Teardown();
+    }
 }
 
 std::unique_ptr<DcTestRunJob> DcTestRunJob::CreateFromRoster(Player* gm,
@@ -428,7 +599,7 @@ std::unique_ptr<DcTestRunJob> DcTestRunJob::CreateFromRoster(Player* gm,
     // regear) or relocate it. That rotation walks `currentBots`, populated purely
     // from the playerbots DB's own enrolment rows (RandomPlayerbotMgr::GetBots),
     // and IsRandomBot additionally demands the account be in
-    // AiPlayerbot.RandomBotAccounts. A real player's character satisfies neither,
+    // Playerbots.RandomBotAccounts. A real player's character satisfies neither,
     // so the holder only owns its login/logout here.
     for (Slot const& slot : job->_slots)
         sRandomPlayerbotMgr.AddPlayerBot(slot.guid, 0);
@@ -472,6 +643,8 @@ std::string DcTestRunJob::StatusLine() const
         out += ", gear " +
                (_gear.ilvl ? "ilvl<=" + std::to_string(_gear.ilvl) : std::string("unlimited")) +
                " " + DcTestGearTiers::QualityName(_gear.quality);
+    if (stage == Stage::Lab && _lab)
+        out += ", lab " + _lab->Status();
     if (stage == Stage::Monitoring)
     {
         out += ", bosses " + std::to_string(_record.bossesKilled) + "/" +
@@ -600,6 +773,12 @@ void DcTestRunJob::Tick(uint32 diff)
     {
         if (stage == Stage::Monitoring)
             Finish(DcTestRun::Verdict::FailAborted, "GM logged out mid-run");
+        else if (stage == Stage::Lab)
+        {
+            _record.result = "aborted";
+            _record.failReason = "GM logged out mid-lab";
+            Teardown();
+        }
         else
             FailSetup("GM logged out during setup");
         return;
@@ -622,12 +801,17 @@ void DcTestRunJob::Tick(uint32 diff)
         case Stage::Starting:
             TickStarting();
             break;
+        case Stage::Lab:
+            TickLab(diff);
+            break;
         case Stage::Monitoring:
             _monitorMs += diff;
             // Every tick, NOT on the monitor's 1s step: a bot crosses a small
             // trigger box in well under a second, and a relay that samples at
             // 1Hz would silently skip the set-piece it exists to fire.
             _areaTriggers.Tick(FindTank());
+            if (_trace)
+                _trace->Tick(diff);
             _monitorAccumMs += diff;
             if (_monitorAccumMs >= MONITOR_STEP_MS)
             {
@@ -720,7 +904,7 @@ void DcTestRunJob::TickProvisioning()
         // A random-rolled tank/healer spec would invalidate the whole run.
         FailSetup(std::string("no premade spec template matching '") + slot.specName +
                   "' for " + DcBotProvisioning::ClassToken(slot.classId) +
-                  " (AiPlayerbot.PremadeSpecName.*) — cannot force the " + slot.role);
+                  " (Playerbots.PremadeSpecName.*) — cannot force the " + slot.role);
         return;
     }
 
@@ -786,7 +970,7 @@ void DcTestRunJob::TickProvisioning()
 // shared per-tick provision budget on.
 // Stock playerbots joins any guildless bot to a random bot guild the moment it
 // logs in: RandomPlayerbotMgr::OnBotLoginInternal calls
-// PlayerbotFactory::InitGuild whenever AiPlayerbot.RandomBotGuildCount > 0, with
+// PlayerbotFactory::InitGuild whenever Playerbots.RandomBotGuildCount > 0, with
 // no check that the character actually IS a random bot. A roster member logs in
 // through that same holder (the masterless path is the only one whose ownership
 // gate a hand-picked character clears), so it gets caught too — and a real
@@ -1253,7 +1437,8 @@ void DcTestRunJob::TickTeleporting()
 
     if (allThere)
     {
-        EnterStage(Stage::Starting);
+        // A Lab party never starts a clear: the driver stages it from here.
+        EnterStage(_lab ? Stage::Lab : Stage::Starting);
         return;
     }
 
@@ -1287,13 +1472,22 @@ void DcTestRunJob::TickStarting()
 
     AiObjectContext* ctx = tankAI->GetAiObjectContext();
 
+    // Run wing first (idempotent; re-asserted each tick until `dc on` takes): it
+    // decides which boss list the roster read below — and the whole run — sees.
+    // Explicit beats the fallback a bot may already have computed at the portal.
+    if (!_runWing.empty())
+        if (DungeonWingLayout const* layout = DungeonWingRegistry::Get(_mapId))
+            if (DungeonWing const* wing = DungeonWingRegistry::FindWing(*layout, _runWing))
+                DcRunWing::Set(tank, *wing, DcRunWing::Source::Explicit);
+
     // A reused instance with dead bosses would flash an instant (false)
-    // all-clear — refuse it rather than record a fake success.
+    // all-clear — refuse it rather than record a fake success. A wing-scoped run
+    // only cares about its own wing's bits.
     if (InstanceScript* inst = DcTargeting::GetInstanceScript(tank))
-        if (inst->GetCompletedEncounterMask() != 0)
+        if (uint32 const done = inst->GetCompletedEncounterMask() & (_wingMask ? _wingMask : ~0u))
         {
             FailSetup("stale instance: encounters already completed (mask " +
-                      std::to_string(inst->GetCompletedEncounterMask()) + ")");
+                      std::to_string(done) + ")");
             return;
         }
 
@@ -1327,14 +1521,70 @@ void DcTestRunJob::TickStarting()
         }
         _record.bossesTotal = static_cast<uint32>(_roster.size());
 
+        // SCENARIO: the run is scoped to its focus. Every focus entry must be
+        // on this map's live roster — the registry gtest can only check the
+        // row's shape, not the roster BossSpawnIndex derives at runtime — and a
+        // focus the roster lacks would otherwise skip EVERYTHING and flash an
+        // instant all-cleared. Then the reported roster/total count the focus
+        // only, so a scenario's "1/1" means its objective, not 1/11 of the map.
+        if (_isScenario)
+        {
+            std::vector<uint32> rosterEntries;
+            for (BossRef const& ref : _roster)
+                rosterEntries.push_back(ref.entry);
+            std::vector<DcTestDungeonRegistry::Row> const& rows = DcTestDungeonRegistry::All();
+            if (DcTestDungeonRegistry::Row const* row = DcTestDungeonRegistry::Find(_dungeonToken, rows))
+            {
+                std::string const bad =
+                    DcTestDungeonRegistry::ValidateScenario(*row, rows, &rosterEntries);
+                if (!bad.empty())
+                {
+                    FailSetup("scenario '" + _dungeonToken + "': " + bad);
+                    return;
+                }
+            }
+            // A focus the roster marks skip-by-design (Karazhan's Chess and
+            // Prince are, until their events land) is never selected, so with
+            // everything else skipped the run would read ALL-CLEARED on its
+            // first tick — a fake success. Refuse it instead.
+            bool anyRunnable = false;
+            for (DungeonBossInfo const& b : bosses)
+                if (!b.skipByDesign &&
+                    std::find(_focus.begin(), _focus.end(), b.entry) != _focus.end())
+                    anyRunnable = true;
+            if (!anyRunnable)
+            {
+                FailSetup("scenario '" + _dungeonToken +
+                          "': every focus entry is skip-by-design on this map's roster — "
+                          "nothing to run");
+                return;
+            }
+            _record.bossRoster.clear();
+            uint32 focused = 0;
+            for (BossRef const& ref : _roster)
+                if (std::find(_focus.begin(), _focus.end(), ref.entry) != _focus.end())
+                {
+                    ++focused;
+                    // Focus objectives are named too: a scenario's roster IS its
+                    // objective list, even when that objective is not a boss.
+                    _record.bossRoster.push_back(ref.name);
+                }
+            _record.bossesTotal = focused;
+        }
+
+        // The event-telemetry block on the leader survives DcRunState::Reset()
+        // (see DcRunState) — so it has to be cleared HERE, before `dc on`, or a
+        // previous run's extras and progress count would leak into this one.
+        DcRun::Of(ctx).ClearTestTelemetry();
+
         // RAID runs lean on the playerbots raid strategies for the boss fights
         // (DC stands down during encounters), and those attach by mapId only
-        // when AiPlayerbot.ApplyInstanceStrategies is on. A raid run with the
+        // when Playerbots.ApplyInstanceStrategies is on. A raid run with the
         // knob off would test nothing but bots auto-attacking a raid boss —
         // fail loudly at start instead of 40 minutes later.
-        if (IsRaidMap() && !sPlayerbotAIConfig.applyInstanceStrategies)
+        if (IsRaidMap() && !DC_PB_CONFIG(ApplyInstanceStrategies, applyInstanceStrategies))
         {
-            FailSetup("AiPlayerbot.ApplyInstanceStrategies is off — raid runs need the "
+            FailSetup("Playerbots.ApplyInstanceStrategies is off — raid runs need the "
                       "playerbots raid strategies to fight bosses; enable it and retry");
             return;
         }
@@ -1350,6 +1600,24 @@ void DcTestRunJob::TickStarting()
     tankAI->DoSpecificAction("dc on", Event("dc", "", FindGm()), true);
     if (DcRun::Of(ctx).enabled)
     {
+        if (_isScenario)
+        {
+            // Take the run-instance transition NOW, before filling Skipped. It
+            // wipes Skipped, and left to itself it fires on the first
+            // NextDungeonBoss evaluation — i.e. just AFTER this fill, which would
+            // point the raid at the map's first boss until the next monitor tick
+            // re-asserted the scope. Taking it here (idempotent: it only acts on
+            // an instance change) makes the fill stick from the first AI tick.
+            DcTargeting::ResetCompletionLatchesForNewInstance(tank, ctx);
+            ApplyScenarioSkips(tank, ctx);
+            LOG_INFO("playerbots.dungeonclear",
+                     "TESTRUN {} scenario {} (of {}): focus {} of {} roster entries, success {}{}",
+                     _record.runId, _dungeonToken, _record.scenarioOf, _focus.size(),
+                     _roster.size(),
+                     _record.successPredicate.empty() ? "all-cleared" : _record.successPredicate,
+                     _success.IsSet() ? " + " + std::to_string(_successGraceMs / 1000) + "s grace"
+                                      : std::string());
+        }
         if (InstanceScript* inst = DcTargeting::GetInstanceScript(tank))
             _lastMask = inst->GetCompletedEncounterMask();
         _lastAnchors =
@@ -1362,12 +1630,36 @@ void DcTestRunJob::TickStarting()
         // Armed here rather than at Teleporting so it covers exactly the window
         // the party is actually walking the dungeon.
         _areaTriggers.Arm(_mapId);
+        ArmTrace(tank, ctx);
         EnterStage(Stage::Monitoring);
         return;
     }
 
     if (_stageMs >= START_TIMEOUT_MS)
         FailSetup("dc on did not take (look for 'DC command refused' in the DC log)");
+}
+
+void DcTestRunJob::ApplyScenarioSkips(Player* tank, AiObjectContext* ctx)
+{
+    if (!_isScenario || !tank || !ctx)
+        return;
+    std::unordered_set<uint32>& skipped =
+        ctx->GetValue<std::unordered_set<uint32>&>(DcKey::Skipped)->Get();
+    for (BossRef const& ref : _roster)
+        if (std::find(_focus.begin(), _focus.end(), ref.entry) == _focus.end())
+            skipped.insert(ref.entry);
+}
+
+void DcTestRunJob::CaptureExtras(Player* tank)
+{
+    PlayerbotAI* tankAI = tank ? GET_PLAYERBOT_AI(tank) : nullptr;
+    if (!tankAI)
+        return;
+    std::vector<DcTestExtra> const& live = DcRun::Of(tankAI->GetAiObjectContext()).testExtras;
+    _record.extras.clear();
+    _record.extras.reserve(live.size());
+    for (DcTestExtra const& e : live)
+        _record.extras.push_back({e.key, e.value, e.numeric});
 }
 
 // File a death for every member who went from standing to a corpse since the
@@ -1692,6 +1984,34 @@ void DcTestRunJob::TickMonitoring(uint32 dt)
         AiObjectContext* ctx = tankAI->GetAiObjectContext();
         DcRunState const& rs = DcRun::Of(ctx);
 
+        // Scenario scope + success. The skip fill is re-asserted every tick (see
+        // ApplyScenarioSkips); the predicate is read straight off the instance
+        // and latched by the pure grace clock, whose verdict the kernel folds in.
+        if (_isScenario)
+        {
+            ApplyScenarioSkips(tank, ctx);
+            // No predicate = all-cleared is the only success, as on any row.
+            if (_success.IsSet())
+            {
+                bool const wasHeld = _grace.held;
+                bool holds = wasHeld;  // latched: no need to re-read once met
+                if (!wasHeld)
+                    if (InstanceScript* inst = DcTargeting::GetInstanceScript(tank))
+                        holds = DcTestDungeonRegistry::PredicateHolds(
+                            _success, inst->GetData(_success.dataId));
+                _grace.Step(holds, dt, _totalMs);
+                if (!wasHeld && _grace.held)
+                    LOG_INFO("playerbots.dungeonclear",
+                             "TESTRUN {} scenario success predicate {} holds at {}s — {}s grace "
+                             "for the event's tail",
+                             _record.runId, _record.successPredicate, _totalMs / 1000,
+                             _successGraceMs / 1000);
+                obs.scenarioSuccess = _grace.held;
+                obs.graceExpired = _grace.Expired(_successGraceMs);
+            }
+        }
+        CaptureExtras(tank);
+
         // The disable funnel notifies OnRunDisabled; this catches any path
         // that somehow bypassed it (belt and braces — enabled off without a
         // callback still ends the run).
@@ -1715,7 +2035,9 @@ void DcTestRunJob::TickMonitoring(uint32 dt)
             ctx->GetValue<std::unordered_set<uint32>&>(DcKey::ClearedAnchors)->Get().size();
 
         bool progressed = false;
-        if (uint32 const fresh = mask & ~_lastMask)
+        // A wing-scoped run counts its own wing's bits only: the other wing's
+        // kills (a UBRS pack pulled from the shared hall) are not its progress.
+        if (uint32 const fresh = mask & ~_lastMask & (_wingMask ? _wingMask : ~0u))
         {
             for (uint32 bit = 0; bit < 32; ++bit)
             {
@@ -1736,8 +2058,8 @@ void DcTestRunJob::TickMonitoring(uint32 dt)
                 _record.bossTimeline.push_back(kill);
                 progressed = true;
             }
-            _lastMask = mask;
         }
+        _lastMask = mask;
         if (anchors > _lastAnchors)
         {
             for (std::size_t i = _lastAnchors; i < anchors; ++i)
@@ -1817,13 +2139,12 @@ void DcTestRunJob::TickMonitoring(uint32 dt)
             }
         }
 
-        if (progressed)
-        {
-            _sinceProgressMs = 0;
+        // The event progress sequence (DcRunState::eventProgressSeq) is the one
+        // signal the harness cannot derive itself: a long scripted event (chess)
+        // bumps it on its own headway, and a change counts like a kill.
+        if (_progressClock.Step(dt, progressed, rs.eventProgressSeq))
             _frozenDumpLogged = false;
-        }
-        else
-            _sinceProgressMs += dt;
+        _sinceProgressMs = _progressClock.sinceMs;
 
         // THE FREEZE DUMP. Fired once, halfway into the no-progress window, on a
         // run that is going to fail its watchdog unless something changes — and
@@ -1927,6 +2248,16 @@ void DcTestRunJob::TickMonitoring(uint32 dt)
     if (!DcTestRun::IsTerminal(verdict))
         return;
 
+    if (DcTestRun::IsSuccess(verdict))
+    {
+        _record.successBy = DcTestRun::SuccessBy(obs, verdict);
+        _record.tailPending = _record.successBy != "allCleared";
+        if (_isScenario)
+            LOG_INFO("playerbots.dungeonclear", "TESTRUN {} scenario success by {}{}",
+                     _record.runId, _record.successBy,
+                     _record.tailPending ? " (event tail still pending)" : "");
+    }
+
     std::string failReason;
     switch (verdict)
     {
@@ -2006,6 +2337,9 @@ void DcTestRunJob::Finish(DcTestRun::Verdict verdict, std::string const& failRea
 {
     _record.result = DcTestRun::VerdictName(verdict);
     _record.failReason = failReason;
+    // Last look at the event's extras: an event that published its final
+    // counters in the tick the run ended has not been sampled yet.
+    CaptureExtras(FindTank());
 
     // Wipe post-mortem. Also filled for a death bailout — the run ends as
     // "disabled" with a corpse in the party, and "what killed us" is the same
@@ -2176,6 +2510,12 @@ void DcTestRunJob::Teardown()
                  _areaTriggers.Relayed(), armed);
     _areaTriggers.Disarm();
 
+    // Before anything below disables the run or moves the party: the trace's
+    // last frame should show the party where the run actually ended.
+    FinishTrace();
+    if (_lab)
+        _lab->OnTeardown(MakeLabParty(), _record.result.empty() ? std::string("teardown") : _record.result);
+
     Player* tank = FindTank();
     if (tank)
     {
@@ -2188,7 +2528,8 @@ void DcTestRunJob::Teardown()
         // DisableDungeonClear resets the run state, Group::Disband drops every
         // member, and LogoutBots removes them from the world. Afterwards there
         // is nothing left to describe why the run failed.
-        _record.diag = DcDiag::Capture(tank, "teardown");
+        if (!_lab)
+            _record.diag = DcDiag::Capture(tank, "teardown");
         _record.stallAtEnd = _record.diag.stallReason;
         _record.phaseAtEnd = _record.diag.phase;
         if (_record.diag.valid && _record.result != "success")
@@ -2246,13 +2587,20 @@ void DcTestRunJob::Teardown()
 
     _record.endedAtMs = NowUnixMs();
     _record.durationS = static_cast<uint32>((_record.endedAtMs - _record.startedAtMs) / 1000);
-    DcTestRunRecord::Append(_record);
+    // A Lab party's runs are recorded by the Lab (dc_labruns.jsonl); the host
+    // job itself is plumbing, not a dungeon run, and stays out of the analytics.
+    if (!_lab)
+        DcTestRunRecord::Append(_record);
 
     LOG_INFO("playerbots.dungeonclear", "TESTRUN END {} result={} reason={} bosses={}/{} duration={}s",
              _record.runId, _record.result, _record.failReason,
              _record.bossesKilled, _record.bossesTotal, _record.durationS);
 
-    if (gm)
+    if (gm && _lab)
+        ChatHandler(gm->GetSession()).SendSysMessage(Acore::StringFormat(
+            "Lab party {} released: {} ({}s){}", _record.runId, _record.result, _record.durationS,
+            _record.failReason.empty() ? "" : (" — " + _record.failReason)));
+    else if (gm)
         ChatHandler(gm->GetSession()).SendSysMessage(Acore::StringFormat(
             "Test run {}: {} ({}/{} bosses, {}s){}", _record.dungeon, _record.result,
             _record.bossesKilled, _record.bossesTotal, _record.durationS,

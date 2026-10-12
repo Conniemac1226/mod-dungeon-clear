@@ -22,6 +22,7 @@
 #include "ServerFacade.h"
 #include "SharedDefines.h"
 #include "Timer.h"
+#include "Util/DcPlayerbotsConfig.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
 
@@ -326,7 +327,7 @@ namespace
         if (botAI->GetState() != BOT_STATE_COMBAT)
         {
             botAI->ChangeEngine(BOT_STATE_COMBAT);
-            botAI->SetNextCheckDelay(sPlayerbotAIConfig.reactDelay);
+            botAI->SetNextCheckDelay(DC_PB_CONFIG(ReactDelay, reactDelay));
         }
     }
 

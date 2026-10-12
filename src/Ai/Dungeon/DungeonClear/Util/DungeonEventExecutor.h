@@ -14,6 +14,7 @@ class Creature;
 class GameObject;
 class GossipMenu;
 class AiObjectContext;
+struct DungeonBossInfo;
 
 // Result of running ONE event step on a tick.
 enum class StepResult : uint8
@@ -254,6 +255,15 @@ public:
     // Reads the run's "next dungeon boss" + "dungeon clear event progress" values,
     // so pass the context of the bot whose run state you mean (the leader's).
     static bool IsPersistentAnchoredEventActive(AiObjectContext* context);
+
+    // True when the tank has ARRIVED at objective `next`: a persistent anchored
+    // event is already driving it, the tank is within its arriveRadius, or its
+    // gate creature is up anywhere on the map. The one arrival predicate — the
+    // at-objective trigger fires on it and the objective action re-checks it,
+    // because the action can run on a later tick than the trigger that queued it,
+    // by which time NextDungeonBoss may have advanced to the NEXT objective.
+    static bool ObjectiveArrived(Player* bot, AiObjectContext* context,
+                                 DungeonBossInfo const& next);
 
     // True while an event that OWNS THE PULL is driving this run — either the
     // anchored case above, or a CONDITIONAL event whose row carries

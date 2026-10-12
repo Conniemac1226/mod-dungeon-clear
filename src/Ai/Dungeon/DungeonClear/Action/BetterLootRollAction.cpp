@@ -16,6 +16,7 @@
 #include "StatsWeightCalculator.h"
 #include "Ai/Dungeon/DungeonClear/Settings/DcSettings.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcPlayerbotCompat.h"
+#include "Util/DcPlayerbotsConfig.h"
 
 namespace
 {
@@ -147,12 +148,12 @@ bool DungeonClearBetterLootRollAction::Execute(Event event)
         // Same post-processing as stock LootRollAction::Execute.
         if (vote == NEED)
         {
-            if (sPlayerbotAIConfig.lootNeedRollLevel == 0 || RollUniqueCheck(proto, bot))
+            if (DC_PB_CONFIG(LootNeedRollLevel, lootNeedRollLevel) == 0 || RollUniqueCheck(proto, bot))
                 vote = PASS;
-            else if (sPlayerbotAIConfig.lootNeedRollLevel == 1)
+            else if (DC_PB_CONFIG(LootNeedRollLevel, lootNeedRollLevel) == 1)
                 vote = GREED;
         }
-        else if (vote == GREED && !sPlayerbotAIConfig.lootGreedRollLevel)
+        else if (vote == GREED && !DC_PB_CONFIG(LootGreedRollLevel, lootGreedRollLevel))
             vote = PASS;
 
         switch (group->GetLootMethod())

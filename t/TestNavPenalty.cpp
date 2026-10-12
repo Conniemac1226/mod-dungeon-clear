@@ -322,3 +322,130 @@ TEST(DcNavPenaltyRegistry, FencesThePitOfSaronNorthBridge)
     // Inside the box geometrically, but a different map -> no volume applies.
     EXPECT_FLOAT_EQ(DcNavPenaltyRegistry::PenaltyAt(0, 867.78f, 75.93f, 525.86f), 1.0f);
 }
+
+// ---- Blackrock Spire LBRS / UBRS wing regions (map 229) ----------------------
+// Wing-tagged rows fence a wing off for every OTHER wing's run. Points are the
+// measured spawns and the shared-hall walk from the 2026-09-28 poly-graph survey
+// (see the 229 block in DcNavPenaltyRegistry.cpp).
+namespace
+{
+    struct P { char const* what; float x, y, z; };
+
+    P const kLbrsPoints[] = {
+        { "Omokk",       -22.8f, -300.7f,  31.8f },
+        { "Vosh'gajin", -121.2f, -482.2f,  24.7f },
+        { "Voone",       -17.0f, -459.1f, -18.6f },
+        { "Smolderweb", -135.5f, -565.8f,  10.2f },
+        { "Urok pile",   -14.4f, -395.8f,  48.5f },
+        { "Zigris",     -190.5f, -475.6f,  87.4f },
+        { "Halycon",    -193.9f, -338.1f,  64.5f },
+        { "Wyrmthalak",  -22.6f, -486.2f,  90.8f },
+    };
+
+    P const kUbrsPoints[] = {
+        { "Emberseer",     144.4f, -258.0f,  96.4f },
+        { "Father Flame",   76.0f, -334.7f,  91.5f },
+        { "Altar",         144.4f, -280.9f,  91.5f },
+        { "Rend",          159.3f, -443.6f, 122.1f },
+        { "The Beast",     124.2f, -563.8f, 107.4f },
+        { "Drakkisath",     36.5f, -286.0f, 111.0f },
+        { "rune room 1",   125.4f, -340.5f,  70.9f },
+        { "rune room 3",   124.8f, -298.0f,  70.9f },
+        { "rune room 6",   228.8f, -301.5f,  76.9f },
+        { "Emberseer In",  216.4f, -286.1f,  76.9f },
+    };
+
+    // The shared entry hall: portal -> Dragonspine Door. Never fenced, for
+    // either wing — a UBRS run and its rez recovery walk it.
+    P const kSharedPoints[] = {
+        { "portal",          78.5f, -225.0f, 49.8f },
+        { "corridor 1",      80.2f, -248.8f, 60.4f },
+        { "corridor 2",      92.5f, -274.3f, 61.1f },
+        { "corridor 3",      96.0f, -305.1f, 64.6f },
+        { "corridor 4",      95.4f, -324.0f, 66.2f },
+        { "hall pack N",     79.0f, -287.1f, 60.8f },
+        { "hall pack S",     85.2f, -358.0f, 60.8f },
+        { "LBRS stair foot", 60.4f, -323.5f, 55.2f },
+        { "door stall",     109.1f, -320.4f, 65.5f },
+        { "door approach",  118.7f, -320.5f, 68.9f },
+        { "UBRS entrance",  105.0f, -320.0f, 65.5f },
+    };
+}
+
+TEST(DcNavPenaltyRegistry, WingRowsApplyOnlyToTheOtherWingsRun)
+{
+    EXPECT_TRUE(DcNavPenaltyRegistry::RowActive(nullptr, ""));
+    EXPECT_TRUE(DcNavPenaltyRegistry::RowActive(nullptr, "lbrs"));
+    EXPECT_TRUE(DcNavPenaltyRegistry::RowActive("", "lbrs"));
+    EXPECT_TRUE(DcNavPenaltyRegistry::RowActive("ubrs", "lbrs"));
+    EXPECT_FALSE(DcNavPenaltyRegistry::RowActive("ubrs", "ubrs"));
+    // No run wing -> tagged rows are off: a caller that knows no wing never
+    // fences anyone into one.
+    EXPECT_FALSE(DcNavPenaltyRegistry::RowActive("ubrs", ""));
+}
+
+TEST(DcNavPenaltyRegistry, LbrsRunIsFencedOutOfUbrsOnly)
+{
+    for (P const& p : kUbrsPoints)
+        EXPECT_GT(DcNavPenaltyRegistry::PenaltyAt(229, p.x, p.y, p.z, "lbrs"), 1.0f) << p.what;
+    for (P const& p : kLbrsPoints)
+        EXPECT_FLOAT_EQ(DcNavPenaltyRegistry::PenaltyAt(229, p.x, p.y, p.z, "lbrs"), 1.0f) << p.what;
+}
+
+TEST(DcNavPenaltyRegistry, UbrsRunIsFencedOutOfLbrsOnly)
+{
+    for (P const& p : kLbrsPoints)
+        EXPECT_GT(DcNavPenaltyRegistry::PenaltyAt(229, p.x, p.y, p.z, "ubrs"), 1.0f) << p.what;
+    for (P const& p : kUbrsPoints)
+        EXPECT_FLOAT_EQ(DcNavPenaltyRegistry::PenaltyAt(229, p.x, p.y, p.z, "ubrs"), 1.0f) << p.what;
+}
+
+TEST(DcNavPenaltyRegistry, SharedBrsHallIsNeverFenced)
+{
+    for (char const* wing : { "", "lbrs", "ubrs" })
+        for (P const& p : kSharedPoints)
+            EXPECT_FLOAT_EQ(DcNavPenaltyRegistry::PenaltyAt(229, p.x, p.y, p.z, wing), 1.0f)
+                << p.what << " (run wing '" << wing << "')";
+}
+
+TEST(DcNavPenaltyRegistry, WingRowsAreOffWithoutARunWing)
+{
+    for (P const& p : kUbrsPoints)
+        EXPECT_FLOAT_EQ(DcNavPenaltyRegistry::PenaltyAt(229, p.x, p.y, p.z), 1.0f) << p.what;
+    // The untagged LBRS shortcut rows are unaffected by the wing column.
+    EXPECT_GT(DcNavPenaltyRegistry::PenaltyAt(229, -126.1f, -390.3f, 44.4f), 1.0f);
+    EXPECT_GT(DcNavPenaltyRegistry::PenaltyAt(229, -126.1f, -390.3f, 44.4f, "lbrs"), 1.0f);
+}
+
+TEST(DcNavPenaltyRegistry, WingRegionAtNamesTheHalfThePartyStandsIn)
+{
+    for (P const& p : kLbrsPoints)
+    {
+        char const* w = DcNavPenaltyRegistry::WingRegionAt(229, p.x, p.y, p.z);
+        ASSERT_NE(w, nullptr) << p.what;
+        EXPECT_STREQ(w, "lbrs") << p.what;
+    }
+    for (P const& p : kUbrsPoints)
+    {
+        char const* w = DcNavPenaltyRegistry::WingRegionAt(229, p.x, p.y, p.z);
+        ASSERT_NE(w, nullptr) << p.what;
+        EXPECT_STREQ(w, "ubrs") << p.what;
+    }
+    for (P const& p : kSharedPoints)
+        EXPECT_EQ(DcNavPenaltyRegistry::WingRegionAt(229, p.x, p.y, p.z), nullptr) << p.what;
+    // Other maps have no wing regions.
+    EXPECT_EQ(DcNavPenaltyRegistry::WingRegionAt(429, 44.45f, -154.82f, -2.71f), nullptr);
+}
+
+TEST(DcRouteFilterTest, WingFenceArmsForTheRunWingAndNeverCages)
+{
+    // An LBRS run leaving the portal: the UBRS rows are armed.
+    DcRouteFilter const lbrsAtPortal(229, 78.5f, -225.0f, 49.8f, "lbrs");
+    EXPECT_TRUE(lbrsAtPortal.IsFenceActive());
+    // An LBRS party that somehow stands in UBRS still routes out.
+    DcRouteFilter const lbrsInUbrs(229, 144.4f, -258.0f, 96.4f, "lbrs");
+    EXPECT_FALSE(lbrsInUbrs.IsFenceActive());
+    // A UBRS run standing in its own wing is not "inside a fence".
+    DcRouteFilter const ubrsAtEmberseer(229, 144.4f, -258.0f, 96.4f, "ubrs");
+    EXPECT_TRUE(ubrsAtEmberseer.IsFenceActive());
+}

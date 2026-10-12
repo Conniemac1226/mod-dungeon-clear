@@ -17,7 +17,7 @@ class DcPartyState
 public:
     // The HP/mana percentages the between-pulls rest gate (IsPartyReady) holds
     // for. These default to mod-playerbots' own drink/eat stop thresholds
-    // (AiPlayerbot.AlmostFullHealth / AiPlayerbot.HighMana): a stock bot only eats
+    // (Playerbots.AlmostFullHealth / Playerbots.HighMana): a stock bot only eats
     // back up to AlmostFullHealth and drinks back up to HighMana, then stops, so
     // we clamp the gate to those targets to keep it reachable by resting alone.
     //

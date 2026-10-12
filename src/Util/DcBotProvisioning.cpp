@@ -12,6 +12,7 @@
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotFactory.h"
 #include "Playerbots.h"
+#include "Util/DcPlayerbotsConfig.h"
 
 namespace DcBotProvisioning
 {
@@ -42,7 +43,7 @@ namespace DcBotProvisioning
         for (int pass = 0; pass < 2; ++pass)
             for (int i = 0; i < MAX_SPECNO; ++i)
             {
-                std::string const& name = sPlayerbotAIConfig.premadeSpecName[classId][i];
+                std::string const& name = DC_PB_CONFIG(PremadeSpecName, premadeSpecName)[classId][i];
                 if (name.empty())
                     break;
                 bool const hit = pass == 0 ? name == exact
@@ -77,7 +78,7 @@ namespace DcBotProvisioning
         PlayerbotFactory factory(bot, level, quality, gearScoreLimit);
 
         // Strip the equipped set first. Randomize() only wipes items when
-        // AiPlayerbot.EquipAndSpecPersistence is off (it defaults on), and
+        // Playerbots.EquipAndSpecPersistence is off (it defaults on), and
         // InitEquipment leaves a slot alone when no candidate passes the filters — so
         // a pool bot geared by an earlier run under a looser ceiling would keep those
         // pieces and the new limit would look ignored. Every test bot starts bare and
@@ -98,7 +99,7 @@ namespace DcBotProvisioning
             // this second pass every spec-forced bot (i.e. every tank and healer in
             // a test run) fights with no enchants and empty sockets. Cheap relative
             // to Randomize, and it only touches what is currently equipped.
-            if (bot->GetLevel() >= sPlayerbotAIConfig.minEnchantingBotLevel)
+            if (bot->GetLevel() >= DC_PB_CONFIG(MinEnchantingBotLevel, minEnchantingBotLevel))
                 factory.ApplyEnchantAndGemsNew();
         }
         if (bot->getClass() == CLASS_HUNTER)

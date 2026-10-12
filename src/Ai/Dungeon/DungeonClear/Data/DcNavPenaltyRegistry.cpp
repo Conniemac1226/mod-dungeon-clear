@@ -119,7 +119,42 @@ namespace
     // and now crosses at (861.93, 52.93) -> (871.13, 58.27), i.e. the ramp foot
     // by gate 1. Ick -> gate 1 (88yd) and gate 1 -> ramp top (100yd) are
     // unchanged. costMult 40, the shortcut class.
-    constexpr std::array<DcNavPenaltyVolume, 10> kVolumes = {{
+    //
+    // Blackrock Spire (map 229) — the LBRS / UBRS WING REGIONS, the only
+    // wing-tagged rows (see the header). A "ubrs" row keeps an LBRS run's routes
+    // out of Upper Blackrock Spire, an "lbrs" row keeps a UBRS run out of Lower;
+    // the same boxes tell DcRunWing's fallback which half the party stands in.
+    //
+    // MEASURED OFF THE MAP'S OWN MMTILES AND SPAWNS (2026-09-28): all six 229
+    // tiles (5,294 polys) parsed into a poly graph, cross-tile links matched on
+    // edge position AND height (without the height check a z111 edge joined a
+    // z-35 one). With the polys within 8yd of the Dragonspine Door (GO 164725,
+    // 126.9, -319.1, 70.9) blocked, everything still reachable from Emberseer is
+    // UBRS (1,019 polys, walled off from LBRS); the rest reachable from the
+    // portal is LBRS or the shared entry hall (1,944). Every UBRS poly centre is
+    // inside a ubrs box and no UBRS vertex inside an lbrs one; every LBRS centre
+    // outside the hall is inside an lbrs box and no hall poly is.
+    //
+    // THE SHARED ENTRY HALL IS UNFENCED FOR BOTH: portal nook, main hall, stairs
+    // and the door approach, roughly x 56..130, y -392..-215, z 44..76. A UBRS
+    // run (and its rez recovery) walks portal -> door through it; the LBRS run
+    // leaves it by the west stairs (x 52..55, y -307..-326), its only other exit.
+    // It holds Scarshield packs (two flank the door approach), fightable by either.
+    //
+    // The halves are STACKED, so the Z bands carry the split where XY overlaps:
+    // UBRS west of x15 starts at z111 while LBRS peaks at z95 (Wyrmthalak) -> the
+    // z104 floor of the first ubrs box and the z100 cap of the west lbrs box; the
+    // rookery above the hall starts at z89.9 over a hall at <= z73.6 -> z82 / z80.
+    // The door approach and the Dragonspine Hall share a height (z65-74 vs 71), so
+    // there the cut is the plane x = 128.5 plus two side boxes for rune rooms 1
+    // and 3, which clear the approach lane (y -312.3..-325.6) by ~1.9yd.
+    //
+    // Route checks over the poly graph: portal -> Omokk -> ... -> Wyrmthalak (521
+    // points) touches no ubrs box; portal -> door -> Emberseer -> Father Flame ->
+    // Rend -> Beast -> Drakkisath (258) touches no lbrs box; portal -> door touches
+    // neither. costMult 40, the shortcut class; a party that somehow stands inside
+    // the other wing still routes out (a fence never cages — see the header).
+    constexpr std::array<DcNavPenaltyVolume, 18> kVolumes = {{
         { 229, -134.0f, -406.0f, 33.0f, -118.0f, -374.0f, 56.0f, 40.0f },
         { 229,  -65.5f, -384.0f, 49.4f,  -60.5f, -377.0f, 54.2f, 40.0f },
         { 556,   25.0f,  150.0f, -5.0f,   68.0f,  248.0f, 30.0f, 40.0f },
@@ -130,6 +165,22 @@ namespace
         { 552,  314.5f,    5.4f, 36.4f,  358.5f,   49.4f, 60.4f,  8.0f },
         { 552,  373.4f,   -3.8f, 36.3f,  417.4f,   40.2f, 60.3f,  8.0f },
         { 658,  862.0f,   71.0f, 520.0f,  873.0f,   81.0f, 531.0f, 40.0f },
+        // 229 UBRS: upper floor z>=104 — Drakkisath hall, Rend/Gyth stadium, The Beast
+        { 229,  -35.0f, -595.0f, 104.0f,  245.0f, -225.0f, 140.0f, 40.0f, "ubrs" },
+        // 229 UBRS: rookery / Father Flame above the hall, Emberseer's room, ramps
+        { 229,   15.0f, -372.0f,  82.0f,  245.0f, -225.0f, 104.0f, 40.0f, "ubrs" },
+        // 229 UBRS: Dragonspine Hall past the door (x>128.5), rune rooms 2, 4-7, Emberseer In
+        { 229,  128.5f, -372.0f,  66.0f,  245.0f, -225.0f, 104.0f, 40.0f, "ubrs" },
+        // 229 UBRS: rune room 1, south of the door approach
+        { 229,  110.0f, -372.0f,  66.0f,  128.5f, -327.5f,  82.0f, 40.0f, "ubrs" },
+        // 229 UBRS: rune room 3, north of the door approach
+        { 229,  110.0f, -310.5f,  66.0f,  128.5f, -225.0f,  82.0f, 40.0f, "ubrs" },
+        // 229 LBRS: the west — Omokk, Vosh, Voone, spiders, Urok, Zigris, Halycon, Wyrmthalak
+        { 229, -235.0f, -600.0f, -45.0f,   10.0f, -215.0f, 100.0f, 40.0f, "lbrs" },
+        // 229 LBRS: middle strip, capped under the rookery (UBRS there starts at z89.9)
+        { 229,   10.0f, -600.0f, -45.0f,   55.0f, -215.0f,  80.0f, 40.0f, "lbrs" },
+        // 229 LBRS: the east, south of the entry hall
+        { 229,   55.0f, -600.0f, -45.0f,  140.0f, -393.0f,  80.0f, 40.0f, "lbrs" },
     }};
 
     // ---- polygonal no-go regions ----------------------------------------
@@ -339,48 +390,70 @@ namespace
     }
 }
 
-bool DcNavPenaltyRegistry::HasVolumes(uint32 mapId)
+bool DcNavPenaltyRegistry::RowActive(char const* rowWing, std::string_view runWing)
+{
+    if (!rowWing || !*rowWing)
+        return true;
+    return !runWing.empty() && runWing != rowWing;
+}
+
+bool DcNavPenaltyRegistry::HasVolumes(uint32 mapId, std::string_view runWing)
 {
     for (auto const& v : kVolumes)
-        if (v.mapId == mapId)
+        if (v.mapId == mapId && RowActive(v.wing, runWing))
             return true;
     for (auto const& p : kPolygons)
-        if (p.mapId == mapId)
+        if (p.mapId == mapId && RowActive(p.wing, runWing))
             return true;
     return false;
 }
 
-bool DcNavPenaltyRegistry::IsInsideRegion(uint32 mapId, float x, float y, float z)
+bool DcNavPenaltyRegistry::IsInsideRegion(uint32 mapId, float x, float y, float z, std::string_view runWing)
 {
-    return PenaltyAt(mapId, x, y, z) > 1.0f;
+    return PenaltyAt(mapId, x, y, z, runWing) > 1.0f;
 }
 
-float DcNavPenaltyRegistry::PenaltyAt(uint32 mapId, float x, float y, float z)
+namespace
+{
+    bool InVolume(DcNavPenaltyVolume const& v, float x, float y, float z)
+    {
+        return x >= v.minX && x <= v.maxX && y >= v.minY && y <= v.maxY && z >= v.minZ &&
+               z <= v.maxZ;
+    }
+
+    bool InPolygon(DcNavPenaltyPolygon const& p, float x, float y, float z)
+    {
+        return z >= p.minZ && z <= p.maxZ && PointInPolygonXY(p, x, y);
+    }
+}
+
+float DcNavPenaltyRegistry::PenaltyAt(uint32 mapId, float x, float y, float z, std::string_view runWing)
 {
     float worst = 1.0f;
     for (auto const& v : kVolumes)
     {
-        if (v.mapId != mapId)
-            continue;
-        if (x < v.minX || x > v.maxX)
-            continue;
-        if (y < v.minY || y > v.maxY)
-            continue;
-        if (z < v.minZ || z > v.maxZ)
+        if (v.mapId != mapId || !RowActive(v.wing, runWing) || !InVolume(v, x, y, z))
             continue;
         if (v.costMult > worst)
             worst = v.costMult;
     }
     for (auto const& p : kPolygons)
     {
-        if (p.mapId != mapId)
-            continue;
-        if (z < p.minZ || z > p.maxZ)
-            continue;
-        if (!PointInPolygonXY(p, x, y))
+        if (p.mapId != mapId || !RowActive(p.wing, runWing) || !InPolygon(p, x, y, z))
             continue;
         if (p.costMult > worst)
             worst = p.costMult;
     }
     return worst;
+}
+
+char const* DcNavPenaltyRegistry::WingRegionAt(uint32 mapId, float x, float y, float z)
+{
+    for (auto const& v : kVolumes)
+        if (v.mapId == mapId && v.wing && *v.wing && InVolume(v, x, y, z))
+            return v.wing;
+    for (auto const& p : kPolygons)
+        if (p.mapId == mapId && p.wing && *p.wing && InPolygon(p, x, y, z))
+            return p.wing;
+    return nullptr;
 }

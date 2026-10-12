@@ -14,6 +14,7 @@
 #include "Script/Playerbots.h"
 #include "Ai/Dungeon/DungeonClear/DcValueKeys.h"
 #include "Ai/Dungeon/DungeonClear/Data/Events/DungeonEventTables.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcChessBoard.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcCombatPurge.h"
 
 #include <list>
@@ -253,6 +254,33 @@ namespace
         // the usual "the tank must not lead the party there".
         { DcHallsOfReflection::MAP_ID, DcHallsOfReflection::NPC_LICH_KING,
           &HorEscapeRunning, /*alsoTank*/ true },
+
+        // Karazhan — the chess pieces, the move triggers and Medivh's fire, always.
+        //
+        // The pieces are charmable creatures on the chess factions (1689/1690),
+        // and Medivh's are hostile to the raid: the clear's pickers and the stock
+        // engine would pick them as targets, and a controller — which loses Game
+        // In Session the moment it takes its piece — would cast its own spells at
+        // them. That is cheating, and damage from outside the game breaks it. The
+        // game is played only through the pieces (the chess rung and conductor).
+        // The move triggers (22519) and the fire (22521) are never targets either.
+        //
+        // Not windowed: there is no moment on this map when attacking a chess
+        // piece is progress. `alsoTank`, because nobody holds one.
+        { DcKarazhan::MAP, DcChess::NPC_PAWN_A,   nullptr, /*alsoTank*/ true },
+        { DcKarazhan::MAP, DcChess::NPC_PAWN_H,   nullptr, /*alsoTank*/ true },
+        { DcKarazhan::MAP, DcChess::NPC_ROOK_A,   nullptr, /*alsoTank*/ true },
+        { DcKarazhan::MAP, DcChess::NPC_ROOK_H,   nullptr, /*alsoTank*/ true },
+        { DcKarazhan::MAP, DcChess::NPC_KNIGHT_A, nullptr, /*alsoTank*/ true },
+        { DcKarazhan::MAP, DcChess::NPC_KNIGHT_H, nullptr, /*alsoTank*/ true },
+        { DcKarazhan::MAP, DcChess::NPC_BISHOP_A, nullptr, /*alsoTank*/ true },
+        { DcKarazhan::MAP, DcChess::NPC_BISHOP_H, nullptr, /*alsoTank*/ true },
+        { DcKarazhan::MAP, DcChess::NPC_QUEEN_A,  nullptr, /*alsoTank*/ true },
+        { DcKarazhan::MAP, DcChess::NPC_QUEEN_H,  nullptr, /*alsoTank*/ true },
+        { DcKarazhan::MAP, DcChess::NPC_KING_A,   nullptr, /*alsoTank*/ true },
+        { DcKarazhan::MAP, DcChess::NPC_KING_H,   nullptr, /*alsoTank*/ true },
+        { DcKarazhan::MAP, DcChess::NPC_MOVE_TRIGGER, nullptr, /*alsoTank*/ true },
+        { DcKarazhan::MAP, DcChess::NPC_FIRE,     nullptr, /*alsoTank*/ true },
 
         // Trial of the Champion — Paletress, for as long as Reflective Shield is
         // up. DPS and attacker pools only; the tank holds her. See

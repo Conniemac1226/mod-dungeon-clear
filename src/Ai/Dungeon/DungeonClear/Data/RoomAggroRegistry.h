@@ -85,6 +85,21 @@ struct RoomAggroBoss
     // so the camp must stand well clear of her (skirtRadius 40) or killing Pack B in
     // her wake wakes the boss. 0 => use the computed sphere alone (every other row).
     float  skirtRadius{0.0f};
+
+    // Optional absolute world-XY box every advanced-pull camp must stand inside
+    // while this boss's room is being pre-cleared. The skirt pushes the camp away
+    // from the boss, and the drag walks it back along the trail, i.e. out of the
+    // door the tank came in by. For a boss whose script evades when an add leaves
+    // the room, or whose room door opens onto other packs, that walk must stop
+    // short of the room's edge. Moroes is the case: his guests must stay at
+    // x >= -11028, y >= -1955, and the south door leads to the Phantom
+    // Attendants' corridor (tr-20260926-174359-2). hasCampBox == false (every
+    // other row) leaves camp placement unbounded.
+    bool   hasCampBox{false};
+    float  campMinX{0.0f};
+    float  campMaxX{0.0f};
+    float  campMinY{0.0f};
+    float  campMaxY{0.0f};
 };
 
 class RoomAggroRegistry
@@ -108,6 +123,11 @@ public:
     // boss has no Y band (then every Y qualifies). Mirrors the script's own
     // ROOM_EXIT < Y < ROOM_ENTERANCE guard. Pure — unit-testable.
     static bool InRoomBand(RoomAggroBoss const& boss, float worldY);
+
+    // True when (worldX, worldY) is inside the boss's camp box, or the boss has
+    // no camp box (then every point qualifies). Inclusive bounds. Pure —
+    // unit-testable.
+    static bool InCampBox(RoomAggroBoss const& boss, float worldX, float worldY);
 
     // Pure geometric membership predicate for one candidate creature, factored
     // out of DungeonClearRoomTrashValue so it can be tested without a live map.

@@ -274,7 +274,7 @@ public:
 // Fires while this bot has an un-answered group loot roll (its vote is still
 // NOT_EMITED_YET). Stock playerbots only reaches the "loot roll" action off
 // the "very often" RandomTrigger — a 1-in-3 coin flipped at most once per
-// AiPlayerbot.RepeatDelay (2s default), so bots routinely sit on an open roll
+// Playerbots.RepeatDelay (2s default), so bots routinely sit on an open roll
 // window for many seconds. This trigger drives the same "loot roll" action
 // (the BetterLootRollAction override) every non-combat tick until the vote is
 // cast, so bots roll as soon as the window opens. Gated by
@@ -653,6 +653,17 @@ class DungeonClearOculusRiderTrigger : public Trigger
 {
 public:
     DungeonClearOculusRiderTrigger(PlayerbotAI* botAI) : Trigger(botAI, "dungeon clear oc rider", 1) {}
+    bool IsActive() override;
+};
+
+// KARAZHAN ONLY: active for a bot in the Gamesman's Hall while chess is the raid's
+// business — a game on the board, or the run's conductor armed and ticking. Free on
+// every other map — the first test is an integer compare on the map id. See
+// DcKarazhan::ChessRungLive.
+class DungeonClearKzChessTrigger : public Trigger
+{
+public:
+    DungeonClearKzChessTrigger(PlayerbotAI* botAI) : Trigger(botAI, "dungeon clear kz chess", 1) {}
     bool IsActive() override;
 };
 

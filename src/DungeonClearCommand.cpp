@@ -35,13 +35,16 @@
 
 #include "DcModuleEnable.h"
 #include "DungeonClearDispatch.h"
+#include "BgQueueFill/DcBgQueueFillManager.h"
 #include "DungeonQueueFill/DcDungeonQueueFillManager.h"
+#include "Lab/DcLabManager.h"
 #include "TestRun/DcTestDriver.h"
 #include "TestRun/DcTestDungeonRegistry.h"
 #include "TestRun/DcTestGearTiers.h"
 #include "TestRun/DcTestPlan.h"
 #include "TestRun/DcTestPlanManager.h"
 #include "TestRun/DcTestRunManager.h"
+#include "Util/DcPlayerbotsConfig.h"
 #include "Util/DcSpectator.h"
 #include "Util/DcWatchHop.h"
 #include "Ai/Dungeon/DungeonClear/Settings/DcSettings.h"
@@ -307,6 +310,9 @@ public:
             { "start",  HandleTestPlanStart,  SEC_GAMEMASTER, Console::Yes },
             { "status", HandleTestPlanStatus, SEC_GAMEMASTER, Console::Yes },
             { "stop",   HandleTestPlanStop,   SEC_GAMEMASTER, Console::Yes },
+            { "edit",   HandleTestPlanEdit,   SEC_GAMEMASTER, Console::Yes },
+            { "pause",  HandleTestPlanPause,  SEC_GAMEMASTER, Console::Yes },
+            { "resume", HandleTestPlanResume, SEC_GAMEMASTER, Console::Yes },
         };
         static ChatCommandTable dcTestTable =
         {
@@ -319,15 +325,34 @@ public:
             { "watch",  HandleTestWatch,  SEC_GAMEMASTER, Console::No },
             { "plan",   dcTestPlanTable },
         };
+        // `.dc lab` — the Pull Lab (src/Lab): scripted pull scenarios run in
+        // warm parties and scored by the ten oracles. Console::Yes like `.dc
+        // test`: a console start issues through the headless driver.
+        static ChatCommandTable dcLabTable =
+        {
+            { "list",   HandleLabList,   SEC_GAMEMASTER, Console::Yes },
+            { "show",   HandleLabShow,   SEC_GAMEMASTER, Console::Yes },
+            { "run",    HandleLabRun,    SEC_GAMEMASTER, Console::Yes },
+            { "batch",  HandleLabBatch,  SEC_GAMEMASTER, Console::Yes },
+            { "status", HandleLabStatus, SEC_GAMEMASTER, Console::Yes },
+            { "stop",   HandleLabStop,   SEC_GAMEMASTER, Console::Yes },
+        };
         // `.dc dungeonqueuefill` — the RDF instant fill. Named in full rather
-        // than abbreviated because a battleground counterpart
-        // (`.dc bgqueuefill`) is a separate feature with its own switch, and
-        // the two must never have to be disambiguated after the fact.
+        // than abbreviated because the battleground counterpart
+        // (`.dc bgqueuefill`, below) is a separate feature with its own
+        // switch, and the two must never have to be disambiguated.
         static ChatCommandTable dcQueueFillTable =
         {
             { "status", HandleQueueFillStatus, SEC_GAMEMASTER, Console::Yes },
             { "cancel", HandleQueueFillCancel, SEC_GAMEMASTER, Console::Yes },
             { "test",   HandleQueueFillTest,   SEC_GAMEMASTER, Console::Yes },
+        };
+        // `.dc bgqueuefill` — the battleground instant fill.
+        static ChatCommandTable dcBgQueueFillTable =
+        {
+            { "status", HandleBgQueueFillStatus, SEC_GAMEMASTER, Console::Yes },
+            { "cancel", HandleBgQueueFillCancel, SEC_GAMEMASTER, Console::Yes },
+            { "test",   HandleBgQueueFillTest,   SEC_GAMEMASTER, Console::Yes },
         };
         static ChatCommandTable dcTable =
         {
@@ -339,16 +364,22 @@ public:
             { "status", HandleStatus, SEC_PLAYER, Console::No },
             { "bosses", HandleBosses, SEC_PLAYER, Console::No },
             { "go",     HandleGo,     SEC_PLAYER, Console::No },
+            { "wing",   HandleWing,   SEC_PLAYER, Console::No },
             { "config", HandleConfig, SEC_PLAYER, Console::No },
             { "spectate", HandleSpectate, SEC_PLAYER, Console::No },
             { "test",   dcTestTable },
+            { "lab",    dcLabTable },
             { "dungeonqueuefill", dcQueueFillTable },
+            { "bgqueuefill", dcBgQueueFillTable },
         };
         static ChatCommandTable root = { { "dc", dcTable } };
         return root;
     }
 
-    static bool HandleOn(ChatHandler* handler)     { return RunDcCommand(handler, "dc on"); }
+    // `.dc on [wing]` — the optional wing (lbrs / ubrs, brd-db / brd-uc) picks the
+    // half of a map whose wings are chosen per run (Blackrock Spire/Depths).
+    // `.dc wing [wing]` shows or changes it without toggling the run.
+    static bool HandleOn(ChatHandler* handler, Optional<std::string> wing) { return RunDcCommand(handler, "dc on", wing ? *wing : ""); }
     static bool HandleOff(ChatHandler* handler)    { return RunDcCommand(handler, "dc off"); }
     static bool HandleSkip(ChatHandler* handler)   { return RunDcCommand(handler, "dc skip"); }
     static bool HandlePause(ChatHandler* handler)  { return RunDcCommand(handler, "dc pause"); }
@@ -356,6 +387,7 @@ public:
     static bool HandleStatus(ChatHandler* handler, Optional<std::string> param) { return RunDcCommand(handler, "dc status", param ? *param : ""); }
     static bool HandleBosses(ChatHandler* handler, Optional<std::string> param) { return RunDcCommand(handler, "dc bosses", param ? *param : ""); }
     static bool HandleGo(ChatHandler* handler, Tail targetBoss) { return RunDcCommand(handler, "dc go", std::string(targetBoss)); }
+    static bool HandleWing(ChatHandler* handler, Optional<std::string> wing) { return RunDcCommand(handler, "dc wing", wing ? *wing : ""); }
 
     // --- `.dc test` — the automated test-run harness ------------------------
     // These act on DcTestRunManager directly (never DispatchToTankBots: the
@@ -379,7 +411,7 @@ public:
     // `.dc test start <dungeon> [heroic] [level=N] [seed=N] [ilvl=N|none]
     // [quality=rare|epic|…]` — random comp drawn from the addclass pool;
     // dungeon is a registry token (`.dc test list`) or a mapId. ilvl/quality cap
-    // the gear the bots are rolled with, defaulting to the AiPlayerbot.AutoGear*
+    // the gear the bots are rolled with, defaulting to the Playerbots.AutoGear*
     // conf values; `.dc test gear <dungeon>` lists the ceilings worth using for
     // a given dungeon.
     //
@@ -398,8 +430,8 @@ public:
 
         static constexpr char const* kUsage =
             "Usage: .dc test start <dungeon> [heroic] [size=N|10|25] [level=N] [seed=N] "
-            "[ilvl=N|none] [quality=normal|uncommon|rare|epic|legendary]\n"
-            "   or: .dc test start <dungeon> party=Tank,Heal,Dps1,Dps2,... [heroic]";
+            "[ilvl=N|none] [quality=normal|uncommon|rare|epic|legendary] [trace=1]\n"
+            "   or: .dc test start <dungeon> party=Tank,Heal,Dps1,Dps2,... [heroic] [trace=1]";
 
         std::string token;
         std::string party;
@@ -408,6 +440,7 @@ public:
         uint32 size = 0;  // 0 = classic 5-man; size=N (or bare 10/25) fields a raid comp
         DcTestGearTiers::Spec gear;
         bool heroic = false;
+        bool trace = false;  // Pull Lab trace + oracles (lab_traces/<runId>.jsonl)
         std::istringstream in{std::string(args)};
         std::string word;
         while (in >> word)
@@ -442,6 +475,8 @@ public:
                 size = static_cast<uint32>(std::strtoul(word.c_str() + 5, nullptr, 10));
             else if (word == "heroic")
                 heroic = true;
+            else if (word.rfind("trace=", 0) == 0)
+                trace = word.substr(6) == "1" || word.substr(6) == "on";
             else if (token.empty())
                 token = word;
             // Raid-size presets: a bare 10/25 AFTER the dungeon token reads as
@@ -462,6 +497,7 @@ public:
         }
 
         std::string msg;
+        std::string runId;
         if (!party.empty())
         {
             // Reject rather than silently ignore: somebody passing level= with a
@@ -475,7 +511,7 @@ public:
                     "roster is the comp (its length is the size).");
                 return true;
             }
-            DcTestRunManager::Instance().StartRoster(issuer, token, party, heroic, &msg);
+            DcTestRunManager::Instance().StartRoster(issuer, token, party, heroic, &msg, "", nullptr, &runId);
         }
         else
         {
@@ -485,8 +521,127 @@ public:
                 return true;
             }
             DcTestRunManager::Instance().Start(issuer, token, level, seed, heroic, gear, &msg,
-                                               "", nullptr, nullptr, size);
+                                               "", nullptr, &runId, size);
         }
+        if (trace && !runId.empty() && DcTestRunManager::Instance().EnableTrace(runId))
+            msg += " [trace armed: oracles scored at teardown]";
+        handler->SendSysMessage(msg);
+        return true;
+    }
+
+    // --- `.dc lab` ------------------------------------------------------------
+
+    static bool HandleLabList(ChatHandler* handler, Optional<std::string> glob)
+    {
+        std::vector<std::string> const ids = DcLabManager::Instance().ListIds(glob ? *glob : "");
+        if (ids.empty())
+        {
+            handler->SendSysMessage("No lab scenarios" + (glob ? " matching '" + *glob + "'" : std::string()) +
+                                    " (lab/scenarios; DC_LAB_DIR overrides the location).");
+            return true;
+        }
+        handler->SendSysMessage(std::to_string(ids.size()) + " lab scenario(s):");
+        for (std::string const& id : ids)
+        {
+            DcLabScenario::Scenario s;
+            std::string err;
+            if (DcLabManager::Instance().Load(id, s, &err))
+                handler->SendSysMessage("  " + id + (s.knownFailure.empty() ? "" : " [" + s.knownFailure + "]") +
+                                        " — " + s.about);
+            else
+                handler->SendSysMessage("  " + id + " — LOAD ERROR: " + err);
+        }
+        return true;
+    }
+
+    static bool HandleLabShow(ChatHandler* handler, std::string id)
+    {
+        DcLabScenario::Scenario s;
+        std::string err;
+        if (!DcLabManager::Instance().Load(id, s, &err))
+        {
+            handler->SendSysMessage("lab scenario " + id + ": " + err);
+            return true;
+        }
+        handler->SendSysMessage(id + ": " + s.about);
+        handler->SendSysMessage(Acore::StringFormat(
+            "  map {}{} {} objective={} start ({:.1f},{:.1f},{:.1f}) radius {:.0f} comp '{}' react {} timeout {}s",
+            s.mapId, s.dungeon.empty() ? "" : " (" + s.dungeon + ")", s.heroic ? "heroic" : "normal", s.objective,
+            s.start.x, s.start.y, s.start.z, s.radius, s.comp.empty() ? "random" : s.comp, s.react, s.timeoutS));
+        std::string packs;
+        for (auto const& [tag, ids] : s.packs)
+            packs += (packs.empty() ? "" : ", ") + tag + "=" + std::to_string(ids.size());
+        handler->SendSysMessage("  packs: " + (packs.empty() ? "-" : packs) + "  synthetic: " +
+                                std::to_string(s.synthetic.size()) + "  injections: " +
+                                std::to_string(s.injections.size()) +
+                                (s.human.slot > 0 ? "  human slot " + std::to_string(s.human.slot) : ""));
+        for (DcLabScenario::Injection const& inj : s.injections)
+            handler->SendSysMessage("    inject " + inj.label);
+        if (!s.knownFailure.empty())
+            handler->SendSysMessage("  known failure: " + s.knownFailure);
+        for (std::string const& w : s.warnings)
+            handler->SendSysMessage("  warning: " + w);
+        return true;
+    }
+
+    // Shared by run/batch: `<target> [seed=N] [repeat=N] [sweep=all|phases|events]`.
+    static bool LabEnqueue(ChatHandler* handler, std::string const& args, bool glob)
+    {
+        if (DcDisabledNotice(handler))
+            return true;
+        std::istringstream in(args);
+        std::string target, word, sweep;
+        uint32 seed = 0, repeat = 1;
+        while (in >> word)
+        {
+            if (word.rfind("seed=", 0) == 0)
+                seed = static_cast<uint32>(std::strtoul(word.c_str() + 5, nullptr, 10));
+            else if (word.rfind("repeat=", 0) == 0)
+                repeat = static_cast<uint32>(std::strtoul(word.c_str() + 7, nullptr, 10));
+            else if (word.rfind("sweep=", 0) == 0)
+                sweep = word.substr(6);
+            else if (target.empty())
+                target = word;
+            else
+            {
+                handler->SendSysMessage("Usage: .dc lab run <id> | .dc lab batch <glob>  [seed=N] [repeat=N] "
+                                        "[sweep=all|phases|events]");
+                return true;
+            }
+        }
+        if (target.empty())
+        {
+            handler->SendSysMessage("Usage: .dc lab run <id> | .dc lab batch <glob>  [seed=N] [repeat=N] "
+                                    "[sweep=all|phases|events]");
+            return true;
+        }
+        Player* issuer = ResolveTestIssuer(handler);
+        if (!issuer)
+            return true;
+        std::vector<std::string> ids;
+        if (glob)
+            ids = DcLabManager::Instance().ListIds(target);
+        else
+            ids.push_back(target);
+        std::string msg;
+        DcLabManager::Instance().Enqueue(issuer, ids, seed, repeat, sweep, &msg);
+        handler->SendSysMessage(msg);
+        return true;
+    }
+
+    static bool HandleLabRun(ChatHandler* handler, Tail args) { return LabEnqueue(handler, std::string(args), false); }
+    static bool HandleLabBatch(ChatHandler* handler, Tail args) { return LabEnqueue(handler, std::string(args), true); }
+
+    static bool HandleLabStatus(ChatHandler* handler)
+    {
+        handler->SendSysMessage(DcLabManager::Instance().StatusText());
+        return true;
+    }
+
+    static bool HandleLabStop(ChatHandler* handler)
+    {
+        std::string msg;
+        DcLabManager::Instance().Stop(&msg);
         handler->SendSysMessage(msg);
         return true;
     }
@@ -563,6 +718,68 @@ public:
 
         std::string msg;
         DcDungeonQueueFillManager::Instance().ForceFill(target, &msg);
+        handler->SendSysMessage(msg);
+        return true;
+    }
+
+    // --- `.dc bgqueuefill` — the battleground instant fill -----------------
+
+    // `.dc bgqueuefill status` — on/off, every fill in flight with its stage
+    // and per-side bot counts, deferred players, and released bots still
+    // waiting for somebody else's match to end.
+    static bool HandleBgQueueFillStatus(ChatHandler* handler)
+    {
+        if (DcDisabledNotice(handler))
+            return true;
+
+        handler->SendSysMessage(DcBgQueueFillManager::Instance().StatusText());
+        return true;
+    }
+
+    // `.dc bgqueuefill cancel <player>` — force-release one fill. The player
+    // keeps their place in the real queue (or their match, if they are in
+    // one: bots in a match a real player is still playing stay until it ends).
+    static bool HandleBgQueueFillCancel(ChatHandler* handler, Tail playerName)
+    {
+        if (DcDisabledNotice(handler))
+            return true;
+
+        std::string const name = std::string(playerName);
+        if (name.empty())
+        {
+            handler->SendSysMessage("Usage: .dc bgqueuefill cancel <player>");
+            return true;
+        }
+
+        std::string msg;
+        DcBgQueueFillManager::Instance().Cancel(name, &msg);
+        handler->SendSysMessage(msg);
+        return true;
+    }
+
+    // `.dc bgqueuefill test <player>` — open a fill for a player who is
+    // ALREADY waiting in a battleground queue, without them re-queueing.
+    static bool HandleBgQueueFillTest(ChatHandler* handler, Tail playerName)
+    {
+        if (DcDisabledNotice(handler))
+            return true;
+
+        std::string const name = std::string(playerName);
+        if (name.empty())
+        {
+            handler->SendSysMessage("Usage: .dc bgqueuefill test <player>");
+            return true;
+        }
+
+        Player* const target = ObjectAccessor::FindPlayerByName(name, false);
+        if (!target)
+        {
+            handler->PSendSysMessage("No player named '%s' is online.", name.c_str());
+            return true;
+        }
+
+        std::string msg;
+        DcBgQueueFillManager::Instance().ForceFill(target, &msg);
         handler->SendSysMessage(msg);
         return true;
     }
@@ -892,6 +1109,49 @@ public:
         return true;
     }
 
+    // `.dc test plan edit <planId> [pool=…] [concurrent=N]` — retune a live
+    // plan without restarting it (live runs are never aborted).
+    static bool HandleTestPlanEdit(ChatHandler* handler, Tail args)
+    {
+        if (DcDisabledNotice(handler))
+            return true;
+
+        DcTestPlan::EditParse const parsed = DcTestPlan::ParseEditArgs(std::string(args));
+        if (!parsed.ok)
+        {
+            handler->SendSysMessage(parsed.err);
+            return true;
+        }
+        std::string msg;
+        DcTestPlanManager::Instance().Edit(parsed.edit, &msg);
+        handler->SendSysMessage(msg);
+        return true;
+    }
+
+    // `.dc test plan pause|resume [planId|all]` — stop / restart launching;
+    // runs already in flight play out.
+    static bool HandleTestPlanPause(ChatHandler* handler, Tail selector)
+    {
+        if (DcDisabledNotice(handler))
+            return true;
+
+        std::string msg;
+        DcTestPlanManager::Instance().SetPaused(std::string(selector), true, &msg);
+        handler->SendSysMessage(msg);
+        return true;
+    }
+
+    static bool HandleTestPlanResume(ChatHandler* handler, Tail selector)
+    {
+        if (DcDisabledNotice(handler))
+            return true;
+
+        std::string msg;
+        DcTestPlanManager::Instance().SetPaused(std::string(selector), false, &msg);
+        handler->SendSysMessage(msg);
+        return true;
+    }
+
     static bool HandleTestList(ChatHandler* handler)
     {
         if (DcDisabledNotice(handler))
@@ -900,10 +1160,13 @@ public:
         handler->SendSysMessage("Supported test dungeons (.dc test start <token> [heroic]):");
         for (DcTestDungeonRegistry::Row const& row : DcTestDungeonRegistry::All())
             handler->SendSysMessage(Acore::StringFormat(
-                "  {:<16} {} (map {}, level {}{})", row.token, row.name, row.mapId,
+                "  {:<16} {} (map {}, level {}{}{})", row.token, row.name, row.mapId,
                 row.recommendedLevel,
                 row.heroicLevel ? Acore::StringFormat(", heroic {}", row.heroicLevel)
-                                : std::string()));
+                                : std::string(),
+                DcTestDungeonRegistry::IsScenario(row)
+                    ? Acore::StringFormat(", scenario of {}", row.scenarioOf)
+                    : std::string()));
         return true;
     }
 
@@ -944,8 +1207,8 @@ public:
         handler->SendSysMessage(Acore::StringFormat(
             "{}{} at level {} — ilvl= choices (server default is {}):", row->name,
             heroic ? " heroic" : "", level,
-            sPlayerbotAIConfig.autoGearScoreLimit > 0
-                ? std::to_string(sPlayerbotAIConfig.autoGearScoreLimit)
+            DC_PB_CONFIG(AutoGearScoreLimit, autoGearScoreLimit) > 0
+                ? std::to_string(DC_PB_CONFIG(AutoGearScoreLimit, autoGearScoreLimit))
                 : std::string("unlimited")));
         for (DcTestGearTiers::Choice const& choice : DcTestGearTiers::Ladder(row->mapId, level))
             handler->SendSysMessage(Acore::StringFormat("  ilvl={:<4} {}", choice.ilvl, choice.label));

@@ -29,6 +29,7 @@ TEST(DcTestGearTiersTest, ExpansionOfKnownMaps)
     EXPECT_EQ(ExpansionOf(269), Expansion::Tbc);      // Black Morass (CoT, TBC content)
     EXPECT_EQ(ExpansionOf(560), Expansion::Tbc);      // Old Hillsbrad (CoT, TBC content)
     EXPECT_EQ(ExpansionOf(565), Expansion::Tbc);      // Gruul's Lair (TBC raid)
+    EXPECT_EQ(ExpansionOf(532), Expansion::Tbc);      // Karazhan (TBC raid)
     EXPECT_EQ(ExpansionOf(595), Expansion::Wotlk);    // Culling of Stratholme (CoT, WotLK)
     EXPECT_EQ(ExpansionOf(668), Expansion::Wotlk);    // Halls of Reflection
 }
@@ -99,7 +100,7 @@ TEST(DcTestGearTiersTest, LevelingLadderIsThreeStepsAroundDungeonGear)
 TEST(DcTestGearTiersTest, EndgameLadderIsTheDocumentedTiers)
 {
     // Mechanar heroic (level 70) — the TBC ceilings from the
-    // AiPlayerbot.AutoGearScoreLimit comment block, plus the pre-raid floor.
+    // Playerbots.AutoGearScoreLimit comment block, plus the pre-raid floor.
     std::vector<Choice> const tbc = Ladder(554, 70);
     EXPECT_TRUE(HasIlvl(tbc, 115));  // pre-raid / heroic 5-man
     EXPECT_TRUE(HasIlvl(tbc, 120));

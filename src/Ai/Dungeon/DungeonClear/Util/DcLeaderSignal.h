@@ -164,8 +164,12 @@ public:
     // and the rest of it is still standing in a room the party must not enter.
     // Followers stay ANCHORED (not passive — they fight what comes to them) for
     // the duration. Drives DungeonClearHoldAtCampCombatTrigger and the camp-hold
-    // action's leash radius / movement priority.
+    // action's leash radius / movement priority. A boxed room-clear pull
+    // (DcPullContext::roomCampFight) counts as scripted here and below.
     static bool IsLeaderScriptedCampFight(Player* bot);
+
+    // The room-clear subset of IsLeaderScriptedCampFight (roomCampFight, Engage).
+    static bool IsLeaderRoomCampFight(Player* bot);
 
     // True while `bot`'s leader has ANY scripted-pull stage in flight — the tag leg
     // and the drag as well as the camp fight. Wider than IsLeaderScriptedCampFight
@@ -189,6 +193,21 @@ public:
     // leader itself, off/paused runs, or a leader out of combat. Drives
     // DungeonClearAssistCamp{,Combat}Trigger.
     static bool IsLeaderFightAssistWanted(Player* bot);
+
+    // Threat lead, damage side. NoteLeaderHit is fed by the damage hook: the
+    // first time an enabled DC leader damages a non-player in its current fight,
+    // it stamps DcRunState::leaderFirstHitMs. ShouldHoldDpsDamage is read by the
+    // multiplier for every damaging action: true while `bot` (a DPS follower in
+    // an active run) must wait out the lead from that first hit — see
+    // DungeonClearMath::ShouldHoldThreatLead.
+    static void NoteLeaderHit(Player* attacker);
+    // The leader's combat flag just went 0->1 (PlayerScript enter-combat hook):
+    // a NEW fight, so the lead clock restarts. LeaderCombatSince maintains its
+    // stamp lazily and misses a short out-of-combat gap between chained packs,
+    // which left the previous pack's first hit standing and the lead "already
+    // run" for the next one (Pull Lab O2, 19 of 21 remaining violations).
+    static void NoteLeaderEnterCombat(Player* player);
+    static bool ShouldHoldDpsDamage(Player* bot);
 
     // The MIRROR of IsLeaderFightAssistWanted for the LEADER itself: true when
     // `bot` IS the elected leader tank, is OUT of combat on an active (enabled,
@@ -377,6 +396,28 @@ public:
     // point to camp at. Returns false whenever the transit is not driving, so one
     // call answers both "is there a pack to hold" and "hold it where".
     static bool GetTransitAnchor(Player* bot, Position& out);
+
+    // KARAZHAN, chess: the run's chess conductor, as the members read it.
+    //
+    // The conductor lives on the RUN OWNER (FindRunOwner — dead or alive, the bot
+    // whose run state is enabled), and every member's rung reads these three
+    // facts off it on its own tick. All three answer "nothing" unless the run is
+    // on, unpaused, armed, and the conductor has stamped within the freshness
+    // window — so a run switched off, paused, or finished releases every member
+    // within a tick or two, with no latch of its own to reset (the Razorgore
+    // shape).
+    //
+    // The piece the conductor gave `bot` (empty = none: hold at the sideline).
+    static ObjectGuid GetChessAssignment(Player* bot);
+    // Is the run's chess conductor armed and ticking? `stateOut` gets its
+    // DcChessConductor::State when it is.
+    static bool IsLeaderChessArmed(Player* bot, uint8* stateOut = nullptr);
+    // `bot`'s sideline slot, 0..9 — its index in the conductor's seat order, or a
+    // GUID-derived fallback before the conductor has seated anyone.
+    static uint32 GetChessSeat(Player* bot);
+    // A member gave up taking `piece` (the gossip never took): the conductor
+    // hands it something else on its next tick.
+    static void ReportChessRefusal(Player* bot, ObjectGuid piece);
 
     // The same read for a caller that has ALREADY resolved the leader. The wrapper
     // above is on two per-tick, per-bot paths and FindLeaderTank costs a

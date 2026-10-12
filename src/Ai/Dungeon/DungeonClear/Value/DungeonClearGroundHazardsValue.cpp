@@ -12,6 +12,7 @@
 #include "Playerbots.h"
 #include "Ai/Dungeon/DungeonClear/DcValueKeys.h"
 #include "Ai/Dungeon/DungeonClear/Data/DcHazardRegistry.h"
+#include "Util/DcPlayerbotsConfig.h"
 
 namespace
 {
@@ -19,7 +20,7 @@ namespace
     // standoff rings, skirt legs, the vacate retreat) works within a pull's reach
     // of the bot, and one sight distance comfortably covers the widest registered
     // keep-out plus a camp drag.
-    float GroundHazardRange() { return sPlayerbotAIConfig.sightDistance; }
+    float GroundHazardRange() { return DC_PB_CONFIG(SightDistance, sightDistance); }
 
     // Range-only check for the dynamic-object sweep. There is no stock
     // "any world object in range" predicate that takes a WorldObject*, and the

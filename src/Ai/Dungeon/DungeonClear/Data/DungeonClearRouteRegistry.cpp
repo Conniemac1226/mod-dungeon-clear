@@ -30,6 +30,7 @@ namespace
             RegisterUtgardePinnacleRoute();
             RegisterPitOfSaronRoute();
             RegisterHallsOfReflectionRoute();
+            RegisterKarazhanRoute();
             return true;
         }();
         (void)seeded;

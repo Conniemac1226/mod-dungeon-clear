@@ -269,7 +269,20 @@ std::string DcStatusPublisher::BuildStatusPayload(PlayerbotAI* botAI)
         // stood in the Arcatraz Eredar room's aura doing nothing at all
         // (tr-20260801-194932-20), hiding the real state — which is the rest /
         // spread wait further down. Require an actual engagement to claim a fight.
-        if (bot->IsInCombat() && !DcCombatFlag::IsPhantomFlag(bot, context))
+        // Karazhan's chess game: the conductor's own one-liner ("Chess: attempt 1,
+        // HOLD, 12v9, our K 100%, their K 63%") for as long as it is driving. Ahead
+        // of the combat arm — a controller is combat-flagged by its piece, and
+        // "Fighting Orc Grunt." would say nothing true about a game.
+        DcChessRunState const& chess = DcRun::Of(context).chess;
+        bool const chessOn = chess.armed && !chess.status.empty() && chess.drivingMs &&
+                             !DcChessConductor::Terminal(static_cast<DcChessConductor::State>(chess.state)) &&
+                             GetMSTimeDiffToNow(chess.drivingMs) <= 5000;
+        if (chessOn)
+        {
+            stateStr = "fighting_boss";
+            detail = chess.status + ".";
+        }
+        else if (bot->IsInCombat() && !DcCombatFlag::IsPhantomFlag(bot, context))
         {
             Unit* currentTarget = context->GetValue<Unit*>(DcKey::Stock::CurrentTarget)->Get();
             if (currentTarget && next.has_value() && currentTarget->GetEntry() == next->entry)

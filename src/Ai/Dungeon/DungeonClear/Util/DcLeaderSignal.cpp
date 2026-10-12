@@ -55,6 +55,7 @@
 #include "World.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
 #include "Ai/Dungeon/DungeonClear/Data/SealedEncounterRegistry.h"
+#include "Ai/Dungeon/DungeonClear/Data/Events/DungeonEventTables.h"
 #include "Ai/Dungeon/DungeonClear/Util/ChunkedPathfinder.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcEngageGeometry.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTargeting.h"
@@ -191,6 +192,7 @@ namespace
         if (!leader->IsInCombat())
         {
             run.leaderCombatSinceMs = 0;
+            run.leaderFirstHitMs = 0;
             return 0;
         }
         if (run.leaderCombatSinceMs != 0)
@@ -764,8 +766,15 @@ bool DcLeaderSignal::GetLeaderCampHold(Player* bot, Position& campOut, bool& pas
     // A standing camp-safety release keeps the maneuver (the tank is still
     // dragging) but frees the party: still camped, no longer passive — the same
     // posture as holding at camp between pulls.
-    passiveOut = IsPullPhaseHolding(static_cast<uint32>(pull.phase)) &&
-                 !pull.partyReleased;
+    //
+    // A fresh scout aggro holds too: the leader's combat flag is up but the drag-back
+    // maneuver has not yet run its first combat tick to flip Idle -> Returning. See
+    // DcPullContext::scoutAggroMs. Not gated on partyReleased — that latch belongs to
+    // a previous maneuver until the next Transition clears it.
+    passiveOut = (IsPullPhaseHolding(static_cast<uint32>(pull.phase)) &&
+                  !pull.partyReleased) ||
+                 (leader->IsInCombat() &&
+                  pull.ScoutAggroHolding(getMSTime(), DC_PULL_SCOUT_AGGRO_HOLD_MS));
     return true;
 }
 bool DcLeaderSignal::IsLeaderCampFightActive(Player* bot)
@@ -809,8 +818,10 @@ namespace
         if (!DcRun::Of(ctx).enabled)
             return nullptr;
 
+        // A boxed room-clear pull (roomCampFight) anchors its party exactly like a
+        // scripted stage — see DcPullContext::AnchoredCampFight.
         DcPullContext const& pull = ctx->GetValue<DcPullContext&>(DcKey::PullContext)->Get();
-        if (pull.scriptedStage < 0 || !pull.HasCamp())
+        if (!pull.AnchoredCampFight() || !pull.HasCamp())
             return nullptr;
         return &pull;
     }
@@ -825,6 +836,11 @@ bool DcLeaderSignal::IsLeaderScriptedCampFight(Player* bot)
 {
     DcPullContext const* const pull = LeaderScriptedPull(bot);
     return pull && pull->phase == DcPullPhase::Engage;
+}
+bool DcLeaderSignal::IsLeaderRoomCampFight(Player* bot)
+{
+    DcPullContext const* const pull = LeaderScriptedPull(bot);
+    return pull && pull->roomCampFight && pull->phase == DcPullPhase::Engage;
 }
 bool DcLeaderSignal::IsLeaderFightAssistWanted(Player* bot)
 {
@@ -954,6 +970,65 @@ bool DcLeaderSignal::IsLeaderFightAssistWanted(Player* bot)
         PlayerbotAI::IsHeal(bot), bot->IsInCombat(), combatSince, getMSTime(), leadMs,
         leader->GetHealthPct(), panicHp);
 }
+void DcLeaderSignal::NoteLeaderHit(Player* attacker)
+{
+    if (!attacker || !attacker->IsInCombat())
+        return;
+    PlayerbotAI* ai = GET_PLAYERBOT_AI(attacker);
+    if (!ai)
+        return;
+    DcRunState& run = DcRun::Of(ai);
+    // `enabled` is leader-owned: followers never set it, so this is the leader.
+    if (!run.enabled || run.paused)
+        return;
+    // Stamp the fight start first, so a hit is never older than its own fight.
+    uint32 const since = LeaderCombatSince(attacker);
+    if (run.leaderFirstHitMs != 0 && run.leaderFirstHitMs >= since)
+        return;
+    uint32 const now = getMSTime();
+    run.leaderFirstHitMs = now != 0 ? now : 1u;
+}
+
+void DcLeaderSignal::NoteLeaderEnterCombat(Player* player)
+{
+    PlayerbotAI* ai = player ? GET_PLAYERBOT_AI(player) : nullptr;
+    if (!ai)
+        return;
+    DcRunState& run = DcRun::Of(ai);
+    if (!run.enabled)
+        return;  // leader-owned flag: only the DC leader is stamped
+    uint32 const now = getMSTime();
+    run.leaderCombatSinceMs = now != 0 ? now : 1u;
+    run.leaderFirstHitMs = 0;
+}
+
+bool DcLeaderSignal::ShouldHoldDpsDamage(Player* bot)
+{
+    if (!bot || !bot->IsAlive())
+        return false;
+    Player* leader = FindLeaderTank(bot);
+    if (!leader || leader == bot)
+        return false;
+    PlayerbotAI* leaderAI = GET_PLAYERBOT_AI(leader);
+    if (!leaderAI)
+        return false;
+    DcRunState& run = DcRun::Of(leaderAI);
+    if (!run.enabled || run.paused)
+        return false;
+    uint32 const since = LeaderCombatSince(leader);
+    uint32 firstHit = run.leaderFirstHitMs;
+    if (firstHit != 0 && firstHit < since)
+        firstHit = 0;  // a stamp from the previous fight
+    // Only the tank is exempt. A healer's DAMAGE spells wait too (a resto
+    // shaman's shock opened 0.0s after the tank's hit); its heals are never
+    // damaging actions, so healing is untouched.
+    bool const exempt = PlayerbotAI::IsTank(bot);
+    return DungeonClearMath::ShouldHoldThreatLead(
+        exempt, !bot->getAttackers().empty(), since, firstHit, getMSTime(),
+        uint32(DcSettings::GetFloat(leader, "PullPlayerReleaseDelay") * 1000.0f), DC_THREAT_LEAD_NO_HIT_CAP_MS,
+        leader->GetHealthPct(), DcSettings::GetFloat(leader, "PullThreatLeadPanicHp"));
+}
+
 bool DcLeaderSignal::IsLeaderShouldAssistFight(Player* bot)
 {
     // The leader-side mirror of IsLeaderFightAssistWanted. The followers' gate
@@ -962,7 +1037,16 @@ bool DcLeaderSignal::IsLeaderShouldAssistFight(Player* bot)
     // done and walked off toward the next objective — the tank has no behavior to
     // rejoin: it just freezes on the Advance rest gate while the party fights. This
     // drives it back onto the fight to take threat.
-    if (!bot || bot->isDead() || bot->IsInCombat())
+    //
+    // "Out of the fight" means ENGAGED, not the combat flag. Combat spreads to the
+    // whole party, so a tank whose follower is being shot at is itself flagged —
+    // while having no victim and nothing on it, sitting on the non-combat engine.
+    // Bailing on the flag left the tank looting for ~11s as three Drakkari Raiders
+    // shot a DPS 23yd away (Pull Lab, gundrak-ranged-standoff, both runs); this
+    // path fired only when the flag finally dropped.
+    if (!bot || bot->isDead())
+        return false;
+    if (bot->IsInCombat() && (bot->GetVictim() || !bot->getAttackers().empty()))
         return false;
 
     // Leader only. A follower's assist is owned by IsLeaderFightAssistWanted.
@@ -986,13 +1070,12 @@ bool DcLeaderSignal::IsLeaderShouldAssistFight(Player* bot)
     if (IsPullPhaseHolding(static_cast<uint32>(pull.phase)))
         return false;
 
-    // The tank already sees something it can engage — let its own engage-trash /
-    // engage-boss scan (higher relevance) take it; this path is only for the fight
-    // the tank CAN'T see. "attackers" is the stock LOS-filtered list, so it is
-    // empty exactly while the pack is out of sight and non-empty the moment the
-    // tank rounds the corner, at which point this stands down.
-    if (!ctx->GetValue<GuidVector>(DcKey::Stock::Attackers)->Get().empty())
-        return false;
+    // No stand-down for a fight the tank can SEE. It used to leave visible
+    // attackers to engage-trash / engage-boss — but those wait between pulls
+    // (IsBetweenPullsReady) while a groupmate is fighting, so a tank with the
+    // party's attackers in plain sight and nothing on itself engaged nothing
+    // (Pull Lab gundrak-ranged-standoff, both runs). Those rungs still outrank
+    // this one whenever they do fire; this fills only the gap.
 
     // A groupmate is fighting but the tank is not. Latched (PartyCombatLatch) on
     // the SAME hysteresis the followers' assist and the scout-lag gate use, so a
@@ -1545,4 +1628,81 @@ bool DcLeaderSignal::IsLeaderRazorgoreDriving(Player* bot)
     // stamp older than this means phase 1 ended (or the leader stopped driving),
     // and the camp must release rather than pin the raid in place.
     return GetMSTimeDiffToNow(st.razorDrivingMs) <= 3000;
+}
+
+
+// --- Karazhan chess ----------------------------------------------------------
+//
+// The conductor's freshness window: it ticks every 500ms while the game is on, so
+// five seconds is ten missed ticks — long enough to ride out a busy map update,
+// short enough that a run switched off releases its members almost at once.
+namespace
+{
+    constexpr uint32 CHESS_FRESH_MS = 5000;
+
+    DcChessRunState* ChessConductorOf(Player* bot)
+    {
+        if (!bot || bot->GetMapId() != DcKarazhan::MAP)
+            return nullptr;
+        Player* owner = DcLeaderSignal::FindRunOwner(bot);
+        if (!owner)
+            return nullptr;
+        PlayerbotAI* ownerAI = GET_PLAYERBOT_AI(owner);
+        if (!ownerAI)
+            return nullptr;
+        DcRunState& st = DcRun::Of(ownerAI->GetAiObjectContext());
+        if (!st.enabled || st.paused || !st.chess.armed || !st.chess.drivingMs)
+            return nullptr;
+        if (DcChessConductor::Terminal(static_cast<DcChessConductor::State>(st.chess.state)))
+            return nullptr;
+        if (GetMSTimeDiffToNow(st.chess.drivingMs) > CHESS_FRESH_MS)
+            return nullptr;
+        return &st.chess;
+    }
+}
+
+ObjectGuid DcLeaderSignal::GetChessAssignment(Player* bot)
+{
+    DcChessRunState const* ch = ChessConductorOf(bot);
+    if (!ch)
+        return ObjectGuid::Empty;
+    uint64 const me = bot->GetGUID().GetRawValue();
+    for (DcChess::Assignment const& a : ch->assign)
+        if (a.bot == me)
+            return ObjectGuid(a.piece);
+    return ObjectGuid::Empty;
+}
+
+bool DcLeaderSignal::IsLeaderChessArmed(Player* bot, uint8* stateOut)
+{
+    DcChessRunState const* ch = ChessConductorOf(bot);
+    if (!ch)
+        return false;
+    if (stateOut)
+        *stateOut = ch->state;
+    return true;
+}
+
+uint32 DcLeaderSignal::GetChessSeat(Player* bot)
+{
+    if (!bot)
+        return 0;
+    uint64 const me = bot->GetGUID().GetRawValue();
+    if (DcChessRunState const* ch = ChessConductorOf(bot))
+        for (size_t i = 0; i < ch->seats.size(); ++i)
+            if (ch->seats[i] == me)
+                return static_cast<uint32>(i % DcKarazhan::SIDELINE_SLOTS);
+    return static_cast<uint32>(bot->GetGUID().GetCounter() % DcKarazhan::SIDELINE_SLOTS);
+}
+
+void DcLeaderSignal::ReportChessRefusal(Player* bot, ObjectGuid piece)
+{
+    DcChessRunState* ch = ChessConductorOf(bot);
+    if (!ch || piece.IsEmpty())
+        return;
+    uint64 const me = bot->GetGUID().GetRawValue();
+    for (DcChess::Assignment const& a : ch->refused)
+        if (a.bot == me && a.piece == piece.GetRawValue())
+            return;
+    ch->refused.push_back({ me, piece.GetRawValue() });
 }

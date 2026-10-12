@@ -15,6 +15,17 @@
 
 AC_ADD_SCRIPT("${CMAKE_CURRENT_LIST_DIR}/src")
 
+# New files added: Data/HealLeashRegistry.{h,cpp}
+#   (per-map camp leash for the healer LOS reposition — Karazhan's Banquet Hall,
+#    where healers chasing DPS onto the ballroom floor aggroed idle packs.)
+
+# New files added: Overrides/KarazhanChessDriver.cpp, Action/DcChessPieceAction.cpp,
+#   Util/DcChessBoard.h, Util/DcChessDecision.h, Util/DcChessConductor.h,
+#   Util/DcAnchorDone.h
+#   (Karazhan's chess event, map 532 — a conductor on the run owner that starts
+#    the game, hands out the ten pieces, plays them through a pure policy and
+#    loots the chest; a per-member rung that takes and holds each bot's piece.)
+
 # New files added: Data/Events/OculusEvents.cpp, Overrides/OculusDriver.cpp,
 #   Action/DcOculusRiderAction.cpp, Util/DcFlightLeg.{h,cpp}, Util/DcOculusPlan.h,
 #   Util/DcOculusDriverDecision.h, Util/DcOculusFlightDecision.h
@@ -76,6 +87,22 @@ AC_ADD_CONFIG_FILE("${CMAKE_CURRENT_LIST_DIR}/conf/mod_dungeon_clear.conf.dist")
 #    post-validation dungeon set and roles back out of LFGMgr only once the
 #    queue has settled into LFG_STATE_QUEUED, so RBAC/deserter/cooldown/lock
 #    checks have all already run. The planner half is engine-free and gtested.)
+# New files added: BgQueueFill/DcBgQueueFillPlanner.{h,cpp},
+#   BgQueueFill/DcBgQueueFillJob.{h,cpp},
+#   BgQueueFill/DcBgQueueFillManager.{h,cpp},
+#   BgQueueFill/DcBgQueueFillHooks.cpp
+#   (BATTLEGROUND INSTANT QUEUE FILL. A real player queues for a battleground;
+#    Alliance AND Horde pool bots in the player's bracket queue for the same
+#    battleground solo, and the STOCK matchmaker pops the match. Sides fill to
+#    the template max, start-critical bots first so the match pops at its
+#    minimum; Random Battleground is topped up once the core rolls the map; a
+#    human premade is moved to the normal queue in OnAddGroup so it can match
+#    against bots. The planner half is engine-free and gtested.)
+# New files added: Util/DcPoolBots.{h,cpp}
+#   (the pool-bot plumbing both queue fills share — claim an offline addclass
+#    character, evict it to its capital, sanitise it, release it — lifted out
+#    of DcDungeonQueueFillJob so the dungeon and battleground fills draw
+#    through one reservation check.)
 # New files added: Util/DcProvisionBudget.{h,cpp}
 #   (module-root src/Util/ — the realm-wide "one PlayerbotFactory::Randomize per
 #    world tick" ration, hoisted out of DcTestRunManager::Tick's local bool so
@@ -992,3 +1019,19 @@ AC_ADD_CONFIG_FILE("${CMAKE_CURRENT_LIST_DIR}/conf/mod_dungeon_clear.conf.dist")
 #    (DcRel::HorStayAhead, 56) is a new per-bot survival rung that moves FORWARD
 #    rather than radially away — the generic hazard vacate's away-from-emitter
 #    bearing is the one direction that makes the zap rule worse.)
+
+# New files added: Data/Events/BlackrockSpireEvents.cpp, Util/DcRunWing.{h,cpp},
+#   t/TestRunWing.cpp
+#   (Blackrock Spire, map 229, split into LBRS and UBRS. The wing is a per-RUN
+#    choice latched on the run owner — test row, `.dc on <wing>` / `.dc wing`,
+#    the LFG dungeon, else the wing region the party stands in, else LBRS —
+#    because the two wings share one portal and proximity picks UBRS there. The
+#    wing's terminal boss completes the run, the test harness counts only the
+#    wing's encounter bits, and wing-tagged DcNavPenaltyRegistry rows keep each
+#    wing's routes out of the other.)
+
+# New files added: t/TestBlackrockDepthsRouteProbe.cpp
+#   (Blackrock Depths, map 230, split into the Detention Block and the Upper
+#    City as a second Explicit wing layout. The probe routes the Upper City legs
+#    from the portal and checks none crosses the Ring of Law arena floor, which
+#    is why map 230 needs no wing-tagged nav fence.)

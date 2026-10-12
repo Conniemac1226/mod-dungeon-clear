@@ -48,6 +48,7 @@ public:
         creators[DcKey::FallbackTarget] = &DungeonClearValueContext::dungeon_clear_fallback_target;
         creators[DcKey::PartyTank] = &DungeonClearValueContext::dungeon_clear_party_tank;
         creators[DcKey::LongPath] = &DungeonClearValueContext::dungeon_clear_long_path;
+        creators[DcKey::GlideRecord] = &DungeonClearValueContext::dungeon_clear_glide_record;
         creators[DcKey::CurrentHop] = &DungeonClearValueContext::dungeon_clear_current_hop;
         creators[DcKey::LastTickMs] = &DungeonClearValueContext::dungeon_clear_last_tick_ms;
         creators[DcKey::FarTargets] = &DungeonClearValueContext::dungeon_clear_far_targets;
@@ -104,6 +105,7 @@ private:
     static UntypedValue* dungeon_clear_fallback_target(PlayerbotAI* ai) { return new DungeonClearFallbackTargetValue(ai); }
     static UntypedValue* dungeon_clear_party_tank(PlayerbotAI* ai) { return new DungeonClearPartyTankValue(ai); }
     static UntypedValue* dungeon_clear_long_path(PlayerbotAI* ai) { return new DungeonClearLongPathValue(ai); }
+    static UntypedValue* dungeon_clear_glide_record(PlayerbotAI* ai) { return new DungeonClearGlideRecordValue(ai); }
     static UntypedValue* dungeon_clear_current_hop(PlayerbotAI* ai) { return new DungeonClearCurrentHopValue(ai); }
     static UntypedValue* dungeon_clear_last_tick_ms(PlayerbotAI* ai) { return new DungeonClearLastTickMsValue(ai); }
     static UntypedValue* dungeon_clear_far_targets(PlayerbotAI* ai) { return new DungeonClearFarTargetsValue(ai); }

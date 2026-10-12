@@ -33,6 +33,7 @@
 #include "Ai/Dungeon/DungeonClear/Util/DungeonPathFollower.h"
 #include "Ai/Dungeon/DungeonClear/Util/LongRangePathfinder.h"
 #include "Ai/Dungeon/DungeonClear/Util/NavmeshSnap.h"
+#include "Util/DcPlayerbotsConfig.h"
 
 // The Violet Hold driver — the imperative half of map 608's clear.
 //
@@ -555,7 +556,7 @@ namespace
         if (botAI->GetState() != BOT_STATE_COMBAT)
         {
             botAI->ChangeEngine(BOT_STATE_COMBAT);
-            botAI->SetNextCheckDelay(sPlayerbotAIConfig.reactDelay);
+            botAI->SetNextCheckDelay(DC_PB_CONFIG(ReactDelay, reactDelay));
         }
         return !alreadyOnIt;
     }

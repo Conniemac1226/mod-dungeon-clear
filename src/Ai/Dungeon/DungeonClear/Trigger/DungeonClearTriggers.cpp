@@ -54,6 +54,7 @@
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearUtil.h"
 #include "Playerbots.h"
 #include "Ai/Dungeon/DungeonClear/DcValueKeys.h"
+#include "Util/DcPlayerbotsConfig.h"
 
 namespace
 {
@@ -338,23 +339,12 @@ bool DungeonClearAtBossTrigger::IsActive()
     // navigating while the trigger never fired. Same cursor, same answer.
     ChunkedPathfinder::Result const& path =
         AI_VALUE(ChunkedPathfinder::Result&, DcKey::LongPath);
-    if (path.reachable && !path.segments.empty())
-    {
-        DungeonFollowerState const& follower =
-            AI_VALUE(DungeonFollowerState&, DcKey::FollowerState);
-        // Last segment is the boss anchor; the anchored ones between the cursor
-        // and it must be within their arriveRadius. Anchors already walked past
-        // don't gate the engage.
-        for (size_t i = follower.segmentIdx; i + 1 < path.segments.size(); ++i)
-        {
-            PathSegment const& seg = path.segments[i];
-            if (!seg.anchored)
-                continue;
-            float const d = bot->GetDistance(seg.ex, seg.ey, seg.ez);
-            if (d > seg.arriveRadius)
-                return false;
-        }
-    }
+    // Last segment is the boss anchor; the anchored ones between the cursor and
+    // it must be within their arriveRadius. Anchors already walked past don't
+    // gate the engage.
+    if (DcEngageGeometry::AnchoredHopsPending(
+            bot, path, AI_VALUE(DungeonFollowerState&, DcKey::FollowerState).segmentIdx))
+        return false;
 
     // SEALED ENCOUNTER MUSTER. This boss's room locks the instant the encounter
     // starts — an InstanceScript DOOR_TYPE_ROOM door, held `open &= (state !=
@@ -411,7 +401,8 @@ bool DungeonClearAtBossTrigger::IsActive()
                         continue;   // a real player is never gated on
                     ++living;
                     if (!SealedEncounterRegistry::InSealedRoom(
-                            *sealed, member->GetPositionX(), member->GetPositionY()))
+                            *sealed, member->GetPositionX(), member->GetPositionY(),
+                            member->GetPositionZ()))
                     {
                         ++outsideCount;
                         if (!outside)
@@ -504,24 +495,15 @@ bool DungeonClearAtObjectiveTrigger::IsActive()
     if (!next.has_value() || next->kind != DungeonAnchorKind::Objective)
         return false;
 
-    // Sticky for a PERSISTENT event already in progress: once started, stay live
-    // regardless of distance so the tank can roam far from the anchor while the
-    // event drives it (down ZulFarrak's stairs to the temple bosses, back to the
-    // NPCs). Initial arrival still goes through the distance/gate check below;
-    // completion latches the objective, after which `next` becomes the boss and
+    // Completion latches the objective, after which `next` becomes the boss and
     // this returns false at the kind check above.
-    if (DungeonEventExecutor::IsPersistentAnchoredEventActive(context))
+    if (DungeonEventExecutor::ObjectiveArrived(bot, context, *next))
         return true;
 
-    // Satisfied when the tank has reached the anchor (within arriveRadius), or
-    // when the optional gate creature has spawned alive (the event already fired
-    // its result, e.g. the real boss is up), so we don't need to babysit it.
     float const radius = next->arriveRadius > 0.0f
                              ? next->arriveRadius
                              : DcSettings::GetFloat(bot, "ObjectiveArriveRadius");
     float const distToAnchor = bot->GetExactDist(next->x, next->y, next->z);
-    if (distToAnchor <= radius)
-        return true;
 
     // Diagnostic (throttled, leader only): when the tank is hovering NEAR an
     // objective but not arriving, this names the exact gap — dist vs arriveRadius
@@ -543,16 +525,6 @@ bool DungeonClearAtObjectiveTrigger::IsActive()
                       "[DC:{}] objective '{}': dist={:.1f} > arriveRadius={:.1f} "
                       "(NOT arrived; event not started)",
                       bot->GetName(), next->name, distToAnchor, radius);
-        }
-    }
-
-    if (next->gateEntry)
-    {
-        for (auto const& kv : map->GetCreatureBySpawnIdStore())
-        {
-            Creature* c = kv.second;
-            if (c && c->GetEntry() == next->gateEntry && c->IsAlive())
-                return true;
         }
     }
     return false;
@@ -991,6 +963,10 @@ bool DungeonClearStalledTrigger::IsActive()
     // maneuvers into a live encounter (the fight is the raid strategy's; DC
     // resumes at loot). Cheap for dungeons — IsActive is raid-gated.
     if (DcBossStandDown::IsActive(bot))
+        return false;
+
+    // ...nor into Karazhan's chess game, which owns the whole raid for its length.
+    if (DcKarazhan::ChessIsOn(bot))
         return false;
 
     // Only fall back when there is an actual stall reason set by Advance or
@@ -1464,9 +1440,11 @@ bool DungeonClearPullManeuverTrigger::IsActive()
     // so the pack arrives late and strung out, and the tank has to be held on the
     // authored camp for the duration or the chase walks it back into the room the
     // plan just emptied. The action still YIELDS on every tick the tank is in
-    // position, so this costs the rotation nothing while nothing is wrong.
+    // position, so this costs the rotation nothing while nothing is wrong. A boxed
+    // room-clear pull (roomCampFight) is held the same way: Moroes' Guests are
+    // tagged at range and hold at range, and chasing them walks toward the dais.
     if (phase == static_cast<uint32>(DcPullPhase::Engage))
-        return AI_VALUE(DcPullContext&, DcKey::PullContext).scriptedStage >= 0;
+        return AI_VALUE(DcPullContext&, DcKey::PullContext).AnchoredCampFight();
 
     return phase == static_cast<uint32>(DcPullPhase::Forming) ||
            phase == static_cast<uint32>(DcPullPhase::Advancing) ||
@@ -1703,7 +1681,14 @@ bool DungeonClearAssistCampTrigger::IsActive()
     //
     // So: fire, but only once the fight is at the camp. A seed pointing at a mob
     // already inside the follower leash cannot invite anyone anywhere.
-    if (DcLeaderSignal::IsLeaderScriptedCampFight(bot) && !ScriptedCampFightIsAtCamp(bot))
+    //
+    // A room-clear camp fight seeds without waiting for that. There is no no-go room
+    // next door for a seed to invite anyone into — the hold-at-camp leash, stretched
+    // to reach (ScriptedFollowerReachLeash), bounds where the follower may stand —
+    // and Moroes' Phantom Guests hold 20-30yd off the camp casting, so "the fight has
+    // reached the camp" may never come true and the ranged would stand idle.
+    if (DcLeaderSignal::IsLeaderScriptedCampFight(bot) &&
+        !DcLeaderSignal::IsLeaderRoomCampFight(bot) && !ScriptedCampFightIsAtCamp(bot))
         return false;
     return DcLeaderSignal::IsLeaderFightAssistWanted(bot);
 }
@@ -1870,7 +1855,10 @@ bool DungeonClearBreakStuckCombatTrigger::IsActive()
     // multiplier; gating here too keeps the per-tick holder scan off the books
     // for the whole fight.
     Map* const map = bot->GetMap();
-    if (!map || DcBossStandDown::IsActive(bot))
+    // Karazhan's chess game holds its controllers combat-flagged by their pieces'
+    // fight with nothing a bot could or should attack: exactly the phantom shape,
+    // and not one. Same stand-down as a boss encounter, clocks and all.
+    if (!map || DcBossStandDown::IsActive(bot) || DcKarazhan::ChessIsOn(bot))
     {
         stuckCombatSinceMs = 0;
         holderCloseWatch.Reset();
@@ -2131,7 +2119,7 @@ bool DungeonClearHealRepositionTrigger::IsActive()
     // out-of-LOS member is dying.
     Unit* visible = AI_VALUE(Unit*, DcKey::Stock::PartyToHeal);
     if (visible && visible->IsAlive() &&
-        visible->GetHealthPct() < sPlayerbotAIConfig.mediumHealth &&
+        visible->GetHealthPct() < DC_PB_CONFIG(MediumHealth, mediumHealth) &&
         bot->IsWithinLOSInMap(visible))
         return false;
 

@@ -18,6 +18,7 @@
 #include "Ai/Dungeon/DungeonClear/DcApproachState.h"
 #include "Ai/Dungeon/DungeonClear/DcPullContext.h"
 #include "Ai/Dungeon/DungeonClear/DcRunState.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcMovement.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTickMemo.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonEventExecutor.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonPathFollower.h"
@@ -50,6 +51,21 @@ public:
 
 private:
     DcRunState data;
+};
+
+// Endpoint of the last escort glide DC itself issued — see DcMovement::DcGlideRecord.
+class DungeonClearGlideRecordValue : public ManualSetValue<DcMovement::DcGlideRecord&>
+{
+public:
+    DungeonClearGlideRecordValue(PlayerbotAI* botAI)
+        : ManualSetValue<DcMovement::DcGlideRecord&>(botAI, data, DcKey::GlideRecord)
+    {
+    }
+
+    void Reset() override { data = {}; }
+
+private:
+    DcMovement::DcGlideRecord data;
 };
 
 class DungeonClearSkippedValue : public ManualSetValue<std::unordered_set<uint32>&>

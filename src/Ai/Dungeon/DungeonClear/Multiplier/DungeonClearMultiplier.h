@@ -30,8 +30,10 @@ public:
 //   - the LEADER mid-drag on an LOS-break pull, whose success condition IS losing
 //     sight of the tagged mob — dropping the tank off the combat engine there
 //     freezes the pull FSM, whose watchdogs only run on that engine.
-// This fork also suppresses its Classic-dungeon pull/regroup drivers while DC owns the run.
-// Everything else in the combat engine stays fully stock.
+// It also enforces the threat lead on the combat engine (a DPS follower's damage
+// waits PullPlayerReleaseDelay after the tank's first hit), the same rule the
+// non-combat multiplier applies to the opener. Everything else in the combat
+// engine stays fully stock.
 class DungeonClearCombatMultiplier : public Multiplier
 {
 public:

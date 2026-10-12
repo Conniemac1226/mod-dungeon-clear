@@ -4,6 +4,7 @@
  */
 
 #include "DungeonClearActions.h"
+#include "Ai/Dungeon/DungeonClear/Data/HealLeashRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcRun.h"
 #include "TestRun/DcTestRunManager.h"
 
@@ -59,6 +60,7 @@
 #include "Ai/Dungeon/DungeonClear/Util/DcDoorPolicy.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcMovement.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcPathWorker.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcRunWing.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcSocialQuarantine.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTargeting.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcTickMemo.h"
@@ -73,6 +75,7 @@
 #include "Playerbots.h"
 #include "DcActionShared.h"
 #include "Ai/Dungeon/DungeonClear/DcValueKeys.h"
+#include "Util/DcPlayerbotsConfig.h"
 
 namespace DcActionShared
 {
@@ -213,7 +216,7 @@ namespace DcActionShared
         //
         // It used to ask botAI->GetRange("shoot"), described here as the "real weapon
         // range". It is nothing of the sort: PlayerbotAI::GetRange maps "shoot"
-        // straight to sPlayerbotAIConfig.shootDistance, a config knob for how close a
+        // straight to DC_PB_CONFIG(ShootDistance, shootDistance), a config knob for how close a
         // bot likes to stand when shooting, which defaults to 5.0 and is not set in
         // this deployment. So the pick came back as min 8 / max 5 — an empty interval.
         // Even with the HasSpell gate gone, the caller's `d >= minRange && d <=
@@ -352,6 +355,7 @@ namespace DcActionShared
     {
         AiObjectContext* ctx = botAI->GetAiObjectContext();
         ctx->GetValue<std::string&>(DcKey::StallReason)->Get() = reason;
+        ctx->GetValue<DcApproachState&>(DcKey::ApproachState)->Get().doorOwnsStallReason = false;
 
         std::string& lastSaid = ctx->GetValue<std::string&>(DcKey::LastSaidReason)->Get();
         if (lastSaid != reason)
@@ -363,10 +367,21 @@ namespace DcActionShared
     }
 
 
+    void StallDungeonClearForDoor(PlayerbotAI* botAI, std::string const& reason)
+    {
+        StallDungeonClear(botAI, reason);
+        botAI->GetAiObjectContext()
+            ->GetValue<DcApproachState&>(DcKey::ApproachState)
+            ->Get()
+            .doorOwnsStallReason = true;
+    }
+
+
     void ClearStall(AiObjectContext* ctx)
     {
         ctx->GetValue<std::string&>(DcKey::StallReason)->Get().clear();
         ctx->GetValue<std::string&>(DcKey::LastSaidReason)->Get().clear();
+        ctx->GetValue<DcApproachState&>(DcKey::ApproachState)->Get().doorOwnsStallReason = false;
     }
 
 
@@ -650,7 +665,7 @@ namespace DcActionShared
         pendingJob = DcPathWorker::Instance().Submit(
             bot->GetMapId(), target.entry, bot->GetGUID(), std::move(meshRef),
             bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
-            target.x, target.y, target.z);
+            target.x, target.y, target.z, DcRunWing::FenceWing(bot));
         pendingSince = now;
         appr.pendingPathStartPos = bot->GetPosition();  // drain-time start-drift baseline
 
@@ -736,22 +751,22 @@ namespace DcActionShared
 // MoveTo. Lives here in Part 1; moves to DcActionShared with the file split.
 bool DcMovementAction::DcMoveTo(uint32 mapId, float x, float y, float z, bool idle, bool react,
                                 bool normal_only, bool exact_waypoint, MovementPriority priority,
-                                bool lessDelay, bool backwards)
+                                bool lessDelay, bool backwards, bool ignoreEnemyTargets)
 {
     if (!DcMovement::DcMovementAllowed(botAI))
         return false;
     DcMovement::ResolveEscortConflict(bot);
 
-    // (1) GROUND-SNAP THE DESTINATION Z.
-    // Stock SearchForBestPath only takes its fast path when the requested z is within
-    // 0.5yd of GetMapHeight at that xy (MovementActions.cpp:1734). Miss that window and
-    // it drops into a z-search that samples just THREE candidates
-    // (AiPlayerbot.MaxMovementSearchTime = 3, a count despite the name) — so a
-    // destination whose z is merely a yard off the local floor can fail outright. DC
-    // hands out exactly such points: the heal-reposition fallback interpolates x/y
-    // toward the target but keeps the TARGET's z (DcFollowerActions.cpp), which is not
-    // the ground height at the interpolated xy. Snap here, once, so every DC caller
-    // gets a well-formed destination instead of each fixing it by hand.
+    // GROUND-SNAP THE DESTINATION Z.
+    // DC hands out destinations whose z is not the floor height at that x/y: the
+    // heal-reposition fallback interpolates x/y toward the target but carries the
+    // TARGET's z (DcFollowerActions.cpp), ring/standoff candidates inherit their
+    // anchor's z, and so on. Stock's path search wants a destination on the mesh —
+    // before mod-playerbots #2747 SearchForBestPath took its fast path only within
+    // 0.5yd of GetMapHeight and otherwise sampled three candidates and often
+    // refused outright; the #2747 probe is more forgiving but still starts from the
+    // point it is given. Snap here, once, so every DC caller gets a well-formed
+    // destination instead of each fixing it by hand.
     //
     // Take only the SNAPPED Z, and only when the snap landed essentially under the
     // requested point — this must correct height, never relocate the destination. A
@@ -760,9 +775,10 @@ bool DcMovementAction::DcMoveTo(uint32 mapId, float x, float y, float z, bool id
     // The Z delta is capped deliberately. NavmeshSnap searches a 10yd VERTICAL extent,
     // so in stacked geometry (Steamvault's walkways over the pump room, any multi-level
     // instance) the nearest poly can belong to a different FLOOR — applying that would
-    // silently retarget the move one storey off. The miss we are correcting is the
-    // 0.5yd fast-path window, so real corrections are small; anything larger means the
-    // caller's z is probably the honest one and we leave it alone.
+    // silently retarget the move one storey off. The miss we are correcting is a
+    // caller's z a yard or so off the local floor, so real corrections are small;
+    // anything larger means the caller's z is probably the honest one and we leave
+    // it alone.
     constexpr float kMaxSnapZCorrection = 3.0f;
     float destZ = z;
     if (!exact_waypoint)
@@ -773,116 +789,56 @@ bool DcMovementAction::DcMoveTo(uint32 mapId, float x, float y, float z, bool id
             destZ = snap.z;
     }
 
-    bool moved = MoveTo(mapId, x, y, destZ, idle, react, normal_only, exact_waypoint, priority,
-                        lessDelay, backwards);
+    bool const moved = DcRawMoveTo(mapId, x, y, destZ, idle, react, normal_only, exact_waypoint,
+                                   priority, lessDelay, backwards, ignoreEnemyTargets);
 
-    // (2) BYPASS THE Z-SEARCH ON REFUSAL.
-    // SearchForBestPath seeds `min_length` from its FIRST path attempt whether or not
-    // that attempt succeeded, then only accepts a later candidate that is STRICTLY
-    // SHORTER (MovementActions.cpp:1755). Once that seed is a short degenerate path,
-    // no genuine route can ever beat it: `found` stays false, `modified_z` keeps its
-    // INVALID_HEIGHT initialiser, and MoveTo returns false on that destination
-    // forever. Live, this froze bots for thousands of consecutive ticks — including
-    // Xomja refused 45x on a destination 1.7yd away, which is how we know it is not
-    // route length or connectivity. The map-545 nav probe
-    // (t/fixtures/nav/steamvault_stranded_origin.json) confirms the mesh under every
-    // one of those strand origins is walkable and routable.
-    //
-    // exact_waypoint routes stock to DoMovePoint and skips SearchForBestPath entirely
-    // (MovementActions.cpp:215), so one retry defeats the ratchet whatever seeded it.
-    // Gated on "refused AND standing still" so healthy movement never reaches here: a
-    // refusal mid-walk is the ordinary duplicate/last-move guard and must stay a no-op.
-    //
-    // AND GATED ON THE BOT'S OWN LEVEL, which is the difference between defeating a
-    // stock bug and defeating the geometry. The retry claims path generation is still
-    // on inside DoMovePoint, so this "does not straight-line the bot through geometry".
-    // That holds only where there IS a mesh: a Player always gets PATHFIND_NORMAL, and
-    // with no poly under the destination PathGenerator falls back to a straight line
-    // and still reports normal — so a destination one storey up is WALKED THERE,
-    // through the floor between. Live, that is the whole Blackwing Lair ceiling clip
-    // (tp-20260828-171530-1, 5 of 5 runs): the heal-reposition fallback asked for hall
-    // x/y at the drake hall's z, stock's z-search refused it — correctly — and this
-    // retry overrode the refusal. Healers arrived inside a 14-mob formation 24.8yd
-    // overhead, the tank followed, and the evading remnant held the raid in combat for
-    // the rest of the run.
-    //
-    // Nothing the retry was written for is lost. Every case it exists for is a
-    // legitimate destination on the bot's own floor a few yards away — Xomja refused
-    // 45x at 1.7yd, the Steamvault strand origins — and those clear the same-level
-    // test for one fabs, with no probe at all.
-    //
-    // BUT A Z BAND IS NOT THE PREDICATE, only a cheap sufficient case for it. The
-    // defect is "the destination has no route", and "the destination is more than
-    // DC_Z_LEVEL_TOLERANCE off my own z" is a different claim: a ramp, a stair
-    // flight, a walkway one tier up — Old Hillsbrad's keep ramp, BRD, the Steamvault
-    // walkways this file already cites as stacked geometry — clear five yards at
-    // ordinary range while being perfectly reachable. Gating on the band alone hands
-    // every one of those back to the ratchet the retry exists to defeat, and the
-    // failure is silent: a stationary bot and one WITHHELD line.
-    //
-    // So the band is the FAST PATH and the probe is the answer. Off-level, ask
-    // whether a complete route actually arrives at the height requested — the one
-    // thing PATHFIND_NORMAL cannot tell us, because a Player gets it for free even
-    // where the "route" is a straight line drawn through a floor. That is exactly
-    // the Blackwing Lair ceiling clip (tp-20260828-171530-1, 5 of 5 runs): the
-    // heal-reposition fallback asked for hall x/y at the drake hall's z, stock's
-    // z-search refused it — correctly — and this retry overrode the refusal, putting
-    // healers inside a 14-mob formation 24.8yd overhead. The probe answers no there
-    // and yes on every ramp.
-    //
-    // Cost is one Detour query, and only on the branch that has already refused AND
-    // left the bot standing still — never on a healthy move, and never per candidate.
-    bool const sameLevel = DungeonClearMath::MayRetryExactWaypoint(
-        destZ, bot->GetPositionZ(), DC_Z_LEVEL_TOLERANCE);
-    bool const stalled = !moved && !bot->isMoving() && !exact_waypoint;
-    bool const mayRetry =
-        stalled && (sameLevel || DcEngageGeometry::IsPointLevelReachable(bot, x, y, destZ));
-
-    if (mayRetry)
-    {
-        moved = MoveTo(mapId, x, y, destZ, idle, react, normal_only, /*exact_waypoint*/ true,
-                       priority, lessDelay, backwards);
-        if (moved)
-            DC_PULL_TRACE("[DC:{}] move refused by the z-search -> exact-waypoint retry "
-                          "RESCUED it (dest {:.1f},{:.1f},{:.1f} at {:.1f}yd, {})",
-                          bot->GetName(), x, y, destZ, bot->GetExactDist(x, y, destZ),
-                          sameLevel ? "same level" : "off-level but routable");
-    }
-    else if (stalled)
-    {
-        // Named, because a caller handing out unroutable destinations is a bug at the
-        // SOURCE and this line is the only place it is visible. The move is correctly
-        // refused either way; what this says is that DC declined to override it.
-        DC_PULL_TRACE("[DC:{}] move refused -> exact-waypoint retry WITHHELD, no route "
-                      "arrives at the dest ({:.1f}yd off this level; dest "
-                      "{:.1f},{:.1f},{:.1f}, bot z {:.1f})",
-                      bot->GetName(), std::fabs(destZ - bot->GetPositionZ()), x, y, destZ,
-                      bot->GetPositionZ());
-    }
+    // NO RETRY ON REFUSAL. This seam used to re-issue a refused move as an
+    // exact_waypoint, to defeat a pre-#2747 stock bug (SearchForBestPath seeded
+    // `min_length` from a FAILED first attempt and then refused a perfectly good
+    // nearby destination forever — Xomja refused 45x at 1.7yd). But exact_waypoint
+    // bypasses path search and goes straight to DoMovePoint, and a Player always
+    // gets PATHFIND_NORMAL — so where there is no poly under the destination the
+    // bot is walked there in a straight line, through whatever is between. Live,
+    // that was the whole Blackwing Lair ceiling clip (tp-20260828-171530-1, 5 of 5
+    // runs): a heal-reposition point at the drake hall's z, refused by stock —
+    // correctly — and then forced by the retry, putting healers inside a 14-mob
+    // formation 24.8yd overhead. A same-level band plus a reachability probe
+    // narrowed it, but the mechanism is a geometry override at heart, and on #2747
+    // (no SearchForBestPath to defeat, and the exact_waypoint bypass returns true
+    // for any destination further than 0.01yd) it would rescue EVERY no-route
+    // refusal. So a refusal now stands. The fix for a caller handing out unroutable
+    // destinations is at the caller, and the line below is where it shows.
 
     // A refused move that leaves the bot STANDING STILL is the signature behind every
     // "follower stranded at a fixed spot" deadlock we have chased, and the logs never
     // said which of stock MoveTo's several early-outs did the refusing — so the cause
     // stayed a guess across multiple fix attempts. Name it. A refusal while the bot is
-    // already walking is normal (the duplicate/last-move guards reject a re-issue), so
+    // already walking is normal (the duplicate/arbiter guards reject a re-issue), so
     // only the standing-still case is worth a line. These are protected members of
     // MovementAction, which we derive from, so no core change is needed. Note the
     // guards are re-evaluated here: cheap, but they are a SECOND read, so treat a
-    // disagreement with the real call as a timing artifact rather than a lie.
+    // disagreement with the real call as a timing artifact rather than a lie. The
+    // cases are in stock's own order of evaluation, arrival first because it is the
+    // one that is not a refusal at all.
     if (!moved && !bot->isMoving())
     {
         char const* why;
-        if (!IsMovingAllowed())
+        if (bot->GetExactDist(x, y, destZ) < DC_PB_CONFIG(TargetPosRecalcDistance, targetPosRecalcDistance))
+            // #2747's MoveTo2 stops the bot and reports false inside
+            // TargetPosRecalcDistance of the destination. Arrival, not a wedge.
+            why = "already at the destination (inside TargetPosRecalcDistance — stock stops "
+                  "and reports false; this is arrival, not a wedge)";
+        else if (!IsMovingAllowed())
             why = "IsMovingAllowed=false (CanMove: rooted/charmed/frozen/stunned, a "
                   "CONTROLLED motion slot, or being teleported)";
+        else if (DcMoveDeferred(priority))
+            why = "deferred by the movement arbiter (an equal-or-higher priority move "
+                  "still holds — this one is being starved)";
         else if (IsDuplicateMove(x, y, destZ))
             why = "IsDuplicateMove (same destination re-issued inside maxWaitForMove)";
-        else if (IsWaitingForLastMove(priority))
-            why = "IsWaitingForLastMove (an equal-or-higher priority move still holds "
-                  "the delay window — this one is being starved)";
         else
-            why = "path/other — and the exact-waypoint retry ALSO failed, so this is "
-                  "not the SearchForBestPath z-search ratchet";
+            why = "no route / other — stock found no path it would walk to this "
+                  "destination, and DC no longer overrides that";
         // Report the z actually attempted (post-snap) plus the raw request, so a
         // destination the snap moved is still traceable back to its caller.
         DC_PULL_TRACE("[DC:{}] move REFUSED and not moving -> {} (dest {:.1f},{:.1f},{:.1f} "
@@ -894,7 +850,8 @@ bool DcMovementAction::DcMoveTo(uint32 mapId, float x, float y, float z, bool id
 }
 
 bool DcMovementAction::FindStandoffPoint(Map* map, Position const& center, float ringRadius,
-                                         float maxRadius, float& x, float& y, float& z)
+                                         float maxRadius, float& x, float& y, float& z,
+                                         Position const* leashCenter, float leashRadius)
 {
     if (!map)
         return false;
@@ -921,6 +878,12 @@ bool DcMovementAction::FindStandoffPoint(Map* map, Position const& center, float
         float const sdx = snap.x - cx;
         float const sdy = snap.y - cy;
         if (std::sqrt(sdx * sdx + sdy * sdy) > maxRadius)
+            continue;
+
+        if (leashCenter &&
+            !HealLeashRegistry::WithinLeash(leashCenter->GetPositionX(),
+                                            leashCenter->GetPositionY(), leashRadius,
+                                            snap.x, snap.y))
             continue;
 
         if (!map->isInLineOfSight(snap.x, snap.y, snap.z + kEyeBump, cx, cy,

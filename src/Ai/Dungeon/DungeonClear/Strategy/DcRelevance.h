@@ -257,6 +257,20 @@ namespace DcRel
     // OccFlyingMultiplier zeroes every MovementAction on a mounted bot. It drives
     // the vehicle base's MotionMaster directly. See DungeonClearOculusRider{Trigger,Action}.
     inline constexpr float OcRider                = 64.5f; // any role: the Oculus drake rider
+    // KARAZHAN ONLY, every member in the Gamesman's Hall, BOTH engines: the chess
+    // rung — take the piece the conductor assigned, keep it, stand on the
+    // sideline, fight nothing; and on the run owner, the conductor itself.
+    //
+    // It must own EVERY tick while the game is on (H1): a controller loses Game
+    // In Session and could otherwise cast its own spells at a piece, and a healer
+    // would heal one. So it sits above every DC rung a bot in the hall could be
+    // handed (the camp owners 60, the event driver 61, the hazard vacate 55) and
+    // every stock mover, and below the phantom-combat hatch (65, which the chess
+    // gate keeps inert) and the terminal bailouts (100). A quarter-rung under the
+    // Oculus rider and over the Hakkar suppressor (64), so the ladder carries no
+    // new tie (all three are map-partitioned anyway). The multiplier clamp does
+    // the rest: see KaraChessClamp.
+    inline constexpr float KzChess                = 64.25f; // any role: the Karazhan chess seat (and conductor)
     inline constexpr float HorStayAhead           = 56.0f; // any role: forward, with the party and out of his ring
     inline constexpr float HazardVacate           = 55.0f; // any role: clear an unfightable hazard's pulse
     inline constexpr float AssistCampCombat       = 35.0f; // follower: onto the leader's pack

@@ -49,6 +49,7 @@
 #include "Chat.h"
 #include "ServerFacade.h"
 #include "Timer.h"
+#include "Util/DcPlayerbotsConfig.h"
 #include "World.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
 #include "Ai/Dungeon/DungeonClear/Util/ChunkedPathfinder.h"
@@ -69,7 +70,7 @@ namespace
         if (target.guid.IsEmpty())
             if (LootObjectStack* stack =
                     ctx->GetValue<LootObjectStack*>(DcKey::Stock::AvailableLoot)->Get())
-                target = stack->GetLoot(sPlayerbotAIConfig.lootDistance);
+                target = stack->GetLoot(DC_PB_CONFIG(LootDistance, lootDistance));
         return target;
     }
 }
@@ -126,7 +127,7 @@ void DcLootPolicy::GiveUpCurrentLoot(PlayerbotAI* botAI, uint32 ttlMs)
     ObjectGuid guid = ctx->GetValue<LootObject>(DcKey::Stock::LootTarget)->Get().guid;
     if (guid.IsEmpty())
         if (LootObjectStack* stack = ctx->GetValue<LootObjectStack*>(DcKey::Stock::AvailableLoot)->Get())
-            guid = stack->GetLoot(sPlayerbotAIConfig.lootDistance).guid;
+            guid = stack->GetLoot(DC_PB_CONFIG(LootDistance, lootDistance)).guid;
     if (guid.IsEmpty())
         return;  // nothing of our own to give up on (tank waiting on a follower)
 

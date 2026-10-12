@@ -11,6 +11,7 @@
 #include "Playerbots.h"
 #include "Ai/Dungeon/DungeonClear/DcValueKeys.h"
 #include "Ai/Dungeon/DungeonClear/Data/DcHazardRegistry.h"
+#include "Util/DcPlayerbotsConfig.h"
 
 namespace
 {
@@ -20,7 +21,7 @@ namespace
     // largest registered keep-out radius plus a camp drag, and keeps the grid
     // visitor much cheaper than the 4x FarTargets sweep — this runs on every
     // bot, on every map with a row.
-    float HazardRange() { return sPlayerbotAIConfig.sightDistance; }
+    float HazardRange() { return DC_PB_CONFIG(SightDistance, sightDistance); }
 
     // The grid check. Membership is decided INSIDE the visitor rather than by
     // AcceptUnit afterwards, so the searcher's std::list only ever holds actual

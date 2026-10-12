@@ -5,6 +5,7 @@
 
 #include "DcStrandedRecovery.h"
 
+#include "Ai/Dungeon/DungeonClear/Data/Events/DungeonEventTables.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
 #include "Ai/Dungeon/DungeonClear/DcPullContext.h"
 #include "Ai/Dungeon/DungeonClear/DcValueKeys.h"
@@ -189,6 +190,16 @@ namespace DcStrandedRecovery
         // phase-flip signal gaps). Same clock treatment as a pause, so the
         // failsafe re-arms clean when the fight ends.
         if (DcBossStandDown::IsActive(bot))
+        {
+            DcRunProgress::Stamp(run.progress, now);
+            return false;
+        }
+
+        // Karazhan's chess game: ten minutes with no kill, no anchor and the raid
+        // parked on a sideline far from the tank is the game, not a strand — and a
+        // rescue teleport would pull controllers off their pieces. Stamped, so the
+        // failsafe re-arms clean when the game ends.
+        if (DcKarazhan::ChessIsOn(bot))
         {
             DcRunProgress::Stamp(run.progress, now);
             return false;

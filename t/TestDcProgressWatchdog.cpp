@@ -295,3 +295,33 @@ TEST(DcDoorStallWatchdog, OnBossChangeClearsTheStall)
     EXPECT_EQ(s.doorStallSinceMs, 0u);
     EXPECT_EQ(s.doorStallLastMs, 0u);
 }
+
+// --- door-owned stall reason ------------------------------------------------
+// tr-20260924-094111-3: the door walk-in's unplaced hold wrote "A gate has
+// closed on us", the blocking-door value dropped the phantom door the same
+// second, and nothing cleared the reason — the stalled fallback owned every
+// tick until the 120s watchdog. The value now releases a door-owned reason
+// whenever it finds no blocker; ReleaseDoorOwnedStall is that decision.
+
+TEST(DcDoorStallWatchdog, ReleaseClearsOnlyADoorOwnedReasonAndOnlyOnce)
+{
+    DcApproachState s;
+    EXPECT_FALSE(s.ReleaseDoorOwnedStall());   // Advance's own stall: never ours
+
+    s.doorOwnsStallReason = true;              // StallDungeonClearForDoor
+    EXPECT_TRUE(s.ReleaseDoorOwnedStall());
+    EXPECT_FALSE(s.doorOwnsStallReason);
+    EXPECT_FALSE(s.ReleaseDoorOwnedStall());   // a later non-door reason survives
+}
+
+TEST(DcDoorStallWatchdog, OwnershipFollowsTheReasonNotTheTarget)
+{
+    // A boss change leaves the reason itself to NextDungeonBossValue; the
+    // ownership must not be dropped under a reason that is still set.
+    DcApproachState s;
+    s.doorOwnsStallReason = true;
+    s.OnBossChange(15687);
+    EXPECT_TRUE(s.doorOwnsStallReason);
+    s.Reset();
+    EXPECT_FALSE(s.doorOwnsStallReason);
+}

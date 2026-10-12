@@ -7,7 +7,11 @@
 #include "Ai/Dungeon/DungeonClear/Util/DcRun.h"
 
 #include "Action.h"
+#include "AttackAction.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "FollowActions.h"
+#include "GenericSpellActions.h"
 #include "InstanceScript.h"
 #include "Player.h"
 #include "Playerbots.h"
@@ -16,6 +20,7 @@
 #include "Ai/Dungeon/DungeonClear/DcPullContext.h"
 #include "Ai/Dungeon/DungeonClear/Settings/DcSettings.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcBossStandDown.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcEscapeLeap.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcFlightLeg.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcOculusPlan.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcSmartRest.h"
@@ -57,12 +62,71 @@ namespace
 // Free everywhere else — HoldsThePossession rejects on a map compare, and it reads
 // this bot's own charm field rather than any cross-bot signal, so no stale stamp
 // can drop the guard while the channel is still up.
+// Does `action` deal damage? Melee/attack actions, the stock target picker that
+// starts them, and any HARMFUL spell — judged by the spell itself, not by its
+// target: Frost Nova, Arcane Explosion, Consecration and the like are cast on
+// the caster and still hit the pack (the first threat-lead fix missed them —
+// a mage's Frost Nova 1.1s after the tank's first hit, lb-20261003-164447-1).
+// Heals and buffs are never held.
+static bool IsDamagingAction(PlayerbotAI* botAI, Action* action, std::string const& name)
+{
+    if (name == "dps assist" || dynamic_cast<AttackAction*>(action))
+        return true;
+    if (dynamic_cast<CastHealingSpellAction*>(action) || dynamic_cast<CastBuffSpellAction*>(action))
+        return false;
+    CastSpellAction* cast = dynamic_cast<CastSpellAction*>(action);
+    if (!cast)
+        return false;
+    uint32 const spellId = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", cast->getSpell())->Get();
+    SpellInfo const* info = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+    return info && !info->IsPositive();
+}
+
+// A mob already beating on a non-tank party member is peeled at once: the
+// threat lead protects the tank's grip on HIS mobs, and waiting it out while a
+// caster eats a Ghoul only leaves that mob unattended (Pull Lab O1 rose with
+// the first hold). Single-target actions only — an AoE has no one target.
+static bool PeelsAMobOffTheParty(Player* bot, PlayerbotAI* botAI, Action* action)
+{
+    Unit* target = nullptr;
+    if (CastSpellAction* cast = dynamic_cast<CastSpellAction*>(action))
+        target = cast->GetTarget();
+    else if (dynamic_cast<AttackAction*>(action))
+        target = botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
+    if (!target || target == bot)
+        return false;
+    Unit* victim = target->GetVictim();
+    Player* p = victim ? victim->GetCharmerOrOwnerPlayerOrPlayerItself() : nullptr;
+    return p && p != bot && p->IsInSameRaidWith(bot) && !PlayerbotAI::IsTank(p);
+}
+
 static float RazorgorePossessionClamp(Player* bot, std::string const& name)
 {
     if (!DcBlackwingLair::HoldsThePossession(bot))
         return 1.0f;
     return name == "dungeon clear razorgore orb" ? 1.0f : 0.0f;
 }
+}
+
+// KARAZHAN, the chess game: while this bot is held by the game, NOTHING but the
+// chess rung is worth doing — the Razorgore-possession shape, for the whole raid.
+//
+// The rung owns the tick at KzChess (64.25), but stock actions reach higher than
+// that — ACTION_EMERGENCY at 90, `drop target` at 99 — and a controller has lost
+// Game In Session, so its own rotation, a heal, a potion or a pet command could
+// all land on a piece. That is cheating and it breaks the game (H1, H5). So every
+// other action is zeroed on every bot the rung holds; the one carve-out is the
+// `dc ...` chat commands, so a human can still pause or stop the run.
+//
+// Free everywhere else, and cheap here: the map compare, then one stamp the rung
+// leaves on the bot's own run state (DcKarazhan::ChessHoldsTheBot).
+static float KaraChessClamp(Player* bot, PlayerbotAI* botAI, std::string const& name)
+{
+    if (bot->GetMapId() != DcKarazhan::MAP || !DcKarazhan::ChessHoldsTheBot(bot, botAI))
+        return 1.0f;
+    if (name == "dungeon clear kz chess" || name.rfind("dc ", 0) == 0)
+        return 1.0f;
+    return 0.0f;
 }
 
 // HALLS OF REFLECTION, the escape: BACKWARDS IS FATAL, so nothing may move
@@ -185,6 +249,9 @@ float DungeonClearMultiplier::GetValue(Action* action)
     if (float const clamp = RazorgorePossessionClamp(bot, name); clamp != 1.0f)
         return clamp;
 
+    if (float const clamp = KaraChessClamp(bot, botAI, name); clamp != 1.0f)
+        return clamp;
+
     // Halls of Reflection's escape: no backwards movement, ever. See
     // HorEscapeBackwardsBanned above.
     if (HorEscapeBackwardsBanned(bot, name))
@@ -245,6 +312,12 @@ float DungeonClearMultiplier::GetValue(Action* action)
         AI_VALUE(Player*, DcKey::PartyTank))
         return 0.0f;
 
+    // Blink / Disengage leap a fixed distance straight away from the bot's target
+    // and land it in whatever pack is behind — see DcEscapeLeap. Every member of an
+    // active run, same cross-bot gate as above.
+    if (DcEscapeLeap::IsBanned(name) && AI_VALUE(Player*, DcKey::PartyTank))
+        return 0.0f;
+
     // Wander-style autonomous navigation (grind / rpg / travel). This is what
     // drives the bot around the world on its own.
     bool const isWander =
@@ -283,6 +356,37 @@ float DungeonClearMultiplier::GetValue(Action* action)
         if (DcLeaderSignal::GetLeaderCampHold(bot, camp, passive))
             return 0.0f;
     }
+
+    // Stock group-target pickers while the camp hold is PASSIVE (the tank is
+    // tagging or dragging). "dps assist" / "tank assist" sit at relevance 50 in the
+    // non-combat engine — above hold-at-camp (28), where +passive does not apply —
+    // so they target the tank's attacker and flip the follower onto the combat
+    // engine before the hold can pin it. On a planned pull the +passive already on
+    // the combat engine caught that; on a scout aggro nothing did, and the casters
+    // opened on the pack at its spawn (tr-20260923-171623-1). The off-tank's
+    // "tank assist" is the same picker and ran it 27yd off camp. Only while
+    // passive: between pulls and at Engage the party must still defend itself.
+    if (name == "dps assist" || name == "tank assist")
+    {
+        Position camp;
+        bool passive = false;
+        if (DcLeaderSignal::GetLeaderCampHold(bot, camp, passive) && passive)
+            return 0.0f;
+    }
+
+    // Threat lead, damage side. A DPS follower holds ALL damage — stock rotation,
+    // melee, "dps assist", class reflexes — for PullPlayerReleaseDelay after the
+    // tank's first hit. The lead used to live only inside DC's own assist rung,
+    // so every stock damage action walked straight past it: the Pull Lab
+    // baseline (lb-20261003-162407-1) caught a DPS landing damage 0.0-1.2s after
+    // the tank's first hit in 20 of 33 scenarios. Movement is untouched (the
+    // assist still closes the gap), and a follower something is attacking, a
+    // tank below the panic HP and the tank itself are never held (a healer's heals
+    // are not damaging actions, its damage spells wait like a DPS's). Only
+    // damaging actions pay for the leader lookup.
+    if (IsDamagingAction(botAI, action, name) && DcLeaderSignal::ShouldHoldDpsDamage(bot) &&
+        !PeelsAMobOffTheParty(bot, botAI, action))
+        return 0.0f;
 
     // Stock follow-master (FollowAction, relevance ~1) points a bot at its MASTER —
     // the human party leader — NOT the dungeon-clear tank. While a DC run is active
@@ -346,16 +450,25 @@ float DungeonClearCombatMultiplier::GetValue(Action* action)
 
     std::string const& name = action->getName();
 
-    // The Classic healer-regroup driver is also registered in the combat
-    // engine. Keep both fork-specific drivers suppressed in either engine
-    // while DC owns the run.
-    if (IsClassicDungeonDriver(name) && IsDungeonClearRunEnabled(bot))
+    // Threat lead, combat engine. The non-combat multiplier can only hold the
+    // OPENER; once a follower is fighting, every damage action (rotation, Frost
+    // Nova, Blast Wave, Flamestrike...) runs here. Without this the hold never
+    // touched a bot that was already in combat — the Pull Lab still caught a
+    // mage's Frost Nova 0.9s after the tank's first hit with the non-combat
+    // gate in place (lb-20261003-165604-1). Same rule, same exemptions.
+    if (IsDamagingAction(botAI, action, name) && DcLeaderSignal::ShouldHoldDpsDamage(bot) &&
+        !PeelsAMobOffTheParty(bot, botAI, action))
         return 0.0f;
 
     // The possession clamp, first and unconditional — see its definition above.
     // The runner is IN COMBAT for most of its window (the adds are on it), so the
     // combat engine is where this actually has to bite.
     if (float const clamp = RazorgorePossessionClamp(bot, name); clamp != 1.0f)
+        return clamp;
+
+    // The chess clamp, for the same reason and in the same place: a controller is
+    // combat-flagged by its piece's fight half the time.
+    if (float const clamp = KaraChessClamp(bot, botAI, name); clamp != 1.0f)
         return clamp;
 
     // Halls of Reflection's escape: no backwards movement, ever. ABOVE the

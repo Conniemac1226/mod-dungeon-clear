@@ -52,6 +52,7 @@
 #include "Chat.h"
 #include "ServerFacade.h"
 #include "Timer.h"
+#include "Util/DcPlayerbotsConfig.h"
 #include "World.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
 #include "Ai/Dungeon/DungeonClear/Data/ScriptedPullRegistry.h"
@@ -78,9 +79,9 @@ float DcPartyState::RestMinHpPct(Player* bot)
         return static_cast<float>(target);
 
     // 90% is our "topped up enough to pull" ceiling. Clamp it to the level bots
-    // actually eat back up to (AiPlayerbot.AlmostFullHealth, default 85) so the
+    // actually eat back up to (Playerbots.AlmostFullHealth, default 85) so the
     // gate never waits on HP a bot won't restore on its own.
-    return std::min(90.0f, static_cast<float>(sPlayerbotAIConfig.almostFullHealth));
+    return std::min(90.0f, static_cast<float>(DC_PB_CONFIG(AlmostFullHealth, almostFullHealth)));
 }
 float DcPartyState::RestMinMpPct(Player* bot)
 {
@@ -90,9 +91,9 @@ float DcPartyState::RestMinMpPct(Player* bot)
         return static_cast<float>(target);
 
     // 75% ceiling, clamped to the level bots actually drink back up to
-    // (AiPlayerbot.HighMana, default 65). Bots stop drinking at HighMana, so a
+    // (Playerbots.HighMana, default 65). Bots stop drinking at HighMana, so a
     // higher gate would strand the tank waiting on slow natural mana regen.
-    return std::min(75.0f, static_cast<float>(sPlayerbotAIConfig.highMana));
+    return std::min(75.0f, static_cast<float>(DC_PB_CONFIG(HighMana, highMana)));
 }
 bool DcPartyState::IsPartyReady(Player* bot, float minHpPct, float minMpPct, float maxSpread,
                                 Position const* spreadAnchor, float maxTankGap)

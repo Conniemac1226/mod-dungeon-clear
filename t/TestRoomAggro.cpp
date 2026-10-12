@@ -3,6 +3,8 @@
  * and/or modify it under version 3 of the License, or (at your option), any later version.
  */
 
+#include <cmath>
+
 #include "gtest/gtest.h"
 #include "Ai/Dungeon/DungeonClear/Data/RoomAggroRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcEngageGeometry.h"
@@ -412,4 +414,75 @@ TEST(DcEnRouteAvoidTest, PackTheTankIsStandingInIsStillRounded)
     // "already inside, nothing to avoid" and carry on through.
     std::vector<Sphere> const s{At(3.f, 0.f, 10.f)};
     EXPECT_EQ(DcEngageGeometry::FirstViolatedSphere(0.f, 0.f, 50.f, 0.f, s), 0);
+}
+
+// --- Karazhan (532) — Moroes' Banquet Hall ---------------------------------
+
+TEST(RoomAggroRegistryTest, KarazhanMoroesClearsTheBanquetHall)
+{
+    RoomAggroBoss const* m = RoomAggroRegistry::Find(532, 15687);
+    ASSERT_NE(m, nullptr);
+    EXPECT_GE(m->radius, 56.4f);  // the far south formation
+    EXPECT_FLOAT_EQ(RoomAggroRegistry::SkirtOverride(532, 15687), 32.0f);
+
+    // A Phantom Guest in the closest (east) formation, 21.1yd out, is trash:
+    // the pull-out radius keeps it clearable instead of "comes with the boss".
+    EXPECT_TRUE(RoomAggroRegistry::IsRoomTrash(*m, 16409, 21.1f, m->pullOutRadius));
+    // Stewards and Waiters are trash too.
+    EXPECT_TRUE(RoomAggroRegistry::IsRoomTrash(*m, 16414, 45.5f, m->pullOutRadius));
+    EXPECT_TRUE(RoomAggroRegistry::IsRoomTrash(*m, 16415, 36.5f, m->pullOutRadius));
+    // Moroes' own summoned guests are never trash, wherever they stand.
+    for (uint32 guest : {17007u, 19872u, 19873u, 19874u, 19875u, 19876u})
+    {
+        EXPECT_FALSE(RoomAggroRegistry::IsRoomTrash(*m, guest, 5.0f, m->pullOutRadius)) << guest;
+        EXPECT_FALSE(RoomAggroRegistry::IsRoomTrash(*m, guest, 30.0f, m->pullOutRadius)) << guest;
+    }
+    // A Phantom Guest glued to the dais comes with the boss.
+    EXPECT_FALSE(RoomAggroRegistry::IsRoomTrash(*m, 16409, 5.0f, m->pullOutRadius));
+    // Other entries in range (16459, Wanton Hostess) are not the room's.
+    EXPECT_FALSE(RoomAggroRegistry::IsRoomTrash(*m, 16459, 30.0f, m->pullOutRadius));
+    // The summoned guests stand 4-7yd off him, inside the pull-out radius.
+    EXPECT_GT(m->pullOutRadius, 7.0f);
+    EXPECT_LT(m->pullOutRadius, 21.1f);
+}
+
+// A row without a camp box never bounds the camp.
+TEST(RoomAggroRegistryTest, NoCampBoxAdmitsAnyPoint)
+{
+    RoomAggroBoss const* b = RoomAggroRegistry::Find(557, 18341);  // Pandemonius
+    ASSERT_NE(b, nullptr);
+    EXPECT_FALSE(b->hasCampBox);
+    EXPECT_TRUE(RoomAggroRegistry::InCampBox(*b, -1.0e6f, 1.0e6f));
+}
+
+// Moroes' camp box keeps the pull camp inside the Banquet Hall. Without it the
+// skirt-widened drag walked camps back onto the south door line, next to the
+// Phantom Attendants' corridor (tr-20260926-174359-2).
+TEST(RoomAggroRegistryTest, KarazhanMoroesCampStaysInTheHall)
+{
+    RoomAggroBoss const* m = RoomAggroRegistry::Find(532, 15687);
+    ASSERT_NE(m, nullptr);
+    ASSERT_TRUE(m->hasCampBox);
+
+    // Inside his script's evade box (x >= -11028, y >= -1955) with room to
+    // spare for the fanned-out camp.
+    EXPECT_GE(m->campMinX, -11028.0f + 15.0f);
+    EXPECT_GE(m->campMinY, -1955.0f + 15.0f);
+
+    // The camps that run placed: planned on the door line, and the fresh camp
+    // the Moroes fight was dragged to.
+    EXPECT_FALSE(RoomAggroRegistry::InCampBox(*m, -10973.3f, -1955.1f));
+    EXPECT_FALSE(RoomAggroRegistry::InCampBox(*m, -10975.2f, -1954.1f));
+    EXPECT_FALSE(RoomAggroRegistry::InCampBox(*m, -10973.1f, -1957.2f));
+    EXPECT_FALSE(RoomAggroRegistry::InCampBox(*m, -10971.2f, -1943.3f));
+    // The Phantom Attendants' spawn south of the door is outside too.
+    EXPECT_FALSE(RoomAggroRegistry::InCampBox(*m, -10956.9f, -1971.5f));
+
+    // The dais and a south-hall spot 32yd+ off Moroes (the skirt) are inside, so
+    // the camp search still has ground that clears his skirt.
+    float const mx = -10982.7f, my = -1877.9f;
+    EXPECT_TRUE(RoomAggroRegistry::InCampBox(*m, mx, my));
+    float const cx = -10975.0f, cy = -1935.0f;
+    EXPECT_TRUE(RoomAggroRegistry::InCampBox(*m, cx, cy));
+    EXPECT_GE(std::hypot(cx - mx, cy - my), RoomAggroRegistry::SkirtOverride(532, 15687));
 }

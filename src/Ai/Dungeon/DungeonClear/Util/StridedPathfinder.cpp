@@ -18,6 +18,7 @@
 #include "Ai/Dungeon/DungeonClear/Data/DungeonClearRouteRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Data/DungeonSpawnGraph.h"
 #include "Ai/Dungeon/DungeonClear/Util/CorridorCenter.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcRunWing.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearGeometry.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearTuning.h"  // DC_PI
 #include "Ai/Dungeon/DungeonClear/Util/LongRangePathfinder.h"
@@ -220,12 +221,15 @@ namespace
         // ground, and any point that goes back in after that is still rejected.
         // Strides chain from the previous clean end, so a stride that starts
         // outside is screened exactly as before.
-        if (DcNavPenaltyRegistry::HasVolumes(mapId))
+        // The run wing arms the wing-tagged rows (Blackrock Spire: keep an LBRS
+        // run out of UBRS and vice versa) exactly as it does in DcRouteFilter.
+        std::string const runWing = DcRunWing::FenceWing(bot);
+        if (DcNavPenaltyRegistry::HasVolumes(mapId, runWing))
         {
-            bool walkingOut = DcNavPenaltyRegistry::IsInsideRegion(mapId, cx, cy, cz);
+            bool walkingOut = DcNavPenaltyRegistry::IsInsideRegion(mapId, cx, cy, cz, runWing);
             for (G3D::Vector3 const& p : candidate)
             {
-                if (!DcNavPenaltyRegistry::IsInsideRegion(mapId, p.x, p.y, p.z))
+                if (!DcNavPenaltyRegistry::IsInsideRegion(mapId, p.x, p.y, p.z, runWing))
                 {
                     walkingOut = false;   // clear ground reached — the screen is live
                     continue;

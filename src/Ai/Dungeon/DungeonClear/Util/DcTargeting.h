@@ -22,6 +22,7 @@ class InstanceScript;
 class AiObjectContext;
 class PlayerbotAI;
 struct DungeonBossInfo;
+struct RoomAggroBoss;
 
 class DcTargeting
 {
@@ -131,6 +132,13 @@ public:
     // them, and scripted bosses misbehave when camp-dragged.
     static bool IsDungeonBossEntry(AiObjectContext* ctx, uint32 entry);
 
+    // True when `u` is a live boss's own summon: a TempSummon whose summoner is
+    // alive and is a boss (core dungeon-boss flag, world-boss flag, or boss
+    // rank). Such adds belong to the encounter — Moroes' dinner guests on his
+    // dais — so no pull or corridor scan may pick one as trash. Needs no
+    // context, so the context-free corridor scans can ask it too.
+    static bool IsBossSummon(Unit const* u);
+
     // Validity predicate for KEEPING the sticky pull target between scans:
     // alive, hostile, not a dungeon boss, not the pull context's abort target,
     // within the scan look-ahead plus a slack band, level-reachable, and no
@@ -177,8 +185,12 @@ public:
     // resolves (so a caller can still aim at where the fight is). This is the
     // fight-anchor scan the combat regroup samples its standoff ring around; it is
     // the same nearest-attacker→victim ladder DungeonClearAssistCampActionBase
-    // uses (kept as a shared, testable helper).
-    static Unit* LeaderFightAnchor(Player* bot, Player* leader, Position& anchorPos);
+    // uses (kept as a shared, testable helper). Only a holder inside
+    // DC_ENGAGEMENT_RADIUS and level-reachable qualifies
+    // (DungeonClearMath::IsRegroupAnchorCandidate); a stranded far holder must not
+    // pull the party back to it.
+    static Unit* LeaderFightAnchor(Player* bot, AiObjectContext* ctx, Player* leader,
+                                   Position& anchorPos);
 
     // Returns a live creature with the given entry on the bot's map, or nullptr
     // if none exists or all are dead. Walks the creature-by-spawn-id store, then
@@ -285,11 +297,30 @@ public:
     // "combat too close, pulls the boss" failure). Leader/room-scoped; cheap.
     static float ActiveRoomSkirt(Player* bot, AiObjectContext* ctx);
 
+    // The row of the room-aggro boss currently being pre-cleared when it carries
+    // a camp box (RoomAggroBoss::hasCampBox), else nullptr. The advanced-pull camp
+    // search rejects every candidate outside that box, so the skirt-widened drag
+    // stops at the room's edge instead of walking out of the door.
+    static RoomAggroBoss const* ActiveRoomCampBox(Player* bot, AiObjectContext* ctx);
+
     // The nearest remaining room-trash unit (from "dungeon clear room trash
     // remaining"), or nullptr. Nearest-first so the tank clears the room from
     // its edge inward and reaches the boss's own aggro sphere last, minimising
-    // the chance of waking the boss while clearing.
+    // the chance of waking the boss while clearing. A unit whose lane was refused
+    // (DcPullContext::laneRefused) is skipped while any other is left — see
+    // DungeonClearMath::PickRoomTrashIndex.
     static Unit* NearestRoomTrash(Player* bot, AiObjectContext* ctx);
+
+    // Room-clear lane refusals (DcPullContext::laneRefused), all on `bot`'s own
+    // pull context. RefuseRoomLane records `trash` and every live room-trash unit
+    // within `packRadius` of it (its formation — same lanes, same answer).
+    // HasUnrefusedRoomTrash: is any live room-trash unit other than `except` still
+    // unrefused, i.e. is there something cleaner to pull first? IsRoomLaneRefused
+    // is the membership test (false once a kill has dropped the list).
+    static void RefuseRoomLane(Player* bot, AiObjectContext* ctx, Unit* trash,
+                               float packRadius);
+    static bool HasUnrefusedRoomTrash(Player* bot, AiObjectContext* ctx, Unit* except);
+    static bool IsRoomLaneRefused(Player* bot, AiObjectContext* ctx, ObjectGuid guid);
 
     // The nearest reachable, attackable hostile within `radius` (2D) of the point
     // (px,py,pz) and within `zBand` vertically — or nullptr. Backs the ClearRadius

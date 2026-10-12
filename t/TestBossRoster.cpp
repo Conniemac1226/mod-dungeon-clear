@@ -1635,3 +1635,84 @@ TEST(BossRosterRegistryTest, DrakTharonNormalHasNoRaptorPenObjective)
             << "map 600 has no normal-difficulty objectives — Raptor Call is "
                "scheduled inside if (IsHeroic())";
 }
+
+// --- instance-script completion: doneBossStateIndex / doneInstanceData --------
+// The rule both the target picker and the diag snapshot read an anchor's
+// instance-side completion through (AnchorDoneByInstanceValues). EncounterState
+// DONE is 3.
+
+TEST(BossRosterDoneTest, AnchorWithNeitherSignalIsNeverDoneByInstance)
+{
+    DungeonBossInfo b;
+    EXPECT_EQ(AnchorDoneByInstanceValues(b, 3, 3), DcAnchorDoneVia::None)
+        << "an anchor that configures no slot and no data value must fall through to the mask";
+}
+
+TEST(BossRosterDoneTest, BossStateSlotReadsDoneOnlyOnDone)
+{
+    DungeonBossInfo b;
+    b.doneBossStateIndex = 4;
+    EXPECT_EQ(AnchorDoneByInstanceValues(b, 3, 0), DcAnchorDoneVia::BossState);
+    for (uint32 state : { 0u, 1u, 2u, 4u, 5u })
+        EXPECT_EQ(AnchorDoneByInstanceValues(b, state, 0), DcAnchorDoneVia::None) << state;
+}
+
+// Karazhan's chess: no boss state, no kill bit — GetData(DATA_CHESS_EVENT = 9)
+// reads DONE (3) once Medivh's King falls, and SPECIAL (4) during the PvP game
+// that follows, which must NOT read as the PvE win.
+TEST(BossRosterDoneTest, InstanceDataValueIsExact)
+{
+    DungeonBossInfo b;
+    b.doneInstanceDataId = 9;
+    b.doneInstanceDataValue = 3;
+    EXPECT_EQ(AnchorDoneByInstanceValues(b, 0, 3), DcAnchorDoneVia::InstanceData);
+    for (uint32 v : { 0u, 1u, 2u, 4u })
+        EXPECT_EQ(AnchorDoneByInstanceValues(b, 0, v), DcAnchorDoneVia::None) << v;
+    // Unconfigured, a data value of 0 must not match the default value 0.
+    DungeonBossInfo none;
+    none.doneInstanceDataValue = 0;
+    EXPECT_EQ(AnchorDoneByInstanceValues(none, 0, 0), DcAnchorDoneVia::None);
+}
+
+TEST(BossRosterDoneTest, InstanceDataIsReadLiveNotLatched)
+{
+    // The rule is a pure function of the values handed in: an unsaved encounter
+    // that reads NOT_STARTED again after a reload is simply not done again.
+    DungeonBossInfo b;
+    b.doneInstanceDataId = 9;
+    b.doneInstanceDataValue = 3;
+    EXPECT_EQ(AnchorDoneByInstanceValues(b, 0, 3), DcAnchorDoneVia::InstanceData);
+    EXPECT_EQ(AnchorDoneByInstanceValues(b, 0, 0), DcAnchorDoneVia::None);
+}
+
+TEST(BossRosterDoneTest, EitherConfiguredSignalIsEnough)
+{
+    DungeonBossInfo b;
+    b.doneBossStateIndex = 2;
+    b.doneInstanceDataId = 9;
+    b.doneInstanceDataValue = 3;
+    EXPECT_EQ(AnchorDoneByInstanceValues(b, 3, 0), DcAnchorDoneVia::BossState);
+    EXPECT_EQ(AnchorDoneByInstanceValues(b, 1, 3), DcAnchorDoneVia::InstanceData);
+    EXPECT_EQ(AnchorDoneByInstanceValues(b, 1, 1), DcAnchorDoneVia::None);
+}
+
+TEST(BossRosterDoneTest, RosterPatchCarriesInstanceDataThroughApply)
+{
+    // Apply must copy the field with the row, not rebuild rows field by field.
+    BossRosterPatch patch;
+    patch.mapId = 532;
+    DungeonBossInfo obj;
+    obj.entry = BossRosterRegistry::ObjectiveEntry(3);
+    obj.kind = DungeonAnchorKind::Objective;
+    obj.mapId = 532;
+    obj.doneInstanceDataId = 9;
+    obj.doneInstanceDataValue = 3;
+    patch.add.push_back(obj);
+
+    std::vector<DungeonBossInfo> const out = BossRosterRegistry::ApplyPatch(patch, {});
+    DungeonBossInfo const* o = Find(out, obj.entry);
+    ASSERT_NE(o, nullptr);
+    EXPECT_EQ(o->doneInstanceDataId, 9);
+    EXPECT_EQ(o->doneInstanceDataValue, 3u);
+    EXPECT_EQ(o->doneBossStateIndex, -1);
+}

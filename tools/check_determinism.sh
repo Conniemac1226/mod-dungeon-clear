@@ -48,7 +48,9 @@ PATTERN = re.compile(
 # path. Its only live RNG use is rolling a run seed (recorded in the run record
 # for exact replay via `.dc test start <d> seed=N`), which preserves
 # replayability; comp selection itself uses a pure seeded PRNG.
-EXCLUDE_DIRS = {"TestRun"}
+# src/Lab (the Pull Lab) is exempt for the same reason: it seeds party comps
+# and sweep jitter for a scenario run, and records the seed with the run.
+EXCLUDE_DIRS = {"TestRun", "Lab"}
 
 
 def strip_comments(text):

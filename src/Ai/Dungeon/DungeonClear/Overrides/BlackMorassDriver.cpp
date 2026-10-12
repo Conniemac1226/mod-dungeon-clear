@@ -28,6 +28,7 @@
 #include "Ai/Dungeon/DungeonClear/Util/DcTargeting.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonPathFollower.h"
 #include "Ai/Dungeon/DungeonClear/Util/LongRangePathfinder.h"
+#include "Util/DcPlayerbotsConfig.h"
 
 // The Black Morass wave driver — the imperative half of map 269's clear.
 //
@@ -476,7 +477,7 @@ namespace
         if (botAI->GetState() != BOT_STATE_COMBAT)
         {
             botAI->ChangeEngine(BOT_STATE_COMBAT);
-            botAI->SetNextCheckDelay(sPlayerbotAIConfig.reactDelay);
+            botAI->SetNextCheckDelay(DC_PB_CONFIG(ReactDelay, reactDelay));
         }
         return !alreadyOnIt;
     }

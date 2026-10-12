@@ -20,7 +20,7 @@
  *
  * Improvement #3 (not in this class): bots roll immediately. Stock reaches
  * "loot roll" only off the "very often" RandomTrigger (a 1-in-3 chance checked
- * at most once per AiPlayerbot.RepeatDelay), so a pending roll sits unanswered
+ * at most once per Playerbots.RepeatDelay), so a pending roll sits unanswered
  * for many seconds. DungeonClearLootRollPendingTrigger fires this same action
  * every non-combat tick while a vote is pending — see DungeonClearTriggers.h
  * and the node in DungeonClearStrategy.cpp.

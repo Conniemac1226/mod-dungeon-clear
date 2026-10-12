@@ -71,6 +71,11 @@ struct DcApproachState
     // DC_LONGROUTE_DEFER_LIMIT and the tank is dragged away in between — a stutter
     // rather than an engagement. Cleared when the target changes or comes in range.
     bool longRouteDeferBlown = false;
+    // The walk-in engage-trash last drove, and when (getMSTime, 0 = none). Advance
+    // yields while it is fresh instead of overwriting it — see
+    // DungeonClearMath::ShouldYieldToEngageWalk.
+    ObjectGuid engageWalkTarget;
+    uint32 engageWalkMs = 0;
     uint32 stuckCount          = 0;  // MoveTo-returned-false backup (was "stuck count")
     uint32 rebuildAttempts     = 0;  // consecutive rebuilds w/o progress ("stride rebuild attempts")
     uint32 resnapAttempts      = 0;  // consecutive Resnap recoveries w/o progress (rung-1 give-up)
@@ -145,7 +150,14 @@ struct DcApproachState
     // healthy case into a stop/re-issue loop) from one that is not (halt it).
     float rejoinBestDev = std::numeric_limits<float>::max();
 
-    // Consecutive off-line rejoin ticks that issued NO movement. rejoinBestDev
+    // Best rejoin gap that counted as PROGRESS this off-line episode (FLT_MAX =
+    // none yet). Separate from rejoinBestDev, which is rebaselined on every issued
+    // move for the drift test; this one moves only when the gap truly closes and
+    // drives rejoinRefusals (DungeonClearMath::TrackRejoinProgress).
+    float rejoinProgressBest = std::numeric_limits<float>::max();
+
+    // Consecutive off-line rejoin ticks that made NO progress (issued nothing, or
+    // issued a move that bought no ground). rejoinBestDev
     // above only measures DRIFT, and drift is the wrong question when the answer
     // is zero: a bot whose DcMoveTo is refused every tick never moves at all, so
     // its deviation is CONSTANT, `deviation > best + slack` is false forever, and
@@ -155,6 +167,12 @@ struct DcApproachState
     // only on the 600s no-progress timer. Counting the refusals themselves is the
     // liveness signal the deviation cannot carry.
     uint32 rejoinRefusals = 0;
+
+    // The off-level re-path (DungeonClearMath::ShouldRepathOffLevel) has been spent.
+    // Cleared only by real progress toward the objective or a boss change, NOT on
+    // the off-line episode boundary: the re-path itself ends the episode (fresh
+    // cursor, deviation ~0), so an episode-scoped latch would re-path forever.
+    bool offLevelRepathSpent = false;
 
     // Deadline (getMSTime) while a LONG re-entry glide owns the bot; 0 = none.
     // A deliberate re-entry from far off the route reads, to every rung that
@@ -247,6 +265,19 @@ struct DcApproachState
     uint32 doorStallSinceMs    = 0;  // when that stall began (getMSTime)
     uint32 doorStallLastMs     = 0;  // last tick the stall was observed
 
+    // True while the current StallReason was written by the door-blocked action
+    // ("A gate has closed on us", "Opening the door to X"). Such a reason is only
+    // true while the blocking-door value names a door; when it drops the door,
+    // the value releases the reason (ReleaseDoorOwnedStall). Nothing else would:
+    // the door-blocked trigger stops firing once the value is empty, and only a
+    // successful Advance clears a stall — which the stalled fallback, owning
+    // every between-pulls tick while a reason is set, never lets happen.
+    // tr-20260924-094111-3 (Karazhan) died exactly so: a phantom Gatehouse Door
+    // flag, an unplaced walk-in hold, "corridor clear" the same second, then 2m
+    // of the fallback chasing an off-level mob until the 120s stall watchdog.
+    // Any non-door StallDungeonClear / ClearStall drops the ownership.
+    bool doorOwnsStallReason = false;
+
     // --- long-path cache state --------------------------------------------
     // The cached long-range A* result lives in its own value ("dungeon clear
     // long path"); these are the bookkeeping fields that govern when it rebuilds
@@ -308,6 +339,7 @@ struct DcApproachState
         resnapAttempts  = 0;
         nudgeAttempts   = 0;   // a nudge that bought ground costs nothing
         rejoinRefusals  = 0;
+        offLevelRepathSpent = false;
         return true;
     }
 
@@ -332,6 +364,8 @@ struct DcApproachState
         longRouteDeferWatch.Reset();
         longRouteDeferTarget.Clear();
         longRouteDeferBlown = false;
+        engageWalkTarget.Clear();
+        engageWalkMs        = 0;
         rebuildAttempts     = 0;
         resnapAttempts      = 0;
         nudgeAttempts       = 0;
@@ -340,7 +374,9 @@ struct DcApproachState
         skirtOrbitDir       = 0;
         offLineLatched      = false;
         rejoinBestDev       = std::numeric_limits<float>::max();
+        rejoinProgressBest  = std::numeric_limits<float>::max();
         rejoinRefusals      = 0;
+        offLevelRepathSpent = false;
         rejoinGlideUntilMs  = 0;
         skirtOrbitTarget.Clear();
         avoidOrbitDir       = 0;
@@ -400,6 +436,15 @@ struct DcApproachState
         doorStallGuid.Clear();
         doorStallSinceMs = 0;
         doorStallLastMs  = 0;
+    }
+
+    // The blocking-door value found no blocker: returns true (and drops the
+    // ownership) when the stall reason is the door's own and must be cleared.
+    bool ReleaseDoorOwnedStall()
+    {
+        bool const owned = doorOwnsStallReason;
+        doorOwnsStallReason = false;
+        return owned;
     }
 };
 

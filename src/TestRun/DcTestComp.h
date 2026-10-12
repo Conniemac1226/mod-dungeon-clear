@@ -19,7 +19,7 @@
 // mage-rogue-hunter comp only ever tested one shape.
 //
 // Every spec is named by its playerbots premade-spec template name
-// (AiPlayerbot.PremadeSpecName.<class>.<n>) and resolved to a specNo at
+// (Playerbots.PremadeSpecName.<class>.<n>) and resolved to a specNo at
 // provisioning time; a spec with no matching template fails the run loudly
 // (tank/heal) rather than silently rolling a random build, so only specs that
 // exist as templates appear in the pools below. All-Alliance because the

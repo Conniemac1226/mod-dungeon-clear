@@ -20,6 +20,7 @@
 #include "ServerFacade.h"
 #include "SharedDefines.h"
 #include "Timer.h"
+#include "Util/DcPlayerbotsConfig.h"
 #include "Vehicle.h"
 
 #include "Ai/Dungeon/DungeonClear/Data/DungeonBossInfo.h"
@@ -256,7 +257,7 @@ namespace
         if (botAI->GetState() != BOT_STATE_COMBAT)
         {
             botAI->ChangeEngine(BOT_STATE_COMBAT);
-            botAI->SetNextCheckDelay(sPlayerbotAIConfig.reactDelay);
+            botAI->SetNextCheckDelay(DC_PB_CONFIG(ReactDelay, reactDelay));
         }
     }
 
@@ -393,7 +394,7 @@ namespace
             LOG_WARN("playerbots.dungeonclear",
                      "[DC:{}] ToC — the tank has been on foot for {}s of the joust (progress {}). "
                      "Only mod-playerbots' `toc lance` / `toc mount` mount it; is `wotlk-toc` on its "
-                     "engines (AiPlayerbot.ApplyInstanceStrategies), and is a lance rack and a free "
+                     "engines (Playerbots.ApplyInstanceStrategies), and is a lance rack and a free "
                      "horse in sight?",
                      bot->GetName(), (in.nowMs - v.unmountedSinceMs) / 1000, progress);
 
