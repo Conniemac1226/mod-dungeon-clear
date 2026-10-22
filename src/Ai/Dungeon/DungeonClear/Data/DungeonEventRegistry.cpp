@@ -73,6 +73,12 @@ EventBuilder& EventBuilder::OwnsThePull()
     return *this;
 }
 
+EventBuilder& EventBuilder::PackLeash(float radius)
+{
+    _ev.packLeash = radius;
+    return *this;
+}
+
 EventBuilder& EventBuilder::YieldsTheApproach()
 {
     _ev.yieldsTheApproach = true;
@@ -477,6 +483,7 @@ namespace
             RegisterSunkenTempleEvents(t);
             RegisterZulFarrakEvents(t);
             RegisterBlackrockDepthsEvents(t);
+            RegisterBlackrockSpireEvents(t);
             RegisterDeadminesEvents(t);
             RegisterWailingCavernsEvents(t);
             RegisterStratholmeEvents(t);

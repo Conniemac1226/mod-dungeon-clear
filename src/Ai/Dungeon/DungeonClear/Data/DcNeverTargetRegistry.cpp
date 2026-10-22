@@ -311,13 +311,90 @@ namespace
         // after a fountain between soldier packs.
         { 650, 35614 },  // Trial of the Champion — Desecration Stalker (the Black Knight's ground hazard)
         { 650, 35311 },  // Trial of the Champion — Fountain of Light (the Priestess's summon)
+
+        // --- Blackrock Depths (230): the Grim Guzzler's patrons ---------------
+        //
+        // Class 2, staging around an encounter the party is LEAVING. Plugger
+        // Spazzring (9499) is the bar's last boss on purpose: his ON_DEATH SmartAI
+        // sets faction 14 on every Grim, Guzzling and Hammered Patron within
+        // 100yd — 68 of them, levels 48-52, 12 elite — and on Phalanx. They are
+        // aggressive but aggro only by proximity; nothing in the script sends
+        // them at the party. Rocknot's ale run has already opened the Bar Door
+        // behind Phalanx, and Plugger is dragged out through it to die past the
+        // door (BossPullbackRegistry), so the party is already outside when
+        // they turn and the next roster target (Ambassador Flamelash) leads on
+        // from there.
+        //
+        // What would go wrong without these rows is the clear itself: the moment
+        // Plugger dies the corridor scan and room pre-clear see 68 fresh hostiles
+        // in the room behind the party, and would walk back in from table to
+        // table pulling the whole bar. That is not progress — none of them is an
+        // encounter, and the dungeon is behind the door. Patrons that DO aggro on
+        // the way out are fought normally; these rows only stop the clear going
+        // looking for them.
+        { 230, 9545 },   // Blackrock Depths — Grim Patron     (hostile once Plugger dies)
+        { 230, 9547 },   // Blackrock Depths — Guzzling Patron (hostile once Plugger dies)
+        { 230, 9554 },   // Blackrock Depths — Hammered Patron (hostile once Plugger dies)
+
+        // --- Blackrock Depths (230): the Lyceum's Anvilrage Reservists --------
+        //
+        // Class 3, by arithmetic. Every one of the map's 236 Anvilrage
+        // Reservists (8901) has spawntimesecs = 0, so with Corpse.Decay.NORMAL at
+        // 60 each respawns about a minute after it dies (Creature::Update), and
+        // 232 of them stand in the Lyceum. Holding that room empty would take 3.9
+        // kills a second, sustained, at any DPS. The respawn is intended (AC #1773
+        // set it): the Lyceum is a room to cross under pressure on the way to its
+        // Flame Keepers and braziers, not one to clear, and a picker that walks to
+        // the nearest Reservist, kills it and picks its replacement never leaves.
+        //
+        // BOXED to the Lyceum (x 1275..1480, y -560..-305 — every one of the 232,
+        // with a few yards of margin; the room's north edge stops short of the
+        // Summoner's Tomb at y > -300). The four Reservists in the East Garrison,
+        // by the Shadowforge Lock at (655, 20), are ordinary trash and stay
+        // targets. Reservists that aggro are still fought; General Angerforge's
+        // summons (also 8901) are fought wherever he calls them.
+        { 230, 8901, 1275.0f, 1480.0f, -560.0f, -305.0f },  // Blackrock Depths — Anvilrage Reservist, Lyceum only
+
+        // --- Upper Blackrock Spire (229): the Rookery Whelps ------------------
+        //
+        // Class 2. A Rookery Whelp (10161, level 56-57, rank 0) exists only
+        // because a Rookery Egg hatched — a party member came within 1.5yd of
+        // it, or a Rookery Hatcher walked to it. The Rookery floor carries 149
+        // eggs and the party crosses it on a measured lane that keeps every egg
+        // >= 3.8yd off (RegisterBlackrockSpireRoute). A clear that walks
+        // OFF that lane to hunt a whelp steps among the eggs and hatches more:
+        // killing one is negative progress. Whelps that aggro the party are
+        // fought where they come, by the stock combat engine.
+        { 229, 10161 },  // Upper Blackrock Spire — Rookery Whelp (hatched from the eggs)
+
+        // --- Upper Blackrock Spire (229): Lord Victor Nefarius ----------------
+        //
+        // Class 1. Nefarius (10162) watches the stadium from the balcony at
+        // (163.2, -444, z 122.1), 11yd above the arena, with no script AI on map
+        // 229 — talk lines only. He cannot be
+        // reached, and the reachability filter should already drop him; this row
+        // is the cheap insurance that the stadium hold never sends the tank up a
+        // wall at him. Rend beside him stays a target: he is the bit-11 kill.
+        { 229, 10162 },  // Upper Blackrock Spire — Lord Victor Nefarius (balcony, unreachable)
     };
 }
 
 bool DcNeverTargetRegistry::IsNeverTarget(uint32 mapId, uint32 entry)
 {
     for (DcNeverTargetRow const& r : kRows)
-        if (r.mapId == mapId && r.entry == entry)
+        if (r.mapId == mapId && r.entry == entry && !r.HasRegion())
             return true;
+    return false;
+}
+
+bool DcNeverTargetRegistry::IsNeverTarget(uint32 mapId, uint32 entry, float x, float y)
+{
+    for (DcNeverTargetRow const& r : kRows)
+    {
+        if (r.mapId != mapId || r.entry != entry)
+            continue;
+        if (!r.HasRegion() || (x >= r.minX && x <= r.maxX && y >= r.minY && y <= r.maxY))
+            return true;
+    }
     return false;
 }

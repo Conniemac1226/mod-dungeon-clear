@@ -21,6 +21,7 @@ class Creature;
 class Map;
 struct DungeonBossInfo;
 struct EventStep;
+struct DungeonEvent;
 struct DungeonEventProgress;
 
 // Thin MovementAction subclass that every movement-issuing DC action derives
@@ -221,6 +222,12 @@ protected:
     // destination). Returns false once within cast range, so the caller falls
     // through to Drive and RunStep fires the GO.
     bool DriveUseItemOnGO(EventStep const& step);
+
+    // The event's pack leash (DungeonEvent::packLeash): true while the leader
+    // should stand and let the party close up before its next step. Counts the
+    // living members on the map outside the leash and runs DcPackLeash::Decide
+    // against the run state's two clocks; logs the hold and any watchdog release.
+    bool HoldForPackLeash(DungeonEvent const& ev);
 
     // Drive a UseItemAt step's APPROACH (the Culling of Stratholme's five plagued
     // grain crates, 48-81yd apart along 330yd of road). Owns the tick (returns
@@ -996,6 +1003,38 @@ public:
     }
     bool Execute(Event event) override;
 };
+
+// BLACKROCK DEPTHS' IRON HALL ONLY, every member, both engines: walk to a
+// fire-free stop rather than stand in the Ironhand Guardians' fire — in a fight,
+// the nearest one it can still hit its target from. Driven by
+// DungeonClearIronHallSafeSpotTrigger; the decision is DcIronHall::Decide.
+class DungeonClearIronHallSafeSpotAction : public DcMovementAction
+{
+public:
+    DungeonClearIronHallSafeSpotAction(PlayerbotAI* botAI)
+        : DcMovementAction(botAI, "dungeon clear iron hall safe spot")
+    {
+    }
+    bool Execute(Event event) override;
+};
+
+// BLACKROCK DEPTHS' LYCEUM ONLY, every member but the tank, combat engine: walk
+// back inside DcLyceumCloseUp::CLOSE_TO of the tank. Driven by
+// DungeonClearLyceumCloseUpTrigger; the decision is DcLyceumCloseUp::Decide.
+class DungeonClearLyceumCloseUpAction : public DcMovementAction
+{
+public:
+    DungeonClearLyceumCloseUpAction(PlayerbotAI* botAI)
+        : DcMovementAction(botAI, "dungeon clear lyceum close up")
+    {
+    }
+    bool Execute(Event event) override;
+};
+
+// The Iron Hall's follow-tank clamp: true while `bot` should hold the stop the hop
+// put it on (or is still walking to it) rather than follow `tank`. Inert off map
+// 230. Implemented with the rung, in DcIronHallSafeSpotAction.cpp.
+bool DcIronHallHoldsFollow(Player* bot, PlayerbotAI* botAI, Player* tank);
 
 // THE OCULUS ONLY, every member, both engines: the rider rung — an essence from
 // the givers, the mount, this member's drake on its lane, the landing, the

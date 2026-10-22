@@ -5,6 +5,7 @@
 
 #include "DcLootPolicy.h"
 
+#include "DcEncounterChests.h"
 #include "DungeonClearMath.h"
 #include "DungeonClearTuning.h"
 #include "Ai/Dungeon/DungeonClear/Settings/DcSettings.h"
@@ -270,16 +271,21 @@ bool DcLootPolicy::MaybeSkipUnworthyLoot(PlayerbotAI* botAI)
         else if (GameObject* go = botAI->GetGameObject(target.guid))
         {
             // A gameobject. With IgnoreChests on (the default) no world object
-            // is ever worth a detour — the bot stops only for corpses. With it
+            // is ever worth a detour — the bot stops only for corpses — EXCEPT an
+            // encounter chest, which holds a boss's whole reward (the Chest of the
+            // Seven was being skipped like trash; see DcEncounterChests). With it
             // off, stop only for real chests. Herbalism / mining gathering veins
             // are also chest-type gameobjects, but are gated by a profession-
             // skill lock — skillId carries that profession — so preserve valid
-            // nodes even when IgnoreChests is on. Every other non-chest
-            // gameobject (fishing hole, lever, quest object) remains excluded.
+            // nodes even when IgnoreChests is on. Encounter chests always keep
+            // (they hold boss rewards). Every other non-chest gameobject
+            // (fishing hole, lever, quest object) remains excluded.
             bool const isGatheringNode =
                 go->GetGoType() == GAMEOBJECT_TYPE_CHEST &&
                 (target.skillId == SKILL_HERBALISM || target.skillId == SKILL_MINING);
-            bool const isAllowedChest = !ignoreChests && go->GetGoType() == GAMEOBJECT_TYPE_CHEST;
+            bool const isEncounterChest = DcEncounterChests::IsEncounterChest(go->GetEntry());
+            bool const isAllowedChest = go->GetGoType() == GAMEOBJECT_TYPE_CHEST &&
+                (!ignoreChests || isEncounterChest);
             keep = isGatheringNode || isAllowedChest;
         }
         // else: loose item loot or an unresolvable guid -> not a corpse or chest.

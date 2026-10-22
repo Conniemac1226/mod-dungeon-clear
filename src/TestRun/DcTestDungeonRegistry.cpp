@@ -56,7 +56,13 @@ namespace DcTestDungeonRegistry
             { "rfd",             "Razorfen Downs",                129,  2592.55f,  1107.50f,   51.29f, 4.740f, 40, "" },
             { "uldaman",         "Uldaman",                        70,  -226.80f,    49.09f,  -46.03f, 1.390f, 44, "" },
             { "zf",              "Zul'Farrak",                    209,  1213.52f,   841.59f,    8.93f, 6.090f, 46, "" },
+            // Maraudon: the whole dungeon, then its three dungeon-finder wings at
+            // their lfg_dungeon_template entrances (see MaraudonEvents). The row's
+            // token IS the run wing; `maraudon` clears all of it.
             { "maraudon",        "Maraudon",                      349,  1019.69f,  -458.31f,  -43.43f, 0.310f, 48, "" },
+            { "mara-orange",     "Maraudon: Orange Crystals",     349,  1019.69f,  -458.31f,  -43.43f, 0.310f, 46, "Orange" },
+            { "mara-purple",     "Maraudon: Purple Crystals",     349,   752.91f,  -616.53f,  -33.11f, 1.370f, 46, "Purple" },
+            { "mara-pw",         "Maraudon: Pristine Waters",     349,   495.70f,    17.34f,  -96.31f, 3.119f, 48, "Pristine Waters" },
             { "st",              "The Temple of Atal'Hakkar",     109,  -319.24f,    99.90f, -131.85f, 3.190f, 52, "" },
             // Blackrock Depths is two dungeons on one map (see BlackrockDepthsEvents):
             // the Detention Block (Gerstahn -> Bael'Gar) and the Upper City
@@ -64,13 +70,21 @@ namespace DcTestDungeonRegistry
             // portal, as the dungeon finder does. The retired `brd` token aliases
             // to `brd-db`.
             { "brd-db",          "Blackrock Depths: Detention Block", 230, 456.93f,  34.09f,  -68.09f, 4.712f, 54, "Detention Block" },
-            { "brd-uc",          "Blackrock Depths: Upper City",  230,   456.93f,    34.09f,  -68.09f, 4.712f, 58, "Upper City" },
+            // The Upper City's no-progress net is wider than the global 600s: in
+            // the Lyceum a lost torch costs a 300s Flame Keeper respawn (plus the
+            // 330s torch-wait stall it is allowed) between two objective latches.
+            { "brd-uc",          "Blackrock Depths: Upper City",  230,   456.93f,    34.09f,  -68.09f, 4.712f, 58, "Upper City",
+              0, nullptr, {}, {}, 0, 0, /*noProgressS*/ 900 },
             // Blackrock Spire is two dungeons on one map (see BlackrockSpireEvents).
             // LBRS enters at the shared portal; UBRS drops the party inside the
             // shared hall facing the Dragonspine Door (GO 164725), where a UBRS
             // run starts in practice. The retired `brs` token aliases to `lbrs`.
+            // UBRS gets the Upper City's 900s no-progress budget: Emberseer's
+            // ~69s release after the altar and the stadium's five waves are
+            // legitimate quiet stretches between objective latches.
             { "lbrs",            "Lower Blackrock Spire",         229,    78.51f,  -225.04f,   49.84f, 5.100f, 58, "LBRS" },
-            { "ubrs",            "Upper Blackrock Spire",         229,   105.00f,  -320.00f,   65.50f, 0.041f, 60, "UBRS" },
+            { "ubrs",            "Upper Blackrock Spire",         229,   105.00f,  -320.00f,   65.50f, 0.041f, 60, "UBRS",
+              0, nullptr, {}, {}, 0, 0, /*noProgressS*/ 900 },
             { "dm-east",         "Dire Maul: East",               429,    44.45f,  -154.82f,   -2.71f, 0.000f, 58, "East" },
             { "dm-west",         "Dire Maul: West",               429,   -62.97f,   159.87f,   -3.46f, 3.148f, 60, "West" },
             { "dm-north",        "Dire Maul: North",              429,   255.25f,   -16.06f,   -2.59f, 4.700f, 60, "North" },

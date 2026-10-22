@@ -6,11 +6,15 @@
 #include "gtest/gtest.h"
 
 #include <algorithm>
+#include <cmath>
 
 #include "Ai/Dungeon/DungeonClear/Data/DungeonEventRegistry.h"
+#include "Ai/Dungeon/DungeonClear/Data/Events/DungeonEventTables.h"
 #include "Ai/Dungeon/DungeonClear/Overrides/BossRosterRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Overrides/ObjectiveHookRegistry.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonEventExecutor.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcLyceumCloseUpDecision.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcPackLeashDecision.h"
 
 namespace
 {
@@ -621,6 +625,257 @@ TEST(DungeonEventRegistryTest, BlackrockShadowforgeLockEventShape)
     EXPECT_EQ(e->steps[2].wantState, 1u);     // GO_STATE_READY == shut
     EXPECT_GT(e->steps[2].radius, 113.0f)
         << "the doors are 113yd from the lever — the scan must reach them";
+}
+
+// Blackrock Depths Hurley's Kegs (map 230 event 3): walk between the kegs, then
+// hook 52 uses all three kegs and gates on Hurley having arrived. A WaitForSpawn would be
+// the wrong gate — Hurley exists (invisible, immune) from spawn — so the hook is
+// both the click and the gate.
+TEST(DungeonEventRegistryTest, BlackrockHurleyKegsEventShape)
+{
+    namespace B = DcBlackrockDepths;
+    DungeonEvent const* e = DungeonEventRegistry::Find(B::MAP_ID, B::EVENT_HURLEY_KEGS);
+    ASSERT_NE(e, nullptr);
+    EXPECT_EQ(e->activation, EventActivation::Anchored);
+    EXPECT_EQ(e->orderIndex, 11u);  // Hurley's own bit
+    EXPECT_TRUE(e->required);
+
+    ASSERT_EQ(e->steps.size(), 2u);
+    EXPECT_EQ(e->steps[0].kind, EventStepKind::MoveTo);
+    EXPECT_FLOAT_EQ(e->steps[0].x, B::KEG_X);
+    EXPECT_FLOAT_EQ(e->steps[0].y, B::KEG_Y);
+    EXPECT_EQ(e->steps[1].kind, EventStepKind::Custom);
+    EXPECT_EQ(e->steps[1].hookId, B::HOOK_WAKE_HURLEY);
+    EXPECT_GT(e->steps[1].timeoutMs, 30000u) << "covers Hurley's walk to the floor";
+    for (EventStep const& st : e->steps)
+        EXPECT_NE(st.kind, EventStepKind::WaitForSpawn)
+            << "Hurley is alive from spawn; a spawn gate would pass before any keg is used";
+}
+
+// Blackrock Depths Ribbly's Challenge (map 230 event 4): one gossip, menu 1970
+// option 0, whose SmartAI turns Ribbly and his cronies hostile on the speaker. A
+// dead Ribbly completes the objective rather than stalling it.
+TEST(DungeonEventRegistryTest, BlackrockRibblyChallengeEventShape)
+{
+    namespace B = DcBlackrockDepths;
+    DungeonEvent const* e = DungeonEventRegistry::Find(B::MAP_ID, B::EVENT_RIBBLY);
+    ASSERT_NE(e, nullptr);
+    EXPECT_EQ(e->activation, EventActivation::Anchored);
+    EXPECT_EQ(e->orderIndex, 12u);  // Ribbly's reordered slot
+    ASSERT_EQ(e->steps.size(), 1u);
+    EXPECT_EQ(e->steps[0].kind, EventStepKind::Gossip);
+    EXPECT_EQ(e->steps[0].creatureEntry, B::NPC_RIBBLY);
+    EXPECT_EQ(e->steps[0].gossipOption, 0);
+    EXPECT_TRUE(e->steps[0].skipIfMissing);
+}
+
+// Blackrock Depths Rocknot's Ale Run (map 230 event 5): buy the ale from Plugger
+// (hook 54), hand it to Rocknot (hook 47), back off his walk, latch the Bar Door
+// reaching state 2 and then Phalanx turning hostile at it (hook 55). NOT an
+// instance-data garrison: TYPE_BAR reads SPECIAL (4) for the whole escort, which
+// already satisfies a `>= DONE (3)` gate.
+TEST(DungeonEventRegistryTest, BlackrockRocknotAleRunEventShape)
+{
+    namespace B = DcBlackrockDepths;
+    DungeonEvent const* e = DungeonEventRegistry::Find(B::MAP_ID, B::EVENT_ROCKNOT);
+    ASSERT_NE(e, nullptr);
+    EXPECT_EQ(e->activation, EventActivation::Anchored);
+    EXPECT_EQ(e->orderIndex, 13u);  // Phalanx's reordered slot
+    EXPECT_TRUE(e->persistent) << "the buy and the hand-in walk the tank off the anchor";
+    EXPECT_TRUE(e->required);
+
+    ASSERT_EQ(e->steps.size(), 6u);
+    EXPECT_EQ(e->steps[0].kind, EventStepKind::MoveTo);
+    EXPECT_FLOAT_EQ(e->steps[0].x, B::ROCKNOT_HOLD_X);
+    EXPECT_FLOAT_EQ(e->steps[0].y, B::ROCKNOT_HOLD_Y);
+    EXPECT_EQ(e->steps[1].kind, EventStepKind::Custom);
+    EXPECT_EQ(e->steps[1].hookId, B::HOOK_BUY_ROCKNOT_ALE);
+    EXPECT_EQ(e->steps[2].kind, EventStepKind::Custom);
+    EXPECT_EQ(e->steps[2].hookId, B::HOOK_START_ROCKNOT_ALE_RUN);
+    EXPECT_EQ(e->steps[3].kind, EventStepKind::MoveTo);
+    EXPECT_FLOAT_EQ(e->steps[3].x, B::ROCKNOT_HOLD_X);
+    EXPECT_FLOAT_EQ(e->steps[3].y, B::ROCKNOT_HOLD_Y);
+    EXPECT_EQ(e->steps[4].kind, EventStepKind::WaitForGameObjectState);
+    EXPECT_EQ(e->steps[4].goEntry, B::GO_BAR_DOOR);
+    EXPECT_EQ(e->steps[4].wantState, 2u);  // GO_STATE_ACTIVE_ALTERNATIVE, as npc_rocknot sets it
+    EXPECT_GE(e->steps[4].timeoutMs, 60000u) << "the escort alone is ~40s";
+    EXPECT_EQ(e->steps[5].kind, EventStepKind::Custom);
+    EXPECT_EQ(e->steps[5].hookId, B::HOOK_PHALANX_AT_DOOR)
+        << "the door breaks 7s before Phalanx even starts his run to it";
+    EXPECT_GE(e->steps[5].timeoutMs, 22000u) << "7s cork delay + his 15s run cap";
+    for (EventStep const& st : e->steps)
+        EXPECT_NE(st.instanceDataId, static_cast<int32>(B::TYPE_BAR))
+            << "TYPE_BAR is SPECIAL (>= DONE) for the whole escort";
+}
+
+// Blackrock Depths Tomb of the Seven (map 230 event 6): garrison Doom'rel's tier,
+// muster everyone inside (the gossip seals both doors), take his challenge, then
+// hold until TYPE_TOMB_OF_SEVEN is DONE. The hold carries the reset watch, whose
+// Restart rewinds the event to re-muster and re-challenge after the 15s reset.
+TEST(DungeonEventRegistryTest, BlackrockTombOfSevenEventShape)
+{
+    namespace B = DcBlackrockDepths;
+    DungeonEvent const* e = DungeonEventRegistry::Find(B::MAP_ID, B::EVENT_TOMB_OF_SEVEN);
+    ASSERT_NE(e, nullptr);
+    EXPECT_EQ(e->activation, EventActivation::Anchored);
+    EXPECT_EQ(e->orderIndex, 16u);  // Anger'rel's credit bit
+    EXPECT_TRUE(e->persistent);
+    EXPECT_TRUE(e->required);
+
+    ASSERT_EQ(e->steps.size(), 4u);
+    EXPECT_EQ(e->steps[0].kind, EventStepKind::MoveTo);
+    EXPECT_FLOAT_EQ(e->steps[0].x, B::TOMB_HOLD_X);
+    EXPECT_EQ(e->steps[1].kind, EventStepKind::Custom);
+    EXPECT_EQ(e->steps[1].hookId, B::HOOK_TOMB_MUSTER);
+    EXPECT_EQ(e->steps[2].kind, EventStepKind::Gossip);
+    EXPECT_EQ(e->steps[2].creatureEntry, B::NPC_DOOMREL);
+    EXPECT_EQ(e->steps[2].gossipOption, 0);
+    EXPECT_EQ(e->steps[3].kind, EventStepKind::MoveTo);
+    EXPECT_EQ(e->steps[3].instanceDataId, static_cast<int32>(B::TYPE_TOMB_OF_SEVEN));
+    EXPECT_EQ(e->steps[3].instanceDataMin, B::STATE_DONE);
+    EXPECT_EQ(e->steps[3].hookId, B::HOOK_TOMB_RESET_WATCH);
+    EXPECT_FLOAT_EQ(e->steps[3].radius, e->steps[0].radius)
+        << "walk-in and hold must agree on where the garrison is";
+    EXPECT_GE(e->steps[3].timeoutMs, 7u * 30000u) << "seven ghosts wake 30s apart";
+    EXPECT_TRUE(ObjectiveHookRegistry::Has(B::HOOK_TOMB_MUSTER));
+    EXPECT_TRUE(ObjectiveHookRegistry::Has(B::HOOK_TOMB_RESET_WATCH));
+}
+
+// The garrison has to be a spot every ghost can wake onto: each one picks the
+// nearest player within 130yd of its OWN spawn, and a ghost that wakes with
+// nobody in range sits idle out of combat until the 15s reset. And a member
+// standing inside the muster must be well inside the tomb's entrance door.
+TEST(DungeonEventRegistryTest, BlackrockTombGarrisonReachesEveryGhost)
+{
+    namespace B = DcBlackrockDepths;
+    for (B::TombGhost const& g : B::TOMB_GHOSTS)
+    {
+        float const d = std::hypot(g.x - B::TOMB_HOLD_X, g.y - B::TOMB_HOLD_Y);
+        // The whole muster circle, not just its centre.
+        EXPECT_LT(d + B::TOMB_MUSTER_RADIUS, B::TOMB_WAKE_RANGE) << "ghost " << g.entry << " at " << d << "yd";
+    }
+    // Entrance door 170576 at (1230.33, -205.21).
+    EXPECT_GT(std::hypot(1230.33f - B::TOMB_HOLD_X, -205.21f - B::TOMB_HOLD_Y), B::TOMB_MUSTER_RADIUS + 30.0f);
+}
+
+// Blackrock Depths Lyceum (map 230 events 7/8): one event per brazier, each
+// hunt -> loot -> walk -> light. The torch hook can Restart back to the hunt, so
+// the hunt and the hook MUST scan with the same radius (a hook that sees a keeper
+// the hunt does not would rewind forever), and every pool-1550 point must be
+// inside it from both stands.
+TEST(DungeonEventRegistryTest, BlackrockLyceumBrazierEventShapes)
+{
+    namespace B = DcBlackrockDepths;
+    // ax/ay: the event's anchor (its step 0) — the door for the south event, the
+    // south stand for the north one, never its own brazier. sx/sy: its brazier
+    // stand (step 3).
+    struct Want { uint32 eventId; uint32 lightHook; float ax, ay, sx, sy; uint32 completeGo; };
+    Want const wants[] = {
+        { B::EVENT_LYCEUM_SOUTH, B::HOOK_LIGHT_BRAZIER_S, B::LYCEUM_ENTRY_X, B::LYCEUM_ENTRY_Y,
+          B::BRAZIER_S_X, B::BRAZIER_S_Y, B::GO_BRAZIER_S },
+        { B::EVENT_LYCEUM_NORTH, B::HOOK_LIGHT_BRAZIER_N, B::BRAZIER_S_X, B::BRAZIER_S_Y,
+          B::BRAZIER_N_X, B::BRAZIER_N_Y, B::GO_GOLEM_DOOR_N },
+    };
+    for (Want const& w : wants)
+    {
+        DungeonEvent const* e = DungeonEventRegistry::Find(B::MAP_ID, w.eventId);
+        ASSERT_NE(e, nullptr) << w.eventId;
+        EXPECT_EQ(e->activation, EventActivation::Anchored);
+        EXPECT_EQ(e->orderIndex, 17u);  // Magmus's bit
+        EXPECT_TRUE(e->persistent);
+        EXPECT_FALSE(e->drivesInCombat) << "the in-combat rung is conditional-only";
+        EXPECT_EQ(e->completeGoEntry, w.completeGo);
+        EXPECT_EQ(e->completeGoState, B::GO_STATE_LIT_OR_OPEN);
+
+        ASSERT_GE(e->steps.size(), 5u);
+        // Step 0 arms the persistence sticky (a leading MoveTo is the only shape
+        // IsPersistentAnchoredEventActive counts as started); led by the hunt, the
+        // tank ping-ponged on the arriveRadius ring (tr-20261018-093304-1). Its
+        // radius is the hunt's scan, so a Restart rewind is Done on the spot.
+        EXPECT_EQ(e->steps[0].kind, EventStepKind::MoveTo);
+        EXPECT_FLOAT_EQ(e->steps[0].x, w.ax);
+        EXPECT_FLOAT_EQ(e->steps[0].y, w.ay);
+        EXPECT_FLOAT_EQ(e->steps[0].radius, B::LYCEUM_KEEPER_SCAN);
+        EXPECT_EQ(e->steps[0].hookId, 0u) << "a plain MoveTo, never a garrison";
+        EXPECT_EQ(e->steps[0].creatureEntry, 0u) << "a plain MoveTo, never a garrison";
+        EXPECT_EQ(e->steps[1].kind, EventStepKind::KillCreature);
+        EXPECT_TRUE(e->steps[1].engage);
+        EXPECT_EQ(e->steps[1].creatureEntry, B::NPC_FLAME_KEEPER);
+        EXPECT_FLOAT_EQ(e->steps[1].radius, B::LYCEUM_KEEPER_SCAN);
+        EXPECT_EQ(e->steps[2].kind, EventStepKind::Custom);
+        EXPECT_EQ(e->steps[2].hookId, B::HOOK_GATHER_TORCH);
+        EXPECT_EQ(e->steps[2].timeoutMs, B::TORCH_WAIT_MS);
+        EXPECT_GT(B::TORCH_WAIT_MS, 300000u) << "one pool respawn plus slack";
+        EXPECT_EQ(e->steps[3].kind, EventStepKind::MoveTo);
+        EXPECT_FLOAT_EQ(e->steps[3].x, w.sx);
+        EXPECT_FLOAT_EQ(e->steps[3].y, w.sy);
+        EXPECT_EQ(e->steps[4].kind, EventStepKind::Custom);
+        EXPECT_EQ(e->steps[4].hookId, w.lightHook);
+        for (EventStep const& st : e->steps)
+        {
+            EXPECT_NE(st.kind, EventStepKind::ClearRadius) << "the Lyceum refills; it is never cleared";
+            if (st.kind == EventStepKind::Custom)
+                EXPECT_TRUE(ObjectiveHookRegistry::Has(st.hookId)) << st.hookId;
+        }
+        for (B::PoolPoint const& p : B::FLAME_KEEPER_POINTS)
+        {
+            EXPECT_LT(std::hypot(p.x - w.sx, p.y - w.sy) + 15.0f, B::LYCEUM_KEEPER_SCAN)
+                << "keeper point (" << p.x << ", " << p.y << ") is outside the hunt from event " << w.eventId;
+            EXPECT_LT(std::hypot(p.x - w.ax, p.y - w.ay) + 15.0f, B::LYCEUM_KEEPER_SCAN)
+                << "keeper point (" << p.x << ", " << p.y << ") is outside the hunt from the anchor of event "
+                << w.eventId;
+        }
+
+        // Move as one: the tank holds between fights for a strung-out party.
+        EXPECT_FLOAT_EQ(e->packLeash, B::LYCEUM_PACK_LEASH);
+        // The completion scan is room-wide, so a fight that drags the tank off
+        // its stand cannot lose the brazier (tr-20261018-190617-15 stalled at
+        // 102yd from a lit one with a 40yd scan).
+        EXPECT_FLOAT_EQ(e->completeGoRadius, B::LYCEUM_ROOM_SCAN);
+    }
+    EXPECT_GT(B::LYCEUM_PACK_LEASH, 15.0f) << "a ranged healer trails the tank by 15-20yd";
+    EXPECT_LT(B::LYCEUM_PACK_LEASH, 30.0f);
+
+    // The room box holds everything the two events stand on or hunt, and the
+    // room scan reaches the far brazier from anywhere in it.
+    auto inBox = [&](float x, float y) {
+        return x >= B::LYCEUM_BOX_X_MIN && x <= B::LYCEUM_BOX_X_MAX &&
+               y >= B::LYCEUM_BOX_Y_MIN && y <= B::LYCEUM_BOX_Y_MAX;
+    };
+    EXPECT_TRUE(inBox(B::BRAZIER_S_X, B::BRAZIER_S_Y));
+    EXPECT_TRUE(inBox(B::BRAZIER_N_X, B::BRAZIER_N_Y));
+    EXPECT_TRUE(inBox(B::LYCEUM_ENTRY_X, B::LYCEUM_ENTRY_Y)) << "the south anchor is inside the room";
+    EXPECT_GE(B::LYCEUM_ENTRY_Z, B::LYCEUM_BOX_Z_MIN);
+    EXPECT_LE(B::LYCEUM_ENTRY_Z, B::LYCEUM_BOX_Z_MAX);
+    // Just past the Lyceum door (1311.48, -343.07), on the room side.
+    EXPECT_LT(std::hypot(B::LYCEUM_ENTRY_X - 1311.48f, B::LYCEUM_ENTRY_Y + 343.07f), 15.0f);
+    EXPECT_LT(B::LYCEUM_ENTRY_Y, -343.07f);
+    // The hunt starts at the door: its scan is room-wide.
+    EXPECT_FLOAT_EQ(B::LYCEUM_KEEPER_SCAN, B::LYCEUM_ROOM_SCAN);
+    for (B::PoolPoint const& p : B::FLAME_KEEPER_POINTS)
+    {
+        EXPECT_TRUE(inBox(p.x, p.y)) << p.x << ", " << p.y;
+        EXPECT_GE(p.z, B::LYCEUM_BOX_Z_MIN);
+        EXPECT_LE(p.z, B::LYCEUM_BOX_Z_MAX);
+    }
+    struct Pt { float x, y; };
+    Pt const targets[] = { { 1330.14f, -508.86f },    // south brazier 174744
+                           { 1431.13f, -508.94f },    // north brazier 174745
+                           { 1389.55f, -555.85f } };  // Golem Room North 170573
+    Pt const corners[] = { { B::LYCEUM_BOX_X_MIN, B::LYCEUM_BOX_Y_MIN }, { B::LYCEUM_BOX_X_MIN, B::LYCEUM_BOX_Y_MAX },
+                           { B::LYCEUM_BOX_X_MAX, B::LYCEUM_BOX_Y_MIN }, { B::LYCEUM_BOX_X_MAX, B::LYCEUM_BOX_Y_MAX } };
+    for (Pt const& t : targets)
+        for (Pt const& c : corners)
+            EXPECT_LT(std::hypot(t.x - c.x, t.y - c.y), B::LYCEUM_ROOM_SCAN)
+                << "(" << t.x << ", " << t.y << ") is out of the room scan from (" << c.x << ", " << c.y << ")";
+
+    // The north event confirms on the Golem door it walks through.
+    DungeonEvent const* n = DungeonEventRegistry::Find(B::MAP_ID, B::EVENT_LYCEUM_NORTH);
+    ASSERT_NE(n, nullptr);
+    ASSERT_EQ(n->steps.size(), 6u);
+    EXPECT_EQ(n->steps[5].kind, EventStepKind::WaitForGameObjectState);
+    EXPECT_EQ(n->steps[5].goEntry, B::GO_GOLEM_DOOR_N);
+    EXPECT_EQ(n->steps[5].wantState, B::GO_STATE_LIT_OR_OPEN);
 }
 
 // Deadmines Defias Cannon: walk to the cannon, fire it (Custom hook 2 casts the
@@ -1678,4 +1933,139 @@ TEST(DungeonEventBuilderTest, KarazhanUrnClickCarriesTheBlackenedUrn)
     EXPECT_EQ(click.kind, EventStepKind::UseGameObject);
     EXPECT_EQ(click.goEntry, 194092u);
     EXPECT_EQ(click.itemId, 24140u);
+}
+
+// --- DcPackLeash: an event's between-fights pack hold ------------------------
+TEST(DcPackLeashTest, FormedUpPartyWalksAndClearsBothClocks)
+{
+    DcPackLeash::Inputs in;
+    in.outside = 0;
+    in.nowMs = 50000;
+    in.holdSinceMs = 40000;
+    in.releasedAtMs = 45000;
+    in.holdBudgetMs = 20000;
+    in.walkWindowMs = 6000;
+    DcPackLeash::Verdict const v = DcPackLeash::Decide(in);
+    EXPECT_FALSE(v.hold);
+    EXPECT_FALSE(v.timedOut);
+    EXPECT_EQ(v.holdSinceMs, 0u);
+    EXPECT_EQ(v.releasedAtMs, 0u);
+}
+
+TEST(DcPackLeashTest, StragglerStartsAHoldAndKeepsItsClock)
+{
+    DcPackLeash::Inputs in;
+    in.outside = 1;
+    in.nowMs = 10000;
+    in.holdBudgetMs = 20000;
+    in.walkWindowMs = 6000;
+    DcPackLeash::Verdict v = DcPackLeash::Decide(in);
+    EXPECT_TRUE(v.hold);
+    EXPECT_EQ(v.holdSinceMs, 10000u);
+
+    in.nowMs = 25000;
+    in.holdSinceMs = v.holdSinceMs;
+    v = DcPackLeash::Decide(in);
+    EXPECT_TRUE(v.hold);
+    EXPECT_EQ(v.holdSinceMs, 10000u) << "the hold keeps its original clock";
+}
+
+// A wedged member costs a duty cycle, never the run: hold for the budget, walk
+// for the window, then hold again with a fresh budget.
+TEST(DcPackLeashTest, WatchdogIsADutyCycleNotALatch)
+{
+    DcPackLeash::Inputs in;
+    in.outside = 1;
+    in.holdBudgetMs = 20000;
+    in.walkWindowMs = 6000;
+    in.holdSinceMs = 10000;
+    in.nowMs = 30000;
+    DcPackLeash::Verdict v = DcPackLeash::Decide(in);
+    EXPECT_FALSE(v.hold);
+    EXPECT_TRUE(v.timedOut);
+    EXPECT_EQ(v.releasedAtMs, 30000u);
+    EXPECT_EQ(v.holdSinceMs, 0u);
+
+    in.holdSinceMs = v.holdSinceMs;
+    in.releasedAtMs = v.releasedAtMs;
+    in.nowMs = 33000;
+    v = DcPackLeash::Decide(in);
+    EXPECT_FALSE(v.hold) << "inside the walk window";
+    EXPECT_FALSE(v.timedOut) << "the release is reported once";
+    EXPECT_EQ(v.releasedAtMs, 30000u);
+
+    in.holdSinceMs = v.holdSinceMs;
+    in.releasedAtMs = v.releasedAtMs;
+    in.nowMs = 36000;
+    v = DcPackLeash::Decide(in);
+    EXPECT_TRUE(v.hold) << "window over: the leash re-arms";
+    EXPECT_EQ(v.holdSinceMs, 36000u) << "with a fresh budget";
+}
+
+TEST(DcPackLeashTest, ClocksSurviveTheMsTimerWrap)
+{
+    DcPackLeash::Inputs in;
+    in.outside = 2;
+    in.holdBudgetMs = 20000;
+    in.walkWindowMs = 6000;
+    in.holdSinceMs = 0xFFFFF000u;  // 4096ms before the wrap
+    in.nowMs = 1000;               // 5096ms elapsed
+    DcPackLeash::Verdict v = DcPackLeash::Decide(in);
+    EXPECT_TRUE(v.hold);
+    EXPECT_EQ(v.holdSinceMs, 0xFFFFF000u);
+
+    in.nowMs = 16000;  // 20096ms elapsed
+    v = DcPackLeash::Decide(in);
+    EXPECT_TRUE(v.timedOut);
+}
+
+// Blackrock Depths' Lyceum close-up (DcLyceumCloseUp): in a fight inside the room,
+// every member but the tank stands within LEASH of it. Begun past LEASH, the walk
+// runs to CLOSE_TO; a member already inside LEASH at rest is left alone.
+TEST(DcLyceumCloseUpTest, AMemberInsideTheLeashIsLeftWhereItStands)
+{
+    using namespace DcLyceumCloseUp;
+    EXPECT_FALSE(Decide(1340.0f, -450.0f, 1340.0f, -440.0f, /*closing*/ false).close);  // 10yd
+    EXPECT_FALSE(Decide(1340.0f, -455.0f, 1340.0f, -440.0f, /*closing*/ false).close);  // 15yd, on the line
+}
+
+TEST(DcLyceumCloseUpTest, AMemberPastTheLeashWalksBackOnItsOwnSideOfTheTank)
+{
+    using namespace DcLyceumCloseUp;
+    Verdict const v = Decide(1340.0f, -465.0f, 1340.0f, -440.0f, /*closing*/ false);  // 25yd south
+    ASSERT_TRUE(v.close);
+    EXPECT_NEAR(Dist2d(v.x, v.y, 1340.0f, -440.0f), AIM, 0.01f);
+    EXPECT_LT(v.y, -440.0f) << "stays south of the tank, never walks through the adds";
+    EXPECT_NEAR(v.x, 1340.0f, 0.01f);
+}
+
+TEST(DcLyceumCloseUpTest, AWalkBackRunsToCloseToNotJustInsideTheLeash)
+{
+    using namespace DcLyceumCloseUp;
+    // 12yd: inside LEASH, but a member already closing keeps walking...
+    EXPECT_TRUE(Decide(1340.0f, -452.0f, 1340.0f, -440.0f, /*closing*/ true).close);
+    // ...until it is inside CLOSE_TO.
+    EXPECT_FALSE(Decide(1340.0f, -448.0f, 1340.0f, -440.0f, /*closing*/ true).close);
+    EXPECT_LT(AIM, CLOSE_TO) << "arriving reads closed-up at once";
+    EXPECT_LT(CLOSE_TO, LEASH) << "hysteresis";
+}
+
+TEST(DcLyceumCloseUpTest, ChasingAStrayOutsideTheLeashIsRefused)
+{
+    using namespace DcLyceumCloseUp;
+    EXPECT_FALSE(ChaseLeavesThePack(1345.0f, -440.0f, 1340.0f, -440.0f));
+    EXPECT_TRUE(ChaseLeavesThePack(1365.0f, -440.0f, 1340.0f, -440.0f));
+}
+
+TEST(DcLyceumCloseUpTest, TheRoomIsTheLyceumBoxAndBothAnchorsAreInIt)
+{
+    namespace B = DcBlackrockDepths;
+    using DcLyceumCloseUp::InRoom;
+    EXPECT_TRUE(InRoom(B::LYCEUM_ENTRY_X, B::LYCEUM_ENTRY_Y, B::LYCEUM_ENTRY_Z));
+    EXPECT_TRUE(InRoom(B::BRAZIER_S_X, B::BRAZIER_S_Y, B::BRAZIER_S_Z));
+    EXPECT_TRUE(InRoom(B::BRAZIER_N_X, B::BRAZIER_N_Y, B::BRAZIER_N_Z));
+    EXPECT_FALSE(InRoom(B::MAGMUS_X, B::MAGMUS_Y, B::MAGMUS_Z)) << "the Iron Hall is not the Lyceum";
+    EXPECT_FALSE(InRoom(B::TOMB_HOLD_X, B::TOMB_HOLD_Y, B::TOMB_HOLD_Z));
+    // The fight rule is tighter than the walking one.
+    EXPECT_LT(DcLyceumCloseUp::LEASH, B::LYCEUM_PACK_LEASH);
 }

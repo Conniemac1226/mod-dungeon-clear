@@ -21,6 +21,15 @@ enum class ObjectiveArriveResult
     Done,     // objective satisfied — latch it cleared and advance the clear
     Running,  // still working (e.g. mid-interaction) — hold and call again next tick
     Blocked,  // cannot complete unaided (needs the human) — stall the run
+    // The encounter reset (or the work this event already did was undone)
+    // behind the party — REWIND the event to step 0 and run it again. Only
+    // meaningful from inside an event (a Custom step, or a garrison's
+    // WhileHolding hook, which otherwise has its result ignored); a legacy
+    // on-arrival hook treats it as Running. The same rewind the boss-state
+    // gate's RestartOnBossState performs, for encounters whose reset shows in
+    // something other than a boss state: Blackrock Depths' Tomb of the Seven
+    // (instance data) and Lyceum torches (an item that expires in the bags).
+    Restart,
 };
 
 // Optional per-objective behaviour run when the tank reaches a travel objective
@@ -90,6 +99,18 @@ inline constexpr uint32 DC_HOOK_RAID_MUSTER = 40;
 //
 // The Black Morass (map 269) — the wave driver. See BlackMorassDriver.cpp.
 void RegisterBlackMorassHooks(ObjectiveHookRegistry::HookTable& out);
+
+// Blackrock Depths (map 230) — the Upper City set pieces: Rocknot's ale run,
+// Hurley's kegs, the Tomb of the Seven and the Lyceum braziers (ids 47-53). They
+// live beside the events in BlackrockDepthsEvents.cpp, which owns the geometry
+// and the instance-data constants they read.
+void RegisterBlackrockDepthsHooks(ObjectiveHookRegistry::HookTable& out);
+
+// Upper Blackrock Spire (map 229) — the Dragonspine Door, the hall runes, the
+// Blackrock Altar and the stadium (ids 56-61). They live beside the events in
+// BlackrockSpireEvents.cpp, which owns the geometry and the instance constants
+// (and the mod-individual-progression layering) they read.
+void RegisterBlackrockSpireHooks(ObjectiveHookRegistry::HookTable& out);
 
 // Stratholme (map 329) — ziggurat crystal repair (ids 44-46). Lives beside the
 // ziggurat events in StratholmeEvents.cpp, which owns the chamber geometry.

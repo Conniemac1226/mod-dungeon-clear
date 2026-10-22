@@ -16,12 +16,14 @@
 #include "Player.h"
 #include "Playerbots.h"
 #include "Position.h"
+#include "ReachTargetActions.h"
 #include "Ai/Dungeon/DungeonClear/Data/Events/DungeonEventTables.h"
 #include "Ai/Dungeon/DungeonClear/DcPullContext.h"
 #include "Ai/Dungeon/DungeonClear/Settings/DcSettings.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcBossStandDown.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcEscapeLeap.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcFlightLeg.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcLyceumCloseUpDecision.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcOculusPlan.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcSmartRest.h"
 #include "Ai/Dungeon/DungeonClear/Util/DungeonClearUtil.h"
@@ -229,6 +231,90 @@ static bool OculusDrakeAttackUnsafe(Player* bot, PlayerbotAI* botAI, AiObjectCon
         }
     }
     return target && !DcFlightLeg::IsFlyingSafe(target);
+}
+
+// BLACKROCK DEPTHS' LYCEUM: no stock reach / chase toward a target further than
+// DcLyceumCloseUp::LEASH from the tank, for any member but the tank, while both
+// stand in the room. The other half of the close-up rung — see
+// DcLyceumCloseUpDecision.h. ReachTargetAction is every stock combat chase
+// (reach melee / reach spell / reach party member to heal all end in ChaseTo).
+static bool LyceumChaseLeavesThePack(Player* bot, AiObjectContext* context, Action* action)
+{
+    if (bot->GetMapId() != DcBlackrockDepths::MAP_ID)
+        return false;
+    auto* reach = dynamic_cast<ReachTargetAction*>(action);
+    if (!reach || !DcLyceumCloseUp::InRoom(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()))
+        return false;
+    Player* tank = context->GetValue<Player*>(DcKey::PartyTank)->Get();
+    if (!tank || tank == bot || !tank->IsAlive() || tank->GetInstanceId() != bot->GetInstanceId() ||
+        DcLeaderSignal::IsDungeonClearLeader(bot) ||
+        !DcLyceumCloseUp::InRoom(tank->GetPositionX(), tank->GetPositionY(), tank->GetPositionZ()))
+        return false;
+    Unit* target = context->GetValue<Unit*>(reach->GetTargetName())->Get();
+    return target && DcLyceumCloseUp::ChaseLeavesThePack(target->GetPositionX(), target->GetPositionY(),
+                                                         tank->GetPositionX(), tank->GetPositionY());
+}
+
+// ROOM-AGGRO PRE-CLEAR: no stock reach / chase toward a target standing inside the
+// sleeping boss's wake sphere, for any member, tank included. The room clear keeps
+// every DC driver out of that sphere, but a fight with room trash runs on the stock
+// combat movers, and those follow a mob wherever it stands. Live
+// (tr-20261018-230400-9): a pull that woke a Senator pack carried the fight south
+// until the tank stood 22yd from Emperor Dagran Thaurissan; he engaged, his
+// CallForHelp woke the room, and four of five died. A mob in there that cannot be
+// chased is shot by the ranged or walks out to the melee — and the boss sleeps.
+//
+// The ban rules on where the chase ENDS, not where the target stands: a caster's
+// `reach spell` stops at spell range on its own side, often well outside the
+// sphere. Testing the target's spot banned the ranged too, and a planted mob in
+// there (the throne-side Doomforge Dragoon, no combat movement) then could never
+// be killed — sk-20261019-105358 held three runs 900s on it at 46-98% HP.
+//
+// The GAP-CLOSERS too: Charge, Intercept, Feral Charge (bear and cat) are spell
+// casts (CastReachTargetSpellAction), not ReachTargetAction, and they cross the
+// same yards in one jump. Live (sk-20261019-003633, eight throne-room wipes, the
+// chase ban already in place): `reach melee` zeroed, then `feral charge - bear` /
+// `charge` landed the tank on a Senator or the planted Dragoon by the throne and
+// the Emperor engaged within three seconds, 16-22yd away.
+static bool ChaseWakesSleepingRoomBoss(Player* bot, AiObjectContext* context, Action* action)
+{
+    std::string targetName;
+    // How far short of the target the chase stops (ChaseEndToBoss). Only `reach
+    // spell` stops at range; melee and the leaps end on the target.
+    float range = 0.0f;
+    if (auto* reach = dynamic_cast<ReachTargetAction*>(action))
+    {
+        targetName = reach->GetTargetName();
+        if (action->getName() == "reach spell")
+            if (PlayerbotAI* const botAI = GET_PLAYERBOT_AI(bot))
+                range = botAI->GetRange("spell");
+    }
+    else if (auto* leap = dynamic_cast<CastReachTargetSpellAction*>(action))
+        targetName = leap->GetTargetName();
+    else
+        return false;
+    Player* tank = context->GetValue<Player*>(DcKey::PartyTank)->Get();
+    if (!tank || !tank->IsAlive() || tank->GetInstanceId() != bot->GetInstanceId())
+        return false;
+    PlayerbotAI* tankAI = GET_PLAYERBOT_AI(tank);
+    if (!tankAI)
+        return false;  // a real-player tank runs no room clear
+    AiObjectContext* tankCtx = tankAI->GetAiObjectContext();
+    if (!DcTargeting::IsRoomClearActive(tank, tankCtx))
+        return false;
+    std::optional<DungeonBossInfo> const next =
+        tankCtx->GetValue<std::optional<DungeonBossInfo>>(DcKey::NextDungeonBoss)->Get();
+    if (!next.has_value())
+        return false;
+    Creature* const boss = DcTargeting::GetLiveBoss(tank, tankCtx, next->entry);
+    Unit* const target = context->GetValue<Unit*>(targetName)->Get();
+    if (!boss || !target || target == boss)
+        return false;
+    float const chaseEnd = DungeonClearMath::ChaseEndToBoss(
+        bot->GetPositionX(), bot->GetPositionY(), target->GetPositionX(), target->GetPositionY(),
+        boss->GetPositionX(), boss->GetPositionY(), range);
+    return DungeonClearMath::ChaseWakesSleepingBoss(
+        chaseEnd, DcEngageGeometry::RoomAggroSphereRadius(tank, boss), boss->IsInCombat());
 }
 
 float DungeonClearMultiplier::GetValue(Action* action)
@@ -497,6 +583,26 @@ float DungeonClearCombatMultiplier::GetValue(Action* action)
     // Order of tests: the prefix compare is paid only after the cheap
     // exact-compare fast path fails, and IsActive itself is raid-gated +
     // leader-memoised, so dungeon runs pay one Map::IsRaid() at most.
+    // Blink / Disengage — see DcEscapeLeap. The ban has to live HERE: both are
+    // fired by combat-engine triggers ("enemy too close for spell/auto shot"), so
+    // the non-combat multiplier's copy never once met them. Live,
+    // tp-20261018-211235-1 cast 314 of them across eight runs with that copy in
+    // place, and 29 landed the leaper on a fresh Reservist within six seconds.
+    // Above the fast path (both are stock actions). A raid encounter's stand-down
+    // hands the fight to the playerbots raid strategy, which rules on its own leaps.
+    if (DcEscapeLeap::IsBanned(name) && AI_VALUE(Player*, DcKey::PartyTank) &&
+        !DcBossStandDown::IsActive(bot))
+        return 0.0f;
+
+    // The Lyceum's close-up, chase half — see LyceumChaseLeavesThePack above.
+    if (LyceumChaseLeavesThePack(bot, context, action))
+        return 0.0f;
+
+    // The sleeping room-aggro boss's sphere — see ChaseWakesSleepingRoomBoss above.
+    // A raid encounter's stand-down hands the fight to the raid strategy.
+    if (ChaseWakesSleepingRoomBoss(bot, context, action) && !DcBossStandDown::IsActive(bot))
+        return 0.0f;
+
     bool const isDcAction = name.compare(0, 13, "dungeon clear") == 0;
     if (!isDcAction && name != "drop target")
         return 1.0f;

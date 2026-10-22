@@ -271,8 +271,25 @@ namespace DcRel
     // new tie (all three are map-partitioned anyway). The multiplier clamp does
     // the rest: see KaraChessClamp.
     inline constexpr float KzChess                = 64.25f; // any role: the Karazhan chess seat (and conductor)
+    // BLACKROCK DEPTHS' IRON HALL ONLY, every member, BOTH engines: never stop in
+    // the Ironhand Guardians' fire — hop to the next fire-free stop instead.
+    // Above every stock combat mover (MoveChase ~30, reach ~20), the DC role
+    // repositions (heal 41 / assist 35 / regroup 29) and the follow (25), each
+    // of which can park a bot in a circle; below the camp owners (60), which
+    // never contend because the hall is a fight-in-place zone with no camp.
+    // Map-partitioned from HorStayAhead (56) and the vacate (55): the hall's rows
+    // carry no vacateRadius. See DungeonClearIronHallSafeSpot{Trigger,Action}.
+    inline constexpr float IronHallSafeSpot       = 57.0f; // any role: off the BRD Iron Hall fire, stop to stop
     inline constexpr float HorStayAhead           = 56.0f; // any role: forward, with the party and out of his ring
     inline constexpr float HazardVacate           = 55.0f; // any role: clear an unfightable hazard's pulse
+    // Blackrock Depths' Lyceum only: any member but the tank, in a fight inside
+    // the room, more than 15yd from the tank walks back to it. Above every mover
+    // that would hold it out there — stock MoveChase / reach (~30), the reach-heal
+    // (40), the heal reposition (41) and the DC assist / regroup (35 / 29) — and
+    // below the hazard vacate (55), so standing in something that hurts still
+    // wins. Map- and room-partitioned from the Iron Hall (57) and HoR (56) rungs.
+    // See DungeonClearLyceumCloseUp{Trigger,Action}.
+    inline constexpr float LyceumCloseUp          = 44.0f; // any member: inside 15yd of the tank, Lyceum fights
     inline constexpr float AssistCampCombat       = 35.0f; // follower: onto the leader's pack
     // Leader-only, combat side of the KillCreature-engage objective. A stealthed
     // sapper (Shattered Halls' Shattered Hand Assassins) flags the party into combat

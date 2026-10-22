@@ -342,6 +342,19 @@ namespace DungeonClearMath
                                  std::uint32_t stampMs, std::uint32_t now,
                                  std::uint32_t holdMs);
 
+    // The boss engage's last resort (pure): tag the boss from the standoff because
+    // the walk-in is refused. The at-boss trigger fires the engage once the party is
+    // ready, and the engage walks the tank at the boss; when stock finds no route
+    // there that walk is refused every tick, the engage returns false, Advance's
+    // engage hold parks the tank and clears the stall — and nothing ever pulls
+    // (sk-20261019-003633 tr-…-12: 4063 refusals in 16 minutes at 30.5yd from
+    // Emperor Dagran Thaurissan on his raised throne, party ready throughout, until
+    // the 900s watchdog). True once the walk has been refused for `graceMs` with the
+    // tank standing still, the boss in line of sight and within `maxRange`.
+    bool ShouldTagBossFromStandoff(bool walkRefused, bool botMoving, bool inLos, float dist,
+                                   float maxRange, std::uint32_t refusedSinceMs,
+                                   std::uint32_t now, std::uint32_t graceMs);
+
     // Engage-trash sticky staleness (pure). The sticky pins a walk-in target so the
     // pick does not bounce between two equidistant corridor mobs, and it never
     // releases on distance. But the trigger fires on its OWN fresh pick: once the
@@ -614,6 +627,12 @@ namespace DungeonClearMath
     // walks away from a stationary holder only makes the distance WORSE. The first
     // sample arms the watchdog and counts as closing, so the streak clock in
     // ShouldBreakStuckCombat only starts once the holder has demonstrably stopped.
+    //
+    // `holderDist` is the distance to the nearest holder the bot can SEE (+inf when
+    // none is in LOS), not to the nearest holder outright. "In engage range is a
+    // fight" assumes the two sides can trade blows; a holder 14yd away on the floor
+    // below cannot be targeted by any playerbots action (AttackersValue requires
+    // LOS), so it is only a fight while it is CLOSING (tr-20261018-101829-1).
     inline bool IsHolderProsecutingFight(bool haveHolder, float holderDist,
                                          float engageRange, bool closing)
     {
@@ -1321,6 +1340,27 @@ namespace DungeonClearMath
         return !alreadySpent && std::fabs(dz) > levelTolerance;
     }
 
+    // Verdict of a stock path probe to a VERTICALLY SEPARATED boss: is the bot in
+    // the boss's room / on its floor? `routed` = the probe returned NORMAL or
+    // INCOMPLETE (stock had an opinion), `normal` = NORMAL, `endOnLevel` = the
+    // route ends on the boss's level, `los` = the bot can see the boss.
+    //
+    // A route that exists answers the question by its length, as before. NO route
+    // at all (PATHFIND_NOPATH) answers nothing: the probe cannot tell "a floor up"
+    // from "on a dais the mesh doesn't join", so the question falls back to sight.
+    // A boss a storey away is behind a floor slab; one on a throne is in plain view.
+    // Treating NOPATH as "a floor away" parked tr-20261018-101829-3 5.1yd under
+    // Emperor Thaurissan's throne for 7 minutes: not at the boss, not in his room
+    // (so no room clear and no pre-clear hold), and Advance pursued a destination
+    // stock refused every tick.
+    inline bool ProbeSaysSameFloor(bool routed, bool normal, bool endOnLevel,
+                                   float pathLength, float range, bool los)
+    {
+        if (!routed)
+            return los;
+        return normal && endOnLevel && pathLength <= range;
+    }
+
     struct RejoinProgressVerdict
     {
         bool  progressed = false;  // the gap set a new best: re-entry is working
@@ -1520,21 +1560,34 @@ namespace DungeonClearMath
     // guest whose best lane's walk ran inside the next formation's reach
     // (tr-20260927-210901-8); pulling the packs that CAN be taken cleanly first
     // clears the room outside-in and opens lanes for the rest.
+    //
+    // `last` marks the boss-side ring (RoomAggroBoss::bossSideLastRadius): a ring
+    // unit is never picked while any unit outside the ring is alive, refused or
+    // not. The ring's penalty alone lost to the refusals — sk-20261019-105358, 13
+    // of 14 unplanned Emperor wakes: every balcony pack refused "no clean lane",
+    // the unrefused ring packs became the only pick, and the walk to them woke the
+    // throne with both balconies still up. A refused pack outside the ring goes as
+    // the last resort first; the ring follows, unrefused before refused.
     inline int PickRoomTrashIndex(std::vector<float> const& dist,
-                                  std::vector<bool> const& refused)
+                                  std::vector<bool> const& refused,
+                                  std::vector<bool> const& last = {})
     {
+        // Tier: 0 outside the ring unrefused, 1 outside refused, 2 ring unrefused,
+        // 3 ring refused. Lowest tier wins, nearest within it.
         int best = -1;
-        int bestAny = -1;
+        int bestTier = 4;
         for (std::size_t i = 0; i < dist.size(); ++i)
         {
-            int const idx = static_cast<int>(i);
-            if (bestAny < 0 || dist[i] < dist[bestAny])
-                bestAny = idx;
             bool const isRefused = i < refused.size() && refused[i];
-            if (!isRefused && (best < 0 || dist[i] < dist[best]))
-                best = idx;
+            bool const isLast = i < last.size() && last[i];
+            int const tier = (isLast ? 2 : 0) + (isRefused ? 1 : 0);
+            if (tier < bestTier || (tier == bestTier && dist[i] < dist[best]))
+            {
+                best = static_cast<int>(i);
+                bestTier = tier;
+            }
         }
-        return best >= 0 ? best : bestAny;
+        return best;
     }
 
     // Lane refusals were measured against the room as it stood; a kill since then
@@ -1543,6 +1596,167 @@ namespace DungeonClearMath
     inline bool ShouldDropLaneRefusals(uint32_t liveNow, uint32_t liveAtWrite)
     {
         return liveNow < liveAtWrite;
+    }
+
+    // Whether the walk to a room-clear stand spot rounds the pack on its commit
+    // ring. The ring is a 2D circle snapped to the navmesh at the PACK's height,
+    // so it only describes ground the tank can walk when both stand on one floor.
+    // A pack on a ledge over the tank (the Emperor's corner balconies, 7.5yd up)
+    // puts every ring point on the wrong tier: the two arcs collapse onto spots
+    // beside the tank and it bounced between them for 6m39s instead of taking
+    // the ramp (tr-20261019-183728-12). Across tiers the navmesh path to the
+    // stand spot is the route; nothing on the floor below is in the pack's reach.
+    inline bool StandWalkRoundsPack(float botZ, float packZ, float levelTolerance)
+    {
+        return std::fabs(botZ - packZ) <= levelTolerance;
+    }
+
+    // The distance a room clear ranks a pack by when off-level packs go last
+    // (RoomAggroBoss::detourReachable): an off-level pack sorts behind every pack
+    // on the tank's own floor, so the floor is cleared before the clear climbs to
+    // a ledge, and among the ledge packs the nearest still goes first.
+    //
+    // A room with a boss-side ring (RoomAggroBoss::bossSideLastRadius) ranks the
+    // packs inside it behind everything else, the ledges included: their lanes run
+    // at the boss, so they are the pulls that wake him, and a wake while the rest
+    // of the room still stands brings all of it. `distToBoss` < 0 = no live boss.
+    constexpr float RoomTrashOffLevelPenalty = 1000.0f;
+    constexpr float RoomTrashBossSidePenalty = 2000.0f;
+    inline float RoomTrashPickDistance(float dist2d, float dz, float levelTolerance,
+                                       bool offLevelLast, float distToBoss = -1.0f,
+                                       float bossSideLastRadius = 0.0f)
+    {
+        if (bossSideLastRadius > 0.0f && distToBoss >= 0.0f && distToBoss < bossSideLastRadius)
+            return dist2d + RoomTrashBossSidePenalty;
+        return offLevelLast && std::fabs(dz) > levelTolerance
+                   ? dist2d + RoomTrashOffLevelPenalty
+                   : dist2d;
+    }
+
+    // A pull-mode camp the tank has left further behind than any live camp may sit
+    // (maxTankGap: PartyMaxSpread + the largest legitimate standoff). No member can
+    // be inside PartyMaxSpread of it and inside maxTankGap of the tank at once, so a
+    // spread gate anchored on it can never pass. 0 = no backstop, nothing is stale.
+    inline bool CampAnchorIsStale(float tankToCamp, float maxTankGap)
+    {
+        return maxTankGap > 0.0f && tankToCamp > maxTankGap;
+    }
+
+    // A stock chase toward `target` while a room-aggro boss still sleeps and its
+    // room is being pre-cleared: true when the chase ends inside the boss's wake
+    // sphere (ChaseEndToBoss), i.e. inside the boss's aggro. Mobs in there "come
+    // with the boss" and are excluded from the room clear, but one woken early (a
+    // social pull, a flee-for-assist) still drew the chase in after it.
+    inline bool ChaseWakesSleepingBoss(float chaseEndToBoss, float wakeSphere, bool bossInCombat)
+    {
+        return !bossInCombat && chaseEndToBoss < wakeSphere;
+    }
+
+    // The stalled fallback (DungeonClearClearStalledAction) pulls one nearby mob
+    // and is then done: once that mob is gone and the fight is over, the stall is
+    // cleared and Advance tries the route again.
+    inline bool StallPullIsDone(bool pullTargetAlive, bool inCombat)
+    {
+        return !pullTargetAlive && !inCombat;
+    }
+
+    // Advance's per-point MoveTo fallback: does this refused move count toward
+    // DC_STUCK_LIMIT? Not when the movement arbiter only deferred it — an
+    // equal-or-higher priority move still holds, which is a wait, not a shut way.
+    // Counting those turned ~1s of a post-pull hold into a "movement isn't
+    // progressing" stall (tr-20261019-182249-2). Pursuit already reads a deferred
+    // move as alive.
+    inline bool MoveToFallbackCountsStuck(bool moved, bool deferred)
+    {
+        return !moved && !deferred;
+    }
+
+    // Engage-trash's walk-in on one target: is it getting any nearer? True once the
+    // distance has not improved by `minClose` for `limitMs` of walking. A gap
+    // between ticks longer than `gapMs` (the action lost the tick to a leash
+    // hold, a long-route deferral, a fight) restarts the window rather than
+    // counting the time away against it.
+    //
+    // tr-20261019-182249-1 / sk-20261019-105358-31: the walk-in on a Doomforge
+    // Arcanasmith past Argelmach's door stopped every tick to re-aim and Advance
+    // re-issued its spline in between; the tank stood at (781.7,31.9) for 100s
+    // through 118 yields, the stuck count it never reset climbed to the limit, and
+    // the stall it set ended the run.
+    struct WalkInWatch
+    {
+        float bestDist = -1.0f;
+        uint32_t progressMs = 0;
+        uint32_t lastTickMs = 0;
+    };
+
+    inline bool EngageWalkGivenUp(WalkInWatch& w, float dist, float minClose, uint32_t nowMs,
+                                  uint32_t limitMs, uint32_t gapMs)
+    {
+        bool const restart = w.bestDist < 0.0f || nowMs - w.lastTickMs > gapMs;
+        if (restart || dist < w.bestDist - minClose)
+        {
+            w.bestDist = dist;
+            w.progressMs = nowMs;
+        }
+        w.lastTickMs = nowMs;
+        return nowMs - w.progressMs >= limitMs;
+    }
+
+    // The assist camp's no-LOS close-in on a fight holder: true once every move
+    // toward the SAME holder has been refused for `limitMs` running. A move that
+    // goes restarts it; so does a new holder (its refusals start now).
+    // `refusedSince` is the caller's state, 0 = not refusing.
+    //
+    // sk-20261019-105358 (-70/-72/-73, 2/17): a Reservist or Medic General
+    // Angerforge summons at a random offset landed inside the geometry west of the
+    // fight. Same floor, so the level gate passed it; every member drove at it on
+    // a refused route (900-2000 refusals each), kept re-seeding combat on it over
+    // the stuck-combat breaker, and walked off the tank until the stall watchdog.
+    inline bool AssistCloseGivenUp(bool moved, bool sameTarget, uint32_t nowMs,
+                                   uint32_t limitMs, uint32_t& refusedSince)
+    {
+        if (moved)
+        {
+            refusedSince = 0;
+            return false;
+        }
+        if (!sameTarget || refusedSince == 0)
+        {
+            refusedSince = nowMs != 0 ? nowMs : 1;
+            return false;
+        }
+        return nowMs - refusedSince >= limitMs;
+    }
+
+    // How far from the boss a chase toward a target ENDS (2D): a mover with reach
+    // `range` stops that far short of the target on its own side, and one already
+    // inside it does not move at all. range 0 = it ends on the target (melee, a
+    // gap-closer's leap). Feeds ChaseWakesSleepingBoss.
+    //
+    // sk-20261019-105358 (-61/-57/-47, 900s each): a Doomforge Dragoon with no
+    // combat movement, 26.4yd from the Emperor (sphere 28.3), woke and was fought
+    // where it stands. Testing where the TARGET stood banned every reach toward
+    // it, the ranged included, held 44-50yd out past their spell range — nothing
+    // could ever kill it. A caster stopping 30yd short of it is 48yd from the boss.
+    inline float ChaseEndToBoss(float botX, float botY, float targetX, float targetY,
+                                float bossX, float bossY, float range)
+    {
+        float const dx = botX - targetX;
+        float const dy = botY - targetY;
+        float const toBot = std::sqrt(dx * dx + dy * dy);
+        float endX = targetX;
+        float endY = targetY;
+        if (toBot <= range)
+        {
+            endX = botX;
+            endY = botY;
+        }
+        else if (range > 0.0f)
+        {
+            endX = targetX + dx / toBot * range;
+            endY = targetY + dy / toBot * range;
+        }
+        return std::sqrt((endX - bossX) * (endX - bossX) + (endY - bossY) * (endY - bossY));
     }
 }
 

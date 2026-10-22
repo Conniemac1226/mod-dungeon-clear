@@ -849,6 +849,8 @@ namespace
             RegisterOculusHooks(t);
             RegisterKarazhanChessHooks(t);
             RegisterStratholmeHooks(t);
+            RegisterBlackrockDepthsHooks(t);
+            RegisterBlackrockSpireHooks(t);
             return t;
         }();
         return kHooks;

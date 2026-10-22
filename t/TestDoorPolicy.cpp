@@ -485,3 +485,23 @@ TEST(DcDoorPolicyTest, KarazhanLibraryDoorIsHeldNeverClicked)
     // Not navigation-ignored: the party walks through it once it is open.
     EXPECT_FALSE(DcEventDoorRegistry::IsNavigationIgnored(184517));
 }
+
+// Blackrock Depths' Bar Door (170571) opens only at the end of Rocknot's ale run
+// (map-230 event 5), and Phalanx turns hostile only after it, at the end of his
+// run to the doorway. Clicking it early would let the party walk out past a
+// Phalanx who is still unattackable.
+TEST(DcDoorPolicyTest, BlackrockBarDoorIsScriptOnly)
+{
+    EXPECT_TRUE(DcEventDoorRegistry::IsScriptOnly(170571));
+    EXPECT_FALSE(DcEventDoorRegistry::IsKeyExempt(170571)) << "the Grim Guzzler Key is never waived";
+    // The Summoner's Tomb doors are the Seven's (map-230 event 6) alone.
+    EXPECT_TRUE(DcEventDoorRegistry::IsScriptOnly(170576));   // entrance
+    EXPECT_TRUE(DcEventDoorRegistry::IsScriptOnly(170577));   // exit
+    // The Golem Room doors open on both braziers lit (map-230 events 7/8).
+    EXPECT_TRUE(DcEventDoorRegistry::IsScriptOnly(170573));   // Golem Room North
+    EXPECT_TRUE(DcEventDoorRegistry::IsScriptOnly(170574));   // Golem Room South
+    EXPECT_TRUE(DcEventDoorRegistry::IsScriptOnly(170575));   // Throne Room (Magmus's death)
+    // The Lyceum door stays a keyed traversal gate the walker opens.
+    EXPECT_FALSE(DcEventDoorRegistry::IsScriptOnly(170558));
+    EXPECT_TRUE(DcEventDoorRegistry::IsKeyExempt(170558));
+}

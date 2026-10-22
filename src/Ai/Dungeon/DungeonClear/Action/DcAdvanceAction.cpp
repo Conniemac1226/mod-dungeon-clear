@@ -2071,9 +2071,14 @@ DungeonClearAdvanceAction::Step DungeonClearAdvanceAction::DoMoveToFallback(Adva
                               /*exact_waypoint*/ false, MovementPriority::MOVEMENT_NORMAL);
     if (!moved)
     {
+        // Deferred by the movement arbiter: a higher move still holds and will
+        // expire. Wait without counting it (MoveToFallbackCountsStuck).
+        if (!DungeonClearMath::MoveToFallbackCountsStuck(
+                moved, DcMoveDeferred(MovementPriority::MOVEMENT_NORMAL)))
+            return Step::ReturnFalse;
         // MoveTo returned false. Benign in the common case (duplicate
-        // move queued / waiting on last move). Only treat as a real
-        // stall after several consecutive failures.
+        // move queued). Only treat as a real stall after several
+        // consecutive failures.
         if (++stuck >= DC_STUCK_LIMIT)
         {
             // Force a fresh chunked rebuild — the cached path's first
@@ -2227,7 +2232,13 @@ bool DungeonClearAdvanceAction::Execute(Event /*event*/)
     // direct-pursuit give-up latch so a boss that wanders back out can be
     // re-pursued cleanly (the counters themselves live on appr and are consumed
     // by FillHopObs/DoHopDoneEscalation and DoPursue below).
-    if (engageDist < engageRange)
+    //
+    // Gated on atBoss, not raw 3D range: a tank inside the range but OFF the
+    // boss's floor is still approaching, and wiping the pursuit latch every tick
+    // there means a refused pursuit can never abdicate to the long path —
+    // tr-20261018-101829-3 sat at noClose=0/5 for 7 minutes, 30yd under
+    // Emperor Thaurissan's throne, against a 32yd room-aggro hand-off.
+    if (atBoss)
         appr.OnEnteredEngageRange();
 
     // Bundle the per-tick approach state for the extracted phase steps below.

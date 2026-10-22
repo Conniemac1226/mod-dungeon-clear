@@ -11,7 +11,11 @@
 #include "Position.h"
 #include "Timer.h"
 #include "Ai/Dungeon/DungeonClear/Util/DcProgressWatchdog.h"
+#include "Ai/Dungeon/DungeonClear/Util/DungeonClearMath.h"
+#include <algorithm>
 #include <limits>
+#include <utility>
+#include <vector>
 
 // All transient per-approach state for one boss-approach run, owned as a single
 // value (DungeonClearApproachStateValue, "dungeon clear approach state") so the
@@ -31,6 +35,30 @@
 // (OnBossChange / OnEnteredEngageRange) replace the old ResetApproachOn* free
 // functions so the reset subsets are named, visible, and co-located instead of
 // inline ->Set(0u) clusters.
+// Targets a driver has given up on, each until a getMSTime it may be tried
+// again. Tiny — a run gives up a handful at most — so a vector scan.
+struct DcGiveUpList
+{
+    std::vector<std::pair<ObjectGuid, uint32>> entries;
+
+    bool Has(ObjectGuid guid, uint32 nowMs) const
+    {
+        for (auto const& [g, until] : entries)
+            if (g == guid && nowMs < until)
+                return true;
+        return false;
+    }
+
+    void Add(ObjectGuid guid, uint32 nowMs, uint32 forMs)
+    {
+        entries.erase(std::remove_if(entries.begin(), entries.end(),
+                                     [&](auto const& e)
+                                     { return e.first == guid || nowMs >= e.second; }),
+                      entries.end());
+        entries.emplace_back(guid, nowMs + forMs);
+    }
+};
+
 struct DcApproachState
 {
     // --- per-approach stuck / recovery watchdogs (nav review F11) ---------
@@ -76,6 +104,17 @@ struct DcApproachState
     // DungeonClearMath::ShouldYieldToEngageWalk.
     ObjectGuid engageWalkTarget;
     uint32 engageWalkMs = 0;
+    // Whether that walk-in is getting any nearer its target, and the targets
+    // given up on when it was not. See DungeonClearMath::EngageWalkGivenUp.
+    ObjectGuid engageWalkWatchTarget;
+    DungeonClearMath::WalkInWatch engageWalkWatch;
+    DcGiveUpList engageWalkGivenUp;
+    // The boss whose engage walk-in stock refused, since when (getMSTime, 0 = not
+    // refused) and the latest refusal — a refusal that lapses restarts the window.
+    // See DungeonClearMath::ShouldTagBossFromStandoff.
+    ObjectGuid bossWalkRefusedTarget;
+    uint32 bossWalkRefusedMs = 0;
+    uint32 bossWalkRefusedLastMs = 0;
     uint32 stuckCount          = 0;  // MoveTo-returned-false backup (was "stuck count")
     uint32 rebuildAttempts     = 0;  // consecutive rebuilds w/o progress ("stride rebuild attempts")
     uint32 resnapAttempts      = 0;  // consecutive Resnap recoveries w/o progress (rung-1 give-up)
@@ -122,6 +161,13 @@ struct DcApproachState
     // changes, and by the approach reset below.
     int8 avoidOrbitDir         = 0;  // 0 = unlatched, +/-1 = committed rotation
     ObjectGuid avoidOrbitSphere;     // pack GUID the current avoid orbit is for
+
+    // The walk to a room-clear stand spot rounds the pack itself on its commit
+    // ring (MoveToStandSkirtingRoomAggro). It ran unlatched, so the long arc it
+    // took one tick was re-decided the next — the same two-point bounce, logged
+    // 45 times in tr-20261019-183728-12. Keyed by the pack; reset with the rest.
+    int8 standOrbitDir         = 0;  // 0 = unlatched, +/-1 = committed rotation
+    ObjectGuid standOrbitPack;       // pack GUID the current stand orbit is for
 
     // --- off-line rejoin latches ------------------------------------------
     // HYSTERESIS on the off-line rung. The rung engages at OFF_PATH_THRESHOLD
@@ -343,6 +389,27 @@ struct DcApproachState
         return true;
     }
 
+    // The assist camp's no-LOS close-in (DungeonClearAssistCampActionBase): the
+    // fight holder it last drove at, since when every move toward it has been
+    // refused (getMSTime, 0 = not refusing), and the holders it has given up on,
+    // each with the getMSTime it may be tried again. See
+    // DungeonClearMath::AssistCloseGivenUp.
+    ObjectGuid assistRefusedTarget;
+    uint32 assistRefusedSince = 0;
+    DcGiveUpList assistGivenUp;
+
+    bool AssistGivenUp(ObjectGuid guid, uint32 nowMs) const
+    {
+        return assistGivenUp.Has(guid, nowMs);
+    }
+
+    void GiveUpAssist(ObjectGuid guid, uint32 nowMs, uint32 forMs)
+    {
+        assistGivenUp.Add(guid, nowMs, forMs);
+        assistRefusedTarget = ObjectGuid::Empty;
+        assistRefusedSince = 0;
+    }
+
     // Full reset: every approach AND long-path-cache field. Used on dc on/off,
     // death, all-cleared, and every pull interrupt — the run-state teardown.
     void Reset() { *this = DcApproachState{}; }
@@ -381,6 +448,8 @@ struct DcApproachState
         skirtOrbitTarget.Clear();
         avoidOrbitDir       = 0;
         avoidOrbitSphere.Clear();
+        standOrbitDir       = 0;
+        standOrbitPack.Clear();
         chaseTarget.Clear();
         chaseAnchor         = Position();
         chaseOrigin         = Position();
